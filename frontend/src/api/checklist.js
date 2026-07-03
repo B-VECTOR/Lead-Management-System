@@ -53,6 +53,12 @@ export async function updateChecklistItem(id, patch, currentUser) {
   return updated
 }
 
+// A checklist item's free-text note — separate from its status, so jotting a
+// note doesn't touch task-status recomputation or the activity feed.
+export async function updateChecklistItemNotes(id, notes) {
+  return update('leadChecklistItems', id, { notes })
+}
+
 // Cross-lead task list (§13 "Task" tab, next to the Leads list) — one row per
 // checklist item across every lead visible to the current user, joined with
 // its lead/task context. filters: { assignedTo, status['open'|'done'|'all'], q }
@@ -70,7 +76,7 @@ export async function listAllChecklistItems(currentUser, filters = {}) {
       const task = taskById[i.lead_task_id]
       const lead = leadById[task.lead_id]
       return {
-        id: i.id, state: i.state, label: i.label, requires_file: i.requires_file, notify: i.notify,
+        id: i.id, state: i.state, label: i.label, requires_file: i.requires_file,
         done_at: i.done_at, task_id: task.id, task_name: task.name,
         lead_id: lead.id, lead_code: lead.code, company_id: lead.company_id, assigned_to: lead.assigned_to,
       }

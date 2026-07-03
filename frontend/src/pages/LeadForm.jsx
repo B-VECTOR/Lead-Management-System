@@ -17,10 +17,11 @@ import { PRODUCT_MODULES, PRIORITIES, DOMAINS } from '@/mocks/seed'
 import { toast } from 'sonner'
 
 const COMPANY_INDUSTRIES = ['Retail', 'Healthcare', 'Finance', 'Logistics', 'Education', 'Manufacturing', 'Government', 'SaaS/Tech', 'Other']
+const UNASSIGNED = '__unassigned__'
 
 const emptyForm = {
   name: '', company_id: '', lead_type_id: '', industry: '', domain: '',
-  product_modules: [], priority: 'Low', owner_id: '', source_detail: '', tags: '',
+  product_modules: [], conversion_reminder: 'none', priority: 'Medium', owner_id: '', source_detail: '', tags: '',
   assigned_to: '', start_date: '', target_date: '',
   description: '', internal_notes: '',
 }
@@ -41,6 +42,7 @@ export default function LeadForm() {
 
   const managers = useMemo(() => users.filter((u) => u.role === 'Manager' || u.role === 'Admin'), [users])
   const reps = useMemo(() => users.filter((u) => u.role === 'Representative'), [users])
+  const bdType = useMemo(() => leadTypes.find((t) => t.name === 'BD'), [leadTypes])
 
   const [form, setForm] = useState(emptyForm)
 
@@ -50,7 +52,8 @@ export default function LeadForm() {
         name: existingLead.name || '',
         company_id: existingLead.company_id,
         lead_type_id: existingLead.lead_type_id, industry: existingLead.industry, domain: existingLead.domain || '',
-        product_modules: existingLead.product_modules || [], priority: existingLead.priority, owner_id: existingLead.owner_id,
+        product_modules: existingLead.product_modules || [], conversion_reminder: existingLead.conversion_reminder || 'none',
+        priority: existingLead.priority, owner_id: existingLead.owner_id,
         source_detail: existingLead.source_detail || '', tags: (existingLead.tags || []).join(', '),
         assigned_to: existingLead.assigned_to || '',
         start_date: existingLead.start_date ? existingLead.start_date.slice(0, 10) : '',
@@ -61,6 +64,12 @@ export default function LeadForm() {
       setForm((f) => ({ ...f, owner_id: user.role === 'Manager' ? user.id : f.owner_id, lead_type_id: leadTypes[0]?.id || '' }))
     }
   }, [isEdit, existingLead, leadTypes, user])
+
+  useEffect(() => {
+    if (bdType && form.lead_type_id !== bdType.id && form.conversion_reminder !== 'none') {
+      setForm((f) => ({ ...f, conversion_reminder: 'none' }))
+    }
+  }, [form.lead_type_id, form.conversion_reminder, bdType])
 
   function set(key, value) {
     setForm((f) => ({ ...f, [key]: value }))
@@ -109,13 +118,13 @@ export default function LeadForm() {
   }
 
   const saving = createLead.isPending || updateLead.isPending
-  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && form.owner_id && form.assigned_to
+  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && form.owner_id
 
   return (
     <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{isEdit ? 'Edit lead' : 'New lead'}</h1>
-        <p className="text-sm text-muted-foreground">A lead carries exactly one execution track — assign it to a rep and it's ready to work.</p>
+        <p className="text-sm text-muted-foreground">A lead carries exactly one execution track. Assign a rep now, or leave it unassigned and the owner can pick one later.</p>
       </div>
 
       <Card>
@@ -135,7 +144,7 @@ export default function LeadForm() {
           <div className="flex flex-col gap-1.5">
             <Label>Lead type *</Label>
             <Select value={form.lead_type_id} onValueChange={(v) => set('lead_type_id', v)}>
-              <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select type" /></SelectTrigger>
               <SelectContent>
                 {leadTypes.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
               </SelectContent>
@@ -143,9 +152,30 @@ export default function LeadForm() {
           </div>
 
           <div className="flex flex-col gap-1.5">
+            <Label>Conversion reminder</Label>
+            <Select value={form.conversion_reminder} onValueChange={(v) => set('conversion_reminder', v)} disabled={!bdType || form.lead_type_id !== bdType.id}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No reminder</SelectItem>
+                <SelectItem value="mining" disabled={!form.start_date}>Remind to convert → Mining</SelectItem>
+                <SelectItem value="extension" disabled={!form.target_date}>Remind to convert → Extension</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {!bdType || form.lead_type_id !== bdType.id
+                ? 'Only available for BD leads.'
+                : form.conversion_reminder === 'mining'
+                  ? 'Reminds 6 months after the start date to consider converting to Mining.'
+                  : form.conversion_reminder === 'extension'
+                    ? 'Reminds 2 months before the target date to consider converting to Extension.'
+                    : 'Optionally schedule a reminder to revisit this BD lead later.'}
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
             <Label>Industry *</Label>
             <Select value={form.industry} onValueChange={(v) => set('industry', v)}>
-              <SelectTrigger><SelectValue placeholder="Select industry" /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select industry" /></SelectTrigger>
               <SelectContent>
                 {COMPANY_INDUSTRIES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
               </SelectContent>
@@ -155,7 +185,7 @@ export default function LeadForm() {
           <div className="flex flex-col gap-1.5">
             <Label>Domain</Label>
             <Select value={form.domain} onValueChange={(v) => set('domain', v)}>
-              <SelectTrigger><SelectValue placeholder="Select domain" /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select domain" /></SelectTrigger>
               <SelectContent>
                 {DOMAINS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
               </SelectContent>
@@ -182,25 +212,27 @@ export default function LeadForm() {
           <div className="flex flex-col gap-1.5">
             <Label>Owner (Manager) *</Label>
             <Select value={form.owner_id} onValueChange={(v) => set('owner_id', v)}>
-              <SelectTrigger><SelectValue placeholder="Select owner" /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select owner" /></SelectTrigger>
               <SelectContent>
                 {managers.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label>Assigned to (Representative) *</Label>
-            <Select value={form.assigned_to} onValueChange={(v) => set('assigned_to', v)}>
-              <SelectTrigger><SelectValue placeholder="Select a rep" /></SelectTrigger>
+            <Label>Assigned to (Representative)</Label>
+            <Select value={form.assigned_to || UNASSIGNED} onValueChange={(v) => set('assigned_to', v === UNASSIGNED ? '' : v)}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select a rep" /></SelectTrigger>
               <SelectContent>
+                <SelectItem value={UNASSIGNED}>Unassigned — assign later</SelectItem>
                 {reps.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">Optional — if left unassigned, the lead's owner (manager) can assign a rep later from the lead page.</p>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Priority</Label>
             <Select value={form.priority} onValueChange={(v) => set('priority', v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
               </SelectContent>

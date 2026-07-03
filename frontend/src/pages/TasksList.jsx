@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Bell, Paperclip, Search } from 'lucide-react'
+import { Paperclip, Search } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -36,7 +36,6 @@ function TaskRow({ item, company, assignee }) {
           <Link to={`/leads/${item.lead_id}`} className="hover:underline">{company?.name} · {item.lead_code}</Link>
           <span>· {item.task_name}</span>
           {item.requires_file && <Badge variant="outline" className="gap-1"><Paperclip className="size-3" /> File required</Badge>}
-          {item.notify && <Badge variant="outline" className="gap-1"><Bell className="size-3" /> Notifies</Badge>}
         </div>
       </div>
       <UserChip user={assignee} />

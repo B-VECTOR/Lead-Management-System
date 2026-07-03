@@ -27,6 +27,14 @@ export function useUpdateChecklistItem(leadId) {
   })
 }
 
+export function useUpdateChecklistItemNotes(leadId) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, notes }) => checklistApi.updateChecklistItemNotes(id, notes),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['lead-checklist', leadId] }),
+  })
+}
+
 export function useAllChecklistItems(filters = {}) {
   const { user } = useAuth()
   return useQuery({

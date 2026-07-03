@@ -2,6 +2,7 @@ import { getAll, getById, insert, update, genId, peek } from '../mocks/db'
 import { visibleLeadIds } from './scope'
 import { logActivity } from './activities'
 import { notify } from './notifications'
+import { createFollowup } from './followups'
 
 function nextLeadCode(existing) {
   const year = new Date().getFullYear()
@@ -15,6 +16,30 @@ function nextLeadCode(existing) {
 
 function companyName(companyId) {
   return peek('companies').find((c) => c.id === companyId)?.name || 'Unknown company'
+}
+
+function normalizeConversionReminder(value) {
+  return value === 'mining' || value === 'extension' ? value : null
+}
+
+function addMonths(isoDate, months) {
+  const d = new Date(isoDate)
+  d.setMonth(d.getMonth() + months)
+  return d.toISOString()
+}
+
+// BD leads can carry a one-shot reminder to revisit converting them into a
+// Mining or Extension engagement (§ future-phase note) — 6 months after the
+// start date for Mining, or 2 months before the target date for Extension.
+// Surfaced as a regular follow-up so it shows up in the existing Additional
+// Task list rather than needing a new notification pipeline.
+async function scheduleConversionReminder(lead, currentUser) {
+  const isMining = lead.conversion_reminder === 'mining'
+  const sourceDate = isMining ? lead.start_date : lead.target_date
+  if (!sourceDate) return
+  const due_date = addMonths(sourceDate, isMining ? 6 : -2)
+  const title = isMining ? `Consider converting ${lead.code} to Mining` : `Consider converting ${lead.code} to Extension`
+  await createFollowup({ lead_id: lead.id, title, due_date, assigned_to: lead.assigned_to || lead.owner_id }, currentUser)
 }
 
 // filters: { status, lead_type_id, owner_id, q }
@@ -51,14 +76,15 @@ export async function createLead(data, currentUser) {
     industry: data.industry,
     domain: data.domain || '',
     product_modules: data.product_modules || [],
+    conversion_reminder: normalizeConversionReminder(data.conversion_reminder),
     status: 'In Progress',
-    priority: data.priority || 'Low',
+    priority: data.priority || 'Medium',
     owner_id: data.owner_id || currentUser.id,
     source_detail: data.source_detail || '',
     tags: data.tags || [],
     description: data.description || '',
     internal_notes: data.internal_notes || '',
-    assigned_to: data.assigned_to,
+    assigned_to: data.assigned_to || null,
     start_date: data.start_date || null,
     target_date: data.target_date || null,
     created_by: currentUser.id,
@@ -81,7 +107,7 @@ export async function createLead(data, currentUser) {
     for (const tmpl of items) {
       await insert('leadChecklistItems', {
         id: genId('lci'), lead_task_id: task.id, label: tmpl.label, order: tmpl.order,
-        state: 'open', requires_file: tmpl.requires_file, notify: tmpl.notify, done_by: null, done_at: null,
+        state: 'open', requires_file: tmpl.requires_file, notes: '', done_by: null, done_at: null,
       })
     }
     const fields = templateFields.filter((f) => f.task_step_id === step.id).sort((a, b) => a.order - b.order)
@@ -96,15 +122,23 @@ export async function createLead(data, currentUser) {
   if (row.owner_id !== currentUser.id) {
     await notify({ user_id: row.owner_id, type: 'lead_assigned', message: `Lead ${row.code} (${companyName(row.company_id)}) assigned to you`, link: `/leads/${created.id}` })
   }
-  if (row.assigned_to !== currentUser.id) {
+  if (row.assigned_to && row.assigned_to !== currentUser.id) {
     await notify({ user_id: row.assigned_to, type: 'assignment', message: `You were assigned to lead ${row.code} (${companyName(row.company_id)})`, link: `/leads/${created.id}` })
+  }
+  if (row.conversion_reminder) {
+    await scheduleConversionReminder(created, currentUser)
   }
   return created
 }
 
 export async function updateLead(id, patch, currentUser) {
-  const updated = await update('leads', id, { ...patch, last_activity_at: new Date().toISOString() })
+  const before = await getById('leads', id)
+  const nextPatch = { ...patch, conversion_reminder: normalizeConversionReminder(patch.conversion_reminder), assigned_to: patch.assigned_to || null }
+  const updated = await update('leads', id, { ...nextPatch, last_activity_at: new Date().toISOString() })
   await logActivity({ lead_id: id, type: 'Note', summary: 'Lead details updated', created_by: currentUser.id })
+  if (nextPatch.conversion_reminder && nextPatch.conversion_reminder !== before.conversion_reminder) {
+    await scheduleConversionReminder(updated, currentUser)
+  }
   return updated
 }
 

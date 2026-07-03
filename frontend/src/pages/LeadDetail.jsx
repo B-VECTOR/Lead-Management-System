@@ -132,8 +132,8 @@ export default function LeadDetail() {
             <Button variant="outline" onClick={() => navigate(`/leads/${id}/edit`)}><Pencil className="size-4" /> Edit</Button>
           )}
           {canAssign && (
-            <Button variant="outline" onClick={() => { setNewRep(lead.assigned_to); setReassignRepOpen(true) }}>
-              <UsersRound className="size-4" /> Reassign rep
+            <Button variant="outline" onClick={() => { setNewRep(lead.assigned_to || ''); setReassignRepOpen(true) }}>
+              <UsersRound className="size-4" /> {lead.assigned_to ? 'Reassign rep' : 'Assign rep'}
             </Button>
           )}
           {PERMISSIONS.reassignLeadOwner(user) && (
@@ -264,6 +264,10 @@ export default function LeadDetail() {
               <InfoRow label="Product modules" value={lead.product_modules?.length ? lead.product_modules.join(', ') : '—'} />
               <InfoRow label="Source" value={lead.source_detail} />
               <InfoRow label="Tags" value={lead.tags?.length ? lead.tags.join(', ') : '—'} />
+              <InfoRow
+                label="Conversion reminder"
+                value={lead.conversion_reminder === 'mining' ? 'Convert to Mining' : lead.conversion_reminder === 'extension' ? 'Convert to Extension' : '—'}
+              />
             </CardContent>
           </Card>
           <Card>
@@ -298,14 +302,14 @@ export default function LeadDetail() {
 
       <Dialog open={reassignRepOpen} onOpenChange={setReassignRepOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Reassign representative</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{lead.assigned_to ? 'Reassign representative' : 'Assign representative'}</DialogTitle></DialogHeader>
           <Select value={newRep} onValueChange={setNewRep}>
             <SelectTrigger><SelectValue placeholder="Select a rep" /></SelectTrigger>
             <SelectContent>{reps.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}</SelectContent>
           </Select>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReassignRepOpen(false)}>Cancel</Button>
-            <Button onClick={() => { assignRep.mutate({ id, assignedTo: newRep }); setReassignRepOpen(false); toast.success('Representative reassigned') }} disabled={!newRep}>Save</Button>
+            <Button onClick={() => { assignRep.mutate({ id, assignedTo: newRep }); setReassignRepOpen(false); toast.success('Representative assigned') }} disabled={!newRep}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

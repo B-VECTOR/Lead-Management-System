@@ -71,27 +71,27 @@ export const taskSteps = [
 ]
 
 export const checklistTemplateItems = [
-  { id: 'cti-bd-1', task_step_id: 'ts-bd-1', label: 'Confirm decision maker & authority', order: 1, requires_file: false, notify: true },
-  { id: 'cti-bd-2', task_step_id: 'ts-bd-1', label: 'Capture required product modules', order: 2, requires_file: true, notify: false },
-  { id: 'cti-bd-3', task_step_id: 'ts-bd-1', label: 'Log budget & timeline', order: 3, requires_file: false, notify: false },
+  { id: 'cti-bd-1', task_step_id: 'ts-bd-1', label: 'Confirm decision maker & authority', order: 1, requires_file: false },
+  { id: 'cti-bd-2', task_step_id: 'ts-bd-1', label: 'Capture required product modules', order: 2, requires_file: true },
+  { id: 'cti-bd-3', task_step_id: 'ts-bd-1', label: 'Log budget & timeline', order: 3, requires_file: false },
 
-  { id: 'cti-bd-4', task_step_id: 'ts-bd-2', label: 'Schedule product demo', order: 1, requires_file: false, notify: true },
-  { id: 'cti-bd-5', task_step_id: 'ts-bd-2', label: 'Deliver demo & capture feedback', order: 2, requires_file: true, notify: false },
-  { id: 'cti-bd-6', task_step_id: 'ts-bd-2', label: 'Provision trial/POC access', order: 3, requires_file: false, notify: false },
+  { id: 'cti-bd-4', task_step_id: 'ts-bd-2', label: 'Schedule product demo', order: 1, requires_file: false },
+  { id: 'cti-bd-5', task_step_id: 'ts-bd-2', label: 'Deliver demo & capture feedback', order: 2, requires_file: true },
+  { id: 'cti-bd-6', task_step_id: 'ts-bd-2', label: 'Provision trial/POC access', order: 3, requires_file: false },
 
-  { id: 'cti-bd-7', task_step_id: 'ts-bd-3', label: 'Prepare pricing & proposal', order: 1, requires_file: true, notify: false },
-  { id: 'cti-bd-8', task_step_id: 'ts-bd-3', label: 'Internal approval', order: 2, requires_file: false, notify: true },
-  { id: 'cti-bd-9', task_step_id: 'ts-bd-3', label: 'Send proposal to client', order: 3, requires_file: false, notify: false },
+  { id: 'cti-bd-7', task_step_id: 'ts-bd-3', label: 'Prepare pricing & proposal', order: 1, requires_file: true },
+  { id: 'cti-bd-8', task_step_id: 'ts-bd-3', label: 'Internal approval', order: 2, requires_file: false },
+  { id: 'cti-bd-9', task_step_id: 'ts-bd-3', label: 'Send proposal to client', order: 3, requires_file: false },
 
-  { id: 'cti-bd-10', task_step_id: 'ts-bd-4', label: 'Negotiate terms', order: 1, requires_file: false, notify: false },
-  { id: 'cti-bd-11', task_step_id: 'ts-bd-4', label: 'Collect signed contract', order: 2, requires_file: true, notify: false },
-  { id: 'cti-bd-12', task_step_id: 'ts-bd-4', label: 'Handoff to onboarding', order: 3, requires_file: false, notify: true },
+  { id: 'cti-bd-10', task_step_id: 'ts-bd-4', label: 'Negotiate terms', order: 1, requires_file: false },
+  { id: 'cti-bd-11', task_step_id: 'ts-bd-4', label: 'Collect signed contract', order: 2, requires_file: true },
+  { id: 'cti-bd-12', task_step_id: 'ts-bd-4', label: 'Handoff to onboarding', order: 3, requires_file: false },
 
-  { id: 'cti-mining-1', task_step_id: 'ts-mining-1', label: 'Placeholder checklist item', order: 1, requires_file: false, notify: false },
-  { id: 'cti-mining-2', task_step_id: 'ts-mining-1', label: 'Placeholder checklist item', order: 2, requires_file: false, notify: false },
+  { id: 'cti-mining-1', task_step_id: 'ts-mining-1', label: 'Placeholder checklist item', order: 1, requires_file: false },
+  { id: 'cti-mining-2', task_step_id: 'ts-mining-1', label: 'Placeholder checklist item', order: 2, requires_file: false },
 
-  { id: 'cti-ext-1', task_step_id: 'ts-ext-1', label: 'Placeholder checklist item', order: 1, requires_file: false, notify: false },
-  { id: 'cti-ext-2', task_step_id: 'ts-ext-1', label: 'Placeholder checklist item', order: 2, requires_file: false, notify: false },
+  { id: 'cti-ext-1', task_step_id: 'ts-ext-1', label: 'Placeholder checklist item', order: 1, requires_file: false },
+  { id: 'cti-ext-2', task_step_id: 'ts-ext-1', label: 'Placeholder checklist item', order: 2, requires_file: false },
 ]
 
 // Fixed additional input fields per step (§7.1 Task tab) — not a checklist;
@@ -222,7 +222,7 @@ function makeLeadTasksAndItems(leadId, leadTypeId, doneCounts) {
         order: tmpl.order,
         state: i < doneN ? 'done' : 'open',
         requires_file: tmpl.requires_file,
-        notify: tmpl.notify,
+        notes: '',
         done_by: i < doneN ? 'u-rohan' : null,
         done_at: i < doneN ? daysAgo(10 - i) : null,
       })
@@ -247,6 +247,10 @@ const t8 = makeLeadTasksAndItems('l-8', 'lt-mining', [0])
 export const leadTasks = [...t1.tasks, ...t2.tasks, ...t3.tasks, ...t4.tasks, ...t5.tasks, ...t6.tasks, ...t7.tasks, ...t8.tasks]
 export const leadChecklistItems = [...t1.items, ...t2.items, ...t3.items, ...t4.items, ...t5.items, ...t6.items, ...t7.items, ...t8.items]
 export const leadTaskFields = [...t1.fields, ...t2.fields, ...t3.fields, ...t4.fields, ...t5.fields, ...t6.fields, ...t7.fields, ...t8.fields]
+
+// Seed one example note to showcase the feature with real data.
+const l1FirstChecklistItem = leadChecklistItems.find((i) => i.id === 'l-1-t-1-ci-1')
+if (l1FirstChecklistItem) l1FirstChecklistItem.notes = 'Confirmed with Laura Kim — she has budget authority.'
 
 // Fill in a couple of example values on the already-completed Discovery step
 // of l-1 so the feature shows real data out of the box.

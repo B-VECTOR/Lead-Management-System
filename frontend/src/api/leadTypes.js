@@ -39,7 +39,7 @@ export async function deleteTaskStep(id) {
 export async function createChecklistTemplateItem(taskStepId, data, order) {
   return insert('checklistTemplateItems', {
     id: genId('cti'), task_step_id: taskStepId, label: data.label, order,
-    requires_file: !!data.requires_file, notify: !!data.notify,
+    requires_file: !!data.requires_file,
   })
 }
 
