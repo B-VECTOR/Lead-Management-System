@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -16,9 +17,11 @@ import { useCompanies } from '@/hooks/useCompanies'
 import { useUsers } from '@/hooks/useUsers'
 import { useAuth } from '@/context/AuthContext'
 import { formatDate, formatRelativeDue, isOverdue } from '@/lib/format'
-import { toast } from 'sonner'
 
-export default function Followups() {
+// Ad-hoc action items, distinct from a lead's template checklist (§9.3) —
+// same feature as the original "Follow-ups", renamed and living next to the
+// Leads list rather than as its own nav item.
+export default function AdditionalTasksList() {
   const { user } = useAuth()
   const { data: followups = [] } = useFollowups()
   const { data: leads = [] } = useLeads()
@@ -39,7 +42,7 @@ export default function Followups() {
 
   async function handleCreate() {
     await createFollowup.mutateAsync({ ...form, lead_id: form.lead_id || null })
-    toast.success('Follow-up created')
+    toast.success('Additional task created')
     setCreateOpen(false)
     setForm({ title: '', due_date: '', assigned_to: '', lead_id: '' })
   }
@@ -48,15 +51,15 @@ export default function Followups() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Follow-ups</h1>
-          <p className="text-sm text-muted-foreground">Ad-hoc action items, separate from checklist templates.</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Additional Tasks</h1>
+          <p className="text-sm text-muted-foreground">Ad-hoc action items, separate from a lead's checklist.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" /> New follow-up</Button>
+        <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" /> New additional task</Button>
       </div>
 
       <Card>
         <CardContent className="flex flex-col divide-y p-0">
-          {sorted.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">No follow-ups.</p>}
+          {sorted.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">No additional tasks.</p>}
           {sorted.map((f) => {
             const overdue = !f.done && isOverdue(f.due_date)
             const lead = f.lead_id ? leadById[f.lead_id] : null
@@ -66,8 +69,7 @@ export default function Followups() {
                 <div className="min-w-0 flex-1">
                   <p className={`text-sm ${f.done ? 'text-muted-foreground line-through' : ''}`}>{f.title}</p>
                   <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {lead && <Link to={`/leads/${lead.id}`} className="hover:underline">{companyById[lead.company_id]?.name} ({lead.code})</Link>}
-                    {f.project_id && <Link to={`/projects/${f.project_id}`} className="hover:underline">Related project</Link>}
+                    {lead && <Link to={`/leads/${lead.id}`} className="hover:underline">{companyById[lead.company_id]?.name} · {lead.code}</Link>}
                     <span>{formatDate(f.due_date)}</span>
                   </div>
                 </div>
@@ -81,7 +83,7 @@ export default function Followups() {
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>New follow-up</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>New additional task</DialogTitle></DialogHeader>
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5"><Label>Title *</Label><Input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} /></div>
             <div className="flex flex-col gap-1.5"><Label>Due date *</Label><Input type="date" value={form.due_date} onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))} /></div>
@@ -96,7 +98,9 @@ export default function Followups() {
               <Label>Related lead (optional)</Label>
               <Select value={form.lead_id} onValueChange={(v) => setForm((f) => ({ ...f, lead_id: v }))}>
                 <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                <SelectContent>{leads.map((l) => <SelectItem key={l.id} value={l.id}>{companyById[l.company_id]?.name} ({l.code})</SelectItem>)}</SelectContent>
+                <SelectContent>
+                  {leads.map((l) => <SelectItem key={l.id} value={l.id}>{companyById[l.company_id]?.name} · {l.code}</SelectItem>)}
+                </SelectContent>
               </Select>
             </div>
           </div>

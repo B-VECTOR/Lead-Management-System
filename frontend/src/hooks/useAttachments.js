@@ -14,7 +14,15 @@ export function useUploadAttachment(entityType, entityId) {
   const qc = useQueryClient()
   const { user } = useAuth()
   return useMutation({
-    mutationFn: (file) => attachmentsApi.uploadAttachment({ entity_type: entityType, entity_id: entityId, file, uploaded_by: user.id }),
+    mutationFn: ({ file, title }) => attachmentsApi.uploadAttachment({ entity_type: entityType, entity_id: entityId, file, title, uploaded_by: user.id }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['attachments', entityType, entityId] }),
+  })
+}
+
+export function useDeleteAttachment(entityType, entityId) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id) => attachmentsApi.deleteAttachment(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['attachments', entityType, entityId] }),
   })
 }

@@ -10,14 +10,6 @@ export function useActivitiesForLead(leadId) {
   })
 }
 
-export function useActivitiesForProject(projectId) {
-  return useQuery({
-    queryKey: ['activities', 'project', projectId],
-    queryFn: () => activitiesApi.getActivitiesForProject(projectId),
-    enabled: !!projectId,
-  })
-}
-
 export function useLogActivity(leadId) {
   const qc = useQueryClient()
   const { user } = useAuth()

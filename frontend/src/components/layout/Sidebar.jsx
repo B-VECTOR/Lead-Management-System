@@ -1,46 +1,72 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Building2, Users2, Bell, BarChart3, Settings, ListChecks, KanbanSquare } from 'lucide-react'
+import { LayoutDashboard, Users2, Bell, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
+import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Logo } from './Logo'
 
+// Phase 1 nav: Dashboard, Leads, Notifications only. Kanban/Companies/Follow-ups/
+// Reports/Settings are removed for now (§21 rework) — Companies and Follow-ups
+// functionality still exist, just accessed from inside a lead rather than as
+// their own nav destinations. Reports/Settings return in a later phase.
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['Admin', 'Manager', 'Representative'] },
   { to: '/leads', label: 'Leads', icon: Users2, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/leads/kanban', label: 'Kanban', icon: KanbanSquare, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/companies', label: 'Companies', icon: Building2, roles: ['Admin', 'Manager'] },
-  { to: '/followups', label: 'Follow-ups', icon: ListChecks, roles: ['Admin', 'Manager', 'Representative'] },
   { to: '/notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/reports', label: 'Reports', icon: BarChart3, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/settings', label: 'Settings', icon: Settings, roles: ['Admin'] },
 ]
 
-export function Sidebar({ className }) {
+function NavItem({ to, label, icon: Icon, collapsed }) {
+  const link = (
+    <NavLink
+      to={to}
+      end={to === '/dashboard'}
+      className={({ isActive }) =>
+        cn(
+          'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+          collapsed && 'justify-center px-0',
+          isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+        )
+      }
+    >
+      <Icon className="size-4 shrink-0" />
+      {!collapsed && label}
+    </NavLink>
+  )
+
+  if (!collapsed) return link
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+export function Sidebar({ className, collapsed = false, onToggle }) {
   const { user } = useAuth()
   if (!user) return null
   const items = NAV_ITEMS.filter((item) => item.roles.includes(user.role))
 
   return (
-    <nav className={cn('flex flex-col gap-1 p-3', className)}>
-      <div className="px-2 py-3">
-        <div className="text-lg font-semibold tracking-tight">LeadFlow</div>
-        <div className="text-xs text-muted-foreground">Internal sales workspace</div>
-      </div>
-      {items.map(({ to, label, icon: Icon }) => (
-        <NavLink
-          key={to}
-          to={to}
-          end={to === '/leads'}
-          className={({ isActive }) =>
-            cn(
-              'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-              isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-            )
-          }
-        >
-          <Icon className="size-4" />
-          {label}
-        </NavLink>
+    <nav className={cn('flex h-full flex-col gap-1 p-3', collapsed && 'items-center px-2', className)}>
+      <Logo collapsed={collapsed} />
+      {items.map((item) => (
+        <NavItem key={item.to} {...item} collapsed={collapsed} />
       ))}
+      <div className="flex-1" />
+      {onToggle && (
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onToggle}
+          className="text-muted-foreground"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+        </Button>
+      )}
     </nav>
   )
 }

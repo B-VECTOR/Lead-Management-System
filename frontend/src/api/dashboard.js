@@ -1,43 +1,29 @@
-import { getAll } from '../mocks/db'
 import { listLeads } from './leads'
 import { listFollowups } from './followups'
-import { listProjects, projectProgress } from './projects'
+import { leadProgress } from './checklist'
 import { LEAD_STATUSES } from '../mocks/seed'
 
 export async function getDashboardSummary(currentUser) {
-  const [leads, followups, projects, leadTypes] = await Promise.all([
-    listLeads(currentUser), listFollowups(currentUser), listProjects(currentUser), getAll('leadTypes'),
-  ])
+  const [leads, followups] = await Promise.all([listLeads(currentUser), listFollowups(currentUser)])
 
-  const openLeads = leads.filter((l) => !l.status.startsWith('Closed'))
-  const pipelineValue = openLeads.reduce((sum, l) => sum + (l.acv || 0), 0)
-
-  const valueByStage = LEAD_STATUSES.map((status) => ({
+  const countByStatus = LEAD_STATUSES.map((status) => ({
     status,
-    value: leads.filter((l) => l.status === status).reduce((sum, l) => sum + (l.acv || 0), 0),
     count: leads.filter((l) => l.status === status).length,
-  }))
-
-  const countByType = leadTypes.map((t) => ({
-    type: t.name,
-    count: leads.filter((l) => l.lead_type_id === t.id).length,
   }))
 
   const overdueFollowups = followups.filter((f) => !f.done && new Date(f.due_date) < new Date())
 
-  const myProjects = currentUser.role === 'Representative' ? projects.filter((p) => p.assigned_to === currentUser.id) : projects
-  const myTasks = myProjects
-    .filter((p) => p.status !== 'Completed' && p.status !== 'Cancelled')
-    .map((p) => ({ ...p, progress: projectProgress(p.id) }))
+  const activeLeads = leads
+    .filter((l) => l.status === 'In Progress' || l.status === 'On Hold')
+    .map((l) => ({ ...l, progress: leadProgress(l.id) }))
 
   return {
-    pipelineValue,
-    openLeadCount: openLeads.length,
-    valueByStage,
-    countByType,
+    totalLeads: leads.length,
+    activeLeadCount: activeLeads.length,
+    countByStatus,
     overdueFollowups,
-    myTasks,
-    wonThisPeriod: leads.filter((l) => l.status === 'Closed Won'),
-    lostThisPeriod: leads.filter((l) => l.status === 'Closed Lost'),
+    activeLeads,
+    completedCount: leads.filter((l) => l.status === 'Completed').length,
+    droppedCount: leads.filter((l) => l.status === 'Dropped').length,
   }
 }

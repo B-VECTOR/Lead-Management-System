@@ -7,14 +7,17 @@ import App from './App.jsx'
 import { AuthProvider } from '@/context/AuthContext'
 import { queryClient } from '@/lib/queryClient'
 import { Toaster } from '@/components/ui/sonner'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <App />
-          <Toaster position="top-right" />
+          <TooltipProvider delayDuration={200}>
+            <App />
+            <Toaster position="top-right" />
+          </TooltipProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

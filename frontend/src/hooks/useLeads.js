@@ -41,7 +41,7 @@ export function useUpdateLeadStatus() {
   const qc = useQueryClient()
   const { user } = useAuth()
   return useMutation({
-    mutationFn: ({ id, status, extra }) => leadsApi.updateLeadStatus(id, status, extra, user),
+    mutationFn: ({ id, status }) => leadsApi.updateLeadStatus(id, status, user),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['lead', id] })
@@ -60,6 +60,20 @@ export function useAssignLeadOwner() {
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['lead', id] })
       qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+  })
+}
+
+export function useAssignLeadRep() {
+  const qc = useQueryClient()
+  const { user } = useAuth()
+  return useMutation({
+    mutationFn: ({ id, assignedTo }) => leadsApi.assignLeadRep(id, assignedTo, user),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: ['leads'] })
+      qc.invalidateQueries({ queryKey: ['lead', id] })
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
     },
   })
 }
