@@ -76,7 +76,7 @@ export default function LeadDetail() {
   const progress = leadProgress(id)
 
   function handleStatusChange(status) {
-    if (status === lead.status) return
+    if (!status || status === lead.status) return
     updateStatus.mutate({ id, status }, { onSuccess: () => toast.success(`Status updated to ${status}`) })
   }
 
@@ -289,7 +289,7 @@ export default function LeadDetail() {
       <Dialog open={reassignOwnerOpen} onOpenChange={setReassignOwnerOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Reassign lead owner</DialogTitle></DialogHeader>
-          <Select value={newOwner} onValueChange={setNewOwner}>
+          <Select value={newOwner} onValueChange={(v) => v && setNewOwner(v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>{managers.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}</SelectContent>
           </Select>
@@ -303,7 +303,7 @@ export default function LeadDetail() {
       <Dialog open={reassignRepOpen} onOpenChange={setReassignRepOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>{lead.assigned_to ? 'Reassign representative' : 'Assign representative'}</DialogTitle></DialogHeader>
-          <Select value={newRep} onValueChange={setNewRep}>
+          <Select value={newRep} onValueChange={(v) => v && setNewRep(v)}>
             <SelectTrigger><SelectValue placeholder="Select a rep" /></SelectTrigger>
             <SelectContent>{reps.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}</SelectContent>
           </Select>

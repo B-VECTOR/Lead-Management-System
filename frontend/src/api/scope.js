@@ -23,8 +23,8 @@ export function canViewLead(user, lead) {
 }
 
 export const PERMISSIONS = {
-  createLead: (user) => user.role === 'Admin' || user.role === 'Manager',
-  editLead: (user, lead) => user.role === 'Admin' || (user.role === 'Manager' && lead.owner_id === user.id),
+  createLead: (user) => user.role === 'Admin',
+  editLead: (user, lead) => user.role === 'Admin',
   reassignLeadOwner: (user) => user.role === 'Admin',
   archiveLead: (user) => user.role === 'Admin',
   deleteAttachment: (user) => user.role === 'Admin',
