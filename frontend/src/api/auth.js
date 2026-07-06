@@ -17,7 +17,7 @@ export async function getUsers() {
 export async function createUser(data) {
   return insert('users', {
     id: genId('u'), name: data.name, email: data.email, role: data.role,
-    belt: data.belt, manager_id: data.manager_id || null, active: true,
+    manager_id: data.manager_id || null, active: true,
   })
 }
 

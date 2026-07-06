@@ -3,7 +3,9 @@ import { cn } from '@/lib/utils'
 
 // Horizontal step indicator for the lead's task/steps (§7.1). Clicking a step
 // switches which one's checklist is shown below — only the active step's
-// items render at a time instead of stacking every step's checklist.
+// items render at a time instead of stacking every step's checklist. Every
+// step is always viewable/clickable; whether it can be *edited* is a
+// separate, interaction-level gate handled by LeadTaskTab.
 export function TaskStepper({ tasks, activeId, onSelect }) {
   return (
     <div className="flex items-center overflow-x-auto pb-1">

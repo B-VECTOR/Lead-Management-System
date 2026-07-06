@@ -7,7 +7,6 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Sidebar } from './Sidebar'
 import { NotificationBell } from './NotificationBell'
 import { RoleSwitcher } from './RoleSwitcher'
-import { BeltBadge } from '@/components/shared/StatusBadge'
 import { useAuth } from '@/context/AuthContext'
 import { initials } from '@/lib/format'
 
@@ -47,7 +46,6 @@ export function Topbar() {
             <div className="flex flex-col gap-1">
               <span>{user?.name}</span>
               <span className="text-xs font-normal text-muted-foreground">{user?.role}</span>
-              <BeltBadge belt={user?.belt} />
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />

@@ -3,7 +3,8 @@ import { cn } from '@/lib/utils'
 
 // Vertical rail version of TaskStepper for wider screens — sits to the left
 // of the active step's checklist instead of spanning full width horizontally.
-// Every step stays clickable; the lead isn't forced through steps in order.
+// Every step is always viewable/clickable; whether it can be *edited* is a
+// separate, interaction-level gate handled by LeadTaskTab.
 export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
   return (
     <div className="flex flex-col">

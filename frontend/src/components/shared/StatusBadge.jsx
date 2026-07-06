@@ -16,18 +16,21 @@ const TASK_STATUS_STYLES = {
   Completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
 }
 
+// A single checklist item's 4-value status (§8.3) — read-only display on the
+// row itself; the only way to change it is the item's Edit dialog.
+const CHECKLIST_STATUS_STYLES = {
+  open: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  in_progress: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  done: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  na: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
+}
+const CHECKLIST_STATUS_LABELS = { open: 'Not Started', in_progress: 'In Progress', done: 'Completed', na: 'N/A' }
+
 const PRIORITY_STYLES = {
   Low: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
   Medium: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
   High: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   Urgent: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
-}
-
-const BELT_STYLES = {
-  white: 'bg-neutral-100 text-neutral-700 border border-neutral-300',
-  brown: 'bg-amber-800/10 text-amber-800 border border-amber-800/30',
-  red: 'bg-red-600/10 text-red-700 border border-red-600/30',
-  black: 'bg-neutral-900 text-white border border-neutral-900',
 }
 
 const LEAD_TYPE_STYLES = {
@@ -52,14 +55,14 @@ export function TaskStatusBadge({ status }) {
   return <Pill className={TASK_STATUS_STYLES[status] || 'bg-neutral-100 text-neutral-700'}>{status}</Pill>
 }
 
+export function ChecklistStatusBadge({ status }) {
+  return <Pill className={CHECKLIST_STATUS_STYLES[status] || 'bg-neutral-100 text-neutral-700'}>{CHECKLIST_STATUS_LABELS[status] || status}</Pill>
+}
+
 export function PriorityBadge({ priority }) {
   return <Pill className={PRIORITY_STYLES[priority] || 'bg-neutral-100 text-neutral-700'}>{priority}</Pill>
 }
 
 export function LeadTypeBadge({ type }) {
   return <Pill className={LEAD_TYPE_STYLES[type] || 'bg-neutral-100 text-neutral-700'}>{type}</Pill>
-}
-
-export function BeltBadge({ belt }) {
-  return <Pill className={cn('capitalize', BELT_STYLES[belt] || 'bg-neutral-100 text-neutral-700')}>{belt} belt</Pill>
 }

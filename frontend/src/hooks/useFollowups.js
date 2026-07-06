@@ -24,11 +24,30 @@ export function useCreateFollowup() {
   })
 }
 
-export function useUpdateFollowup() {
+export function useFollowupUpdates(followupId) {
+  return useQuery({
+    queryKey: ['followup-updates', followupId],
+    queryFn: () => followupsApi.listFollowupUpdates(followupId),
+    enabled: !!followupId,
+  })
+}
+
+export function useAddFollowupUpdate(followupId) {
   const qc = useQueryClient()
+  const { user } = useAuth()
   return useMutation({
-    mutationFn: ({ id, patch }) => followupsApi.updateFollowup(id, patch),
+    mutationFn: (comment) => followupsApi.addFollowupUpdate(followupId, comment, user),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['followup-updates', followupId] }),
+  })
+}
+
+export function useCloseFollowup(followupId) {
+  const qc = useQueryClient()
+  const { user } = useAuth()
+  return useMutation({
+    mutationFn: (comment) => followupsApi.closeFollowup(followupId, comment, user),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['followup-updates', followupId] })
       qc.invalidateQueries({ queryKey: ['followups'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
     },

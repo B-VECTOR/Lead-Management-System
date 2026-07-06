@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CompanyCombobox } from '@/components/leads/CompanyCombobox'
@@ -14,16 +13,15 @@ import { useUsers } from '@/hooks/useUsers'
 import { useCreateLead, useLead, useUpdateLead } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { PRODUCT_MODULES, PRIORITIES, DOMAINS } from '@/mocks/seed'
+import { INDUSTRIES, PRIORITIES, DOMAINS, DIVISIONS } from '@/mocks/seed'
 import { toast } from 'sonner'
 
-const COMPANY_INDUSTRIES = ['Retail', 'Healthcare', 'Finance', 'Logistics', 'Education', 'Manufacturing', 'Government', 'SaaS/Tech', 'Other']
 const UNASSIGNED = '__unassigned__'
 
 const emptyForm = {
-  name: '', company_id: '', lead_type_id: '', industry: '', domain: '',
-  product_modules: [], conversion_reminder: 'none', priority: 'Medium', owner_id: '', source_detail: '', tags: '',
-  assigned_to: '', start_date: '', target_date: '',
+  name: '', company_id: '', lead_type_id: '', industry: '', domain: '', division: '',
+  scope: '', conversion_reminder: 'none', priority: 'Medium', source_detail: '', tags: '',
+  owner_id: '', assigned_to: '', start_date: '', target_date: '',
   description: '', internal_notes: '',
 }
 
@@ -41,9 +39,10 @@ export default function LeadForm() {
   const updateLead = useUpdateLead()
   const createCompany = useCreateCompany()
 
-  const managers = useMemo(() => users.filter((u) => u.role === 'Manager' || u.role === 'Admin'), [users])
   const reps = useMemo(() => users.filter((u) => u.role === 'Representative'), [users])
+  const managers = useMemo(() => users.filter((u) => u.role === 'Manager'), [users])
   const bdType = useMemo(() => leadTypes.find((t) => t.name === 'BD'), [leadTypes])
+  const isAdmin = user.role === 'Admin'
 
   const [form, setForm] = useState(emptyForm)
 
@@ -64,18 +63,21 @@ export default function LeadForm() {
         name: existingLead.name || '',
         company_id: existingLead.company_id,
         lead_type_id: existingLead.lead_type_id, industry: existingLead.industry, domain: existingLead.domain || '',
-        product_modules: existingLead.product_modules || [], conversion_reminder: existingLead.conversion_reminder || 'none',
-        priority: existingLead.priority, owner_id: existingLead.owner_id,
+        division: existingLead.division || '', scope: existingLead.scope || '', conversion_reminder: existingLead.conversion_reminder || 'none',
+        priority: existingLead.priority,
         source_detail: existingLead.source_detail || '', tags: (existingLead.tags || []).join(', '),
+        owner_id: existingLead.owner_id || '',
         assigned_to: existingLead.assigned_to || '',
         start_date: existingLead.start_date ? existingLead.start_date.slice(0, 10) : '',
         target_date: existingLead.target_date ? existingLead.target_date.slice(0, 10) : '',
         description: existingLead.description || '', internal_notes: existingLead.internal_notes || '',
       })
     } else if (!isEdit) {
-      setForm((f) => ({ ...f, owner_id: user.role === 'Manager' ? user.id : f.owner_id, lead_type_id: leadTypes[0]?.id || '' }))
+      // Admin must pick which Manager owns the lead; a Manager always owns
+      // what it creates, same as before (§21.21) — no picker shown for them.
+      setForm((f) => ({ ...f, lead_type_id: leadTypes[0]?.id || '', owner_id: isAdmin ? '' : user.id }))
     }
-  }, [isEdit, existingLead, leadTypes, user])
+  }, [isEdit, existingLead, leadTypes, user, isAdmin])
 
   useEffect(() => {
     if (bdType && form.lead_type_id !== bdType.id && form.conversion_reminder !== 'none') {
@@ -96,13 +98,6 @@ export default function LeadForm() {
   // every handler below ignores a falsy value instead of writing it in.
   function setIfPresent(key, value) {
     if (value) set(key, value)
-  }
-
-  function toggleModule(mod) {
-    setForm((f) => ({
-      ...f,
-      product_modules: f.product_modules.includes(mod) ? f.product_modules.filter((m) => m !== mod) : [...f.product_modules, mod],
-    }))
   }
 
   async function handleSelectCompany(company) {
@@ -141,7 +136,7 @@ export default function LeadForm() {
   }
 
   const saving = createLead.isPending || updateLead.isPending
-  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && form.owner_id
+  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && (!isAdmin || isEdit || form.owner_id)
 
   if (!isEdit && !PERMISSIONS.createLead(user)) return null
   if (isEdit && existingLead && !PERMISSIONS.editLead(user, existingLead)) return null
@@ -203,7 +198,7 @@ export default function LeadForm() {
             <Select value={form.industry} onValueChange={(v) => setIfPresent('industry', v)}>
               <SelectTrigger className="w-full"><SelectValue placeholder="Select industry" /></SelectTrigger>
               <SelectContent>
-                {COMPANY_INDUSTRIES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
+                {INDUSTRIES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -218,16 +213,19 @@ export default function LeadForm() {
             </Select>
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <Label>Division</Label>
+            <Select value={form.division} onValueChange={(v) => setIfPresent('division', v)}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select division" /></SelectTrigger>
+              <SelectContent>
+                {DIVISIONS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="flex flex-col gap-1.5 sm:col-span-2">
-            <Label>Product modules in scope</Label>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {PRODUCT_MODULES.map((mod) => (
-                <label key={mod} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={form.product_modules.includes(mod)} onCheckedChange={() => toggleModule(mod)} />
-                  {mod}
-                </label>
-              ))}
-            </div>
+            <Label>Scope</Label>
+            <Textarea rows={2} value={form.scope} onChange={(e) => set('scope', e.target.value)} placeholder="Describe what's in scope for this engagement…" />
           </div>
         </CardContent>
       </Card>
@@ -235,14 +233,24 @@ export default function LeadForm() {
       <Card>
         <CardHeader><CardTitle className="text-base">Ownership & assignment</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label>Owner (Manager) *</Label>
-            <Select value={form.owner_id} onValueChange={(v) => setIfPresent('owner_id', v)}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select owner" /></SelectTrigger>
-              <SelectContent>
-                {managers.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label>Owner{isAdmin && !isEdit ? ' (Manager) *' : ''}</Label>
+            {isAdmin && !isEdit ? (
+              <>
+                <Select value={form.owner_id} onValueChange={(v) => setIfPresent('owner_id', v)}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Select a manager" /></SelectTrigger>
+                  <SelectContent>
+                    {managers.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">The Manager who will run this lead day-to-day. They can assign a rep themselves, or you can pick one below now.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium">{isEdit ? (users.find((u) => u.id === form.owner_id)?.name || '—') : `${user.name} (you)`}</p>
+                <p className="text-xs text-muted-foreground">{isEdit ? "Change the owner from the lead's Detail page (Reassign owner)." : "The lead's owner is always whoever creates it."}</p>
+              </>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Assigned to (Representative)</Label>

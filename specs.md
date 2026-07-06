@@ -1,6 +1,6 @@
 # Lead Management System — Product Specification
 
-> **Status:** Draft v0.5 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment, lead create/edit restricted to Admin)
+> **Status:** Draft v0.5 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment, owner-scoped Admin + Manager lead create/edit, BD Admin read-only oversight role, per-lead Follow Up tab — §21.21)
 > **Product type:** Internal delivery/lead management tool for Vector Consulting Group. Phase 1 of a planned multi-phase internal platform (see §1.4).
 > **Purpose:** Single source of truth describing every part of the system, structured so each section can be handed to Claude in VSCode as a build prompt. This document is written to stand alone — a fresh session with no prior chat history should be able to read it and understand exactly what's built and why.
 > **Implementation note:** See §21 for the full changelog of what's actually been built so far and where it diverges from earlier drafts.
@@ -53,33 +53,37 @@ The company uses an internal **belt hierarchy** (low → high): **White → Brow
 
 | Role | Typical belt | Responsibility |
 |---|---|---|
-| **Admin** | Black | Top of hierarchy; owns the system and config |
-| **Manager** | Red/Black | Owns leads; leads a team of reps; *cannot* create/edit leads directly (Admin-only, §21.20) |
+| **Admin** | Black | A higher-authority lead owner — same shape as Manager below, just a different seniority tier; *owner-scoped*, not global (§21.21) |
+| **Manager** | Red/Black | Owns leads; leads a team of reps; creates/edits the leads it owns (§21.21 restores this) |
 | **Representative** (consultant) | Red | Executes assigned work — updates checklists, uploads files, completes tasks |
+| **BD Admin** | Black | Global, strictly **read-only** oversight role (§21.21) — sees every lead across the company but cannot create, edit, assign, update checklists, or manage follow-ups on any of them |
 
-Reps belong to a manager (`manager_id`). Managers own leads. Reps are assigned leads by their manager, either at creation or afterward.
+Reps belong to a manager (`manager_id`). Both Admins and Managers own the leads they create (`owner_id` = creator, always — there is no owner picker, §21.21). Reps are assigned leads by their lead's owner, either at creation or afterward.
 
 ### 2.1 Permissions matrix (confirmed)
 
-| Action | Admin | Manager | Representative |
-|---|:--:|:--:|:--:|
-| See dashboard | ✅ global | ✅ own leads | ✅ own leads |
-| Create lead / company | ✅ | ❌ *(revoked — §21.20)* | ❌ |
-| View leads | **all** | **own only** | **only leads assigned to them** |
-| Edit lead details | any | ❌ *(revoked — §21.20)* | ❌ |
-| Reassign lead owner (manager) | ✅ | ❌ | ❌ |
-| Assign / reassign a lead's representative | ✅ | ✅ (own leads) | ❌ |
-| Add / configure checklist items on own leads | ✅ | ✅ | ❌ |
-| Update checklist items / notes / upload files | ✅ | ✅ | ✅ (assigned) |
-| Create / update additional tasks | ✅ | ✅ | ✅ (own) |
-| Delete an attachment | ✅ | ❌ | ❌ |
-| Delete / archive lead | ✅ | ❌ | ❌ |
-| Configure lead types & checklist **templates** (global) | ✅ | ❌ | ❌ *(no admin UI yet — §21.9)* |
-| Manage users | ✅ | ❌ | ❌ *(no admin UI yet — §21.9)* |
+> **[CHANGED — §21.21]** Admin is no longer a global role for lead visibility/mutation — it's owner-scoped exactly like Manager (each only sees/edits leads it created). The **BD Admin** row is new: global visibility, but every mutation column is ❌.
+
+| Action | Admin | Manager | Representative | BD Admin |
+|---|:--:|:--:|:--:|:--:|
+| See dashboard | ✅ own leads | ✅ own leads | ✅ own leads | ✅ global (read-only) |
+| Create lead / company | ✅ (becomes owner) | ✅ (becomes owner) | ❌ | ❌ |
+| View leads | **own only** | **own only** | **only leads assigned to them** | **all, view-only** |
+| Edit lead details | ✅ own leads | ✅ own leads | ❌ | ❌ |
+| Reassign lead owner (manager) | ✅ own leads | ✅ own leads | ❌ | ❌ |
+| Assign / reassign a lead's representative | ✅ (own leads) | ✅ (own leads) | ❌ | ❌ |
+| Add / configure checklist items on own leads | ✅ | ✅ | ❌ | ❌ |
+| Update checklist items / notes / upload files | ✅ (own leads) | ✅ (own leads) | ✅ (assigned) | ❌ |
+| Create / update follow-ups (formerly additional tasks) | ✅ | ✅ | ✅ (own) | ❌ |
+| See first/last follow-up comment preview on the leads table | ❌ | ❌ | ❌ | ✅ (only role that sees this column) |
+| Delete an attachment | ✅ own leads | ✅ own leads | ❌ | ❌ |
+| Delete / archive lead | ✅ own leads | ✅ own leads | ❌ | ❌ |
+| Configure lead types & checklist **templates** (global) | ✅ | ❌ | ❌ | ❌ *(no admin UI yet — §21.9)* |
+| Manage users | ✅ | ❌ | ❌ | ❌ *(no admin UI yet — §21.9)* |
 
 **Priority defaults to Medium** when unset (any role that can create a lead). *(Changed from Low — see §21.16.)*
 
-**Note on lead create/edit (§21.20):** Managers used to be able to create leads and edit the leads they own. This was **revoked** — `createLead` and `editLead` are now **Admin-only**, everywhere the checks are used: the "New lead" button (Leads list), the New/Edit Lead form's own route guard, and the Lead Detail page's status dropdown + "Edit" button (status change counts as an edit). A Manager still owns leads (`owner_id`) and retains **every other** own-lead permission below — assigning/reassigning the rep, configuring checklist items, creating additional tasks — only the create/edit-the-record-itself actions moved to Admin.
+**Note on lead create/edit (§21.21, supersedes §21.20):** §21.20 had made `createLead`/`editLead` Admin-only. This is **reversed**: both Admin and Manager can create a lead, and each becomes its owner (`owner_id` = creator — there's no owner picker on the form anymore). Editing, status changes, archiving, reassigning the owner, deleting an attachment, assigning/reassigning the rep, and configuring checklist items are all scoped to **the lead's owner** (`lead.owner_id === user.id`, checked in `frontend/src/api/scope.js`), regardless of whether that owner is an Admin or a Manager — the two roles are now symmetric in scope, differing only in seniority/typical belt, not in permissions. `configureTemplatesGlobal` and `manageUsers` remain Admin-only global-config actions, unrelated to lead ownership.
 
 **Note on the assign-rep permission:** the *same* `assignTasks` permission (Admin, or the owning Manager) that lets someone reassign a rep also lets them make the **first** assignment on a lead that was created without one — see §5.2 and §21.15. No separate permission was needed for "assign later."
 
@@ -156,7 +160,7 @@ Screens show the **project name** as the primary label, with the Lead ID and com
 | Field | Type | Notes |
 |---|---|---|
 | Status ✱ | enum | In Progress / On Hold / Dropped / Completed — see §8, default **In Progress** |
-| Owner (Manager) ✱ | user ref | defaults to creator if manager; required |
+| Owner ✱ | user ref | **always the creator (§21.21)** — no owner picker on the Lead form; an Admin or Manager creating a lead automatically becomes its owner. Changeable afterward only via the "Reassign owner" action on Lead Detail. |
 | Assigned to (Representative) | user ref, **nullable** | **Changed (§21.15) — no longer required at creation.** The New/Edit Lead form offers an explicit "Unassigned — assign later" option. If left unassigned, the lead's **owning Manager** (or any Admin) can assign a rep afterward from the Lead Detail page — the button there reads "Assign rep" when nobody's assigned yet, or "Reassign rep" once someone is. This reuses the existing `assignTasks` permission; no new permission was added. |
 | Conversion reminder | enum, **nullable** (`none` / `mining` / `extension`) | **New, implemented (§21.17).** Only selectable when Lead type = BD; auto-resets to `none` if the type is changed away from BD. See §8.2 for what it actually does. |
 | Priority | enum | Low / **Medium (default — §21.16)** / High / Urgent |
@@ -292,7 +296,7 @@ Each checklist item's status is one of **4** values, shown as a `Select`:
 | `done` | Completed |
 | `na` | N/A |
 
-`done` is disabled in the dropdown until a required file (§7.1 `requires_file`) has been attached. A step's own status (§8.1) is recomputed from its items: all `done`/`na` → Completed; any item not `open` → In progress; otherwise Not started.
+`done` is disabled in the dropdown until a required file (§7.1 `requires_file`) has been attached. A step's own status (§8.1) is recomputed from its items **and, as of §21.21, its Additional details fields (§7.1) too**: Completed requires every item `done`/`na` **and** every field non-empty; if either any item isn't `open` or any field has a value, it's In progress; otherwise Not started. This makes the per-step gate in §13 stricter than a pure checklist check.
 
 ---
 
@@ -335,7 +339,7 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 ---
 
 ## 11. Activity timeline
-`activities (id, lead_id, type[Call|Email|Meeting|Note|StatusChange|ChecklistUpdate|Assignment], summary, body, created_by, created_at)`. Auto-entries for status/checklist/assignment changes; manual for calls/notes. Shown newest-first inside the lead's **Activity** tab (§13).
+`activities (id, lead_id, type[Call|Email|Meeting|Note|StatusChange|ChecklistUpdate|Assignment], summary, body, created_by, created_at)`. **Auto-entries only (§21.21)** — status/checklist/assignment/creation changes; the manual call/note entry form was removed from the Activity tab. Shown newest-first inside the lead's **Activity** tab (§13).
 
 ---
 
@@ -382,11 +386,12 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
    - **Lead** → the leads list/table itself (`/leads`).
    - **Task** → a **cross-lead** list of checklist items assigned to/visible to the current user (`/leads/tasks`).
    - **Additional Task** → a **cross-lead** list of follow-ups (`/leads/additional-tasks`), with a "related lead" field on manual creation.
-2. **Individual Lead Detail page** (`/leads/:id`): a top overview card, then its **own, separate** 4 tabs —
+2. **Individual Lead Detail page** (`/leads/:id`): a top overview card, then its **own, separate** 5 tabs (5th added §21.21) —
    - **Task** → this one lead's stepper + checklist (§7.1, §8.3) plus the active step's "Additional details" fields (§7.1).
-   - **Activity** → the log/notes feed (§11).
+   - **Activity** → the log/notes feed (§11) — **read-only, no manual entry (§21.21)**; only auto-logged entries (status/checklist/assignment changes) appear.
    - **Files** → upload + view/download/delete (§10).
    - **Details** → Classification (industry, domain, product modules, source, tags, conversion reminder) + Description & notes. No Commercials card (§5.3 — removed).
+   - **Follow Up** *(new, §21.21)* → the same follow-up list/create/comment functionality as the cross-lead Follow ups page, scoped to this one lead — the "related lead" field is omitted entirely since the current lead is implicit and can't be changed.
 
 | Screen | Purpose | Notes |
 |---|---|---|
@@ -402,13 +407,13 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 **Task tab layout (§21.12) — mobile-responsive stepper:**
 - **Desktop (≥`md`):** a vertical step rail on the left (sticky), showing each step's number/checkmark, name, and an "n/m done" count; the active step's checklist card renders to its right, followed by its "Additional details" card below the checklist.
 - **Mobile (<`md`):** the rail collapses into a horizontal, scrollable strip above the checklist card, so nothing needs horizontal page scrolling.
-- Steps are **always clickable in any order** — the rep is never forced through them sequentially.
-- Each checklist item row shows its label, a "File required" badge if applicable, and a status `Select`; below that, two compact CTA buttons — **"Attach file"** (becomes "Files (n)" once something's attached) and **"Add note"** (becomes "Note" once saved) — each opening a small popover instead of permanently expanding the row. The note popover has its own explicit **Save**/Cancel — nothing is written until Save.
-- The step's "Additional details" card (fixed fields, §7.1) sits below the checklist card, with its own explicit **Save** button (disabled until a field's value actually changes) — no silent autosave.
+- Steps are **always clickable/viewable in any order (§21.21)** — the rep can look ahead or back freely. *Editing* a step (checking items, saving its Additional details) is a separate, stricter gate: a step only becomes editable once every earlier step is fully **Completed** — which now means both its checklist items **and** its Additional details fields (§8.3) — otherwise the step renders read-only with a "View only" note. Within the currently-editable step, items themselves are still worked in order (can't check item N before N-1).
+- Each checklist item row shows its label and a read-only status badge (§8.3) — the **only** way to change status, add a remark, or attach a file is the row's **Edit** icon button (pinned to the row's right edge); the checkbox remains as a quick shortcut for marking an item Completed. There's no separate file-attach control on the row anymore — files live inside the Edit dialog alongside status and remark, committed together on Save. A small file-count badge on the row is read-only.
+- The step's "Additional details" card (fixed fields, §7.1) sits below the checklist card, with its own explicit **Save** button (disabled until a field's value actually changes) — no silent autosave. **A step's fields now count toward its completion (§8.3, §21.21)** — the "Completed" step status is no longer purely a checklist-item computation.
 
 **Removed from phase 1 nav** (§12.2): Leads — Kanban, Companies, Reports, Settings as standalone screens.
 
-**UX:** mobile-responsive throughout; sidebar collapses to an icon-only rail (state persisted); rep view is a focused "my assigned leads" list; leads-table row shows project name + Lead ID · company · type · status · priority · assigned rep · progress ring · next follow-up.
+**UX:** mobile-responsive throughout; sidebar collapses to an icon-only rail (state persisted); rep view is a focused "my assigned leads" list; leads-table row shows (§21.21 column order) project name + Lead ID · company · type · status · priority · assigned rep · progress bar+% · *(BD Admin only: first/last follow-up comment preview)* · stage (now the **last** column). The "Next follow-up" column was dropped (low value without an obvious follow-up already on the lead) and the progress indicator changed from a small ring (illegible at table density) to a horizontal bar + % label; the ring is unchanged everywhere else (Lead Detail overview card, Dashboard).
 
 ---
 
@@ -665,6 +670,22 @@ Replaced the placeholder logo with the real Vector Consulting Group wordmark/arr
 
 ### 21.20 Lead create/edit restricted to Admin only (§2.1, §9.1, §12.1, §15)
 `PERMISSIONS.createLead` and `PERMISSIONS.editLead` (`frontend/src/api/scope.js`) changed from `Admin || Manager` / `Admin || owning Manager` to **Admin-only**. This is enforced in three places: the "New lead" button on the Leads list (`LeadsList.jsx`) is hidden for non-Admins; the New/Edit Lead form (`LeadForm.jsx`) now has a `useEffect` route guard that redirects a Manager away if they navigate to `/leads/new` or `/leads/:id/edit` directly by URL, plus a render-time `return null` fallback; and the Lead Detail page's status-change dropdown and "Edit" button are both gated on the same `canEdit` flag, so a Manager can no longer change a lead's status either, not just its other fields. Managers keep every other own-lead permission unchanged — `assignTasks` (assign/reassign rep) and `configureChecklistOnLead` were not touched. Also fixed in the same pass: Radix `Select`'s `onValueChange` can fire with an empty string during programmatic value-setting (autofill of owner/lead-type before the hidden native `<select>`'s options register); every `Select` on the Lead form now ignores falsy values (`setIfPresent` helper / inline guards) instead of writing them into form state, and the reassign-owner/reassign-rep dialogs on Lead Detail got the same guard.
+
+### 21.21 Ownership rework, BD Admin role, per-lead Follow Up tab, stricter step gating, checklist row & follow-up UI redesign, leads-table cleanup
+
+A large bundled pass reversing/extending several earlier decisions:
+
+- **Ownership & Admin scope (reverses §21.20, §2.1):** `createLead`/`editLead` are Admin-**and**-Manager again, and the created lead's `owner_id` is always the creator — the Lead form's owner picker was removed entirely. Admin's lead **visibility** changed from global to **owner-scoped**, identical to Manager (`frontend/src/api/scope.js`'s `visibleLeadIds`) — the two roles are now symmetric in everything except seniority/typical belt. Every per-lead mutation permission (`editLead`, `reassignLeadOwner`, `archiveLead`, `deleteAttachment`, `assignTasks`, `configureChecklistOnLead`) is now `isOwner(user, lead)` instead of a blanket Admin check.
+- **New `BD Admin` role:** global, read-only visibility (`visibleLeadIds` returns `null` for it, same as old Admin) with every mutation permission returning `false` — enforced for free since `'BD Admin' !== 'Admin'` everywhere else already checks the literal `'Admin'` string. Two new permissions: `viewFollowupPreview` (BD Admin only — the leads-table comment-preview column below) and `manageFollowups` (everyone except BD Admin — create/comment/close a follow-up). Seeded with one demo user (`u-devika`).
+- **Per-lead Follow Up tab (§13):** Lead Detail gained a 5th tab reusing the cross-lead follow-ups feature (`components/leads/LeadFollowUpsTab.jsx`), scoped to the current lead with no "related lead" selector — the lead is implicit. The shared `FollowupUpdateDialog` was extracted out of `pages/FollowUpsList.jsx` into `components/leads/FollowupUpdateDialog.jsx` so both places render identically.
+- **Follow-up comment thread redesign:** `listFollowupUpdates` now sorts oldest-first (was newest-first) so the thread reads top-to-bottom like a chat log; the dialog renders each comment as a chat bubble (avatar, name, timestamp, own-messages-right-aligned) instead of a plain bordered card, and auto-scrolls to the latest comment.
+- **Step completion now includes Additional details fields (§7.1, §8.3):** `recomputeTaskStatus` in `api/checklist.js` requires every checklist item done/N/A **and** every field non-empty for a step to be `Completed`; saving a field value now triggers the same recompute `updateChecklistItem` does (previously it was a no-op on step status). Applied retroactively to seed data — `makeLeadTasksAndItems` in `mocks/seed.js` backfills placeholder field values for steps whose demo `doneCounts` already implied "finished," so existing demo leads don't regress to "In progress" purely for lacking seed field data.
+- **Step navigation unlocked, editing still gated (§13):** `TaskStepper`/`TaskStepperVertical` no longer disable or lock-icon not-yet-reached steps — every step is freely viewable. `LeadTaskTab` instead gates *editing* (`canUpdate` passed to `ChecklistItemRow`/`TaskStepFields`) behind "every earlier step is fully Completed," showing a "View only" note otherwise. The old "clamp back to the frontier" effect was removed since browsing ahead is now allowed.
+- **Checklist item row redesign:** the separate file-attach popover trigger is gone — file upload moved inside the Edit dialog alongside status and remark. Edit is now an icon-only button pinned to the row's right edge (`Pencil`, ghost/icon-sm). Status is shown as a new read-only `ChecklistStatusBadge` (`components/shared/StatusBadge.jsx`) next to the label; the checkbox remains as a shortcut for marking an item Completed, but every other status transition, remark edit, and file attach goes through Edit.
+- **Activity tab is read-only:** the manual note-entry Textarea/Add button and `useLogActivity` call were removed from Lead Detail's Activity tab — only auto-logged entries (status/checklist/assignment/creation) appear.
+- **Leads table cleanup:** dropped the "Next follow-up" column; moved "Stage" to the last column; replaced the small `ProgressRing` with a new `components/shared/ProgressBar.jsx` (horizontal bar + % label) — the ring is unchanged everywhere else. Added a BD Admin-only "Comments" column sourced from a new sync helper, `getLeadCommentPreview(leadId)` in `api/followups.js`, which pools every comment across all of a lead's follow-ups and returns the earliest/latest.
+- Mock DB version bumped to `lms-mock-db-v13` (role/status-semantics changes require a reseed).
+- **Known terminology drift, not addressed in this pass:** the domain model (§3, §9.3) and some of §13 still say "Additional Task" in places, but the actual UI/code (`pages/FollowUpsList.jsx`, the "Follow ups" tab, this section's new "Follow Up" tab) already calls the concept "Follow up(s)" — a naming cleanup predating this change. Treat "Additional Task" and "Follow-up" as the same entity until a documentation pass reconciles the term throughout.
 
 ---
 *End of draft v0.5. Supply the real Mining/Extension workflows (§7.4) and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*

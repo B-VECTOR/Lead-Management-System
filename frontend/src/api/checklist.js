@@ -1,6 +1,5 @@
 import { getAll, getById, update, peek } from '../mocks/db'
 import { logActivity } from './activities'
-import { visibleLeadIds } from './scope'
 import { CHECKLIST_ITEM_STATUSES } from '../mocks/seed'
 
 function statusLabel(value) {
@@ -18,13 +17,30 @@ export async function getLeadChecklist(leadId) {
   return items.filter((i) => taskIds.has(i.lead_task_id))
 }
 
-function recomputeTaskStatus(items, taskId) {
-  const taskItems = items.filter((i) => i.lead_task_id === taskId)
-  if (!taskItems.length) return 'Not started'
-  const doneCount = taskItems.filter((i) => i.state === 'done' || i.state === 'na').length
-  if (doneCount === taskItems.length) return 'Completed'
-  const anyStarted = taskItems.some((i) => i.state !== 'open')
-  return anyStarted ? 'In progress' : 'Not started'
+// A step's "Additional details" fields (§7.1) now count toward its
+// completion alongside its checklist items — a step isn't Completed until
+// every item is done/N/A *and* every field has a non-empty value. Empty
+// collections trivially satisfy their own half of the check, so this works
+// uniformly for items-only, fields-only, and mixed steps.
+function recomputeTaskStatus(items, fields) {
+  const itemsDone = items.length === 0 || items.every((i) => i.state === 'done' || i.state === 'na')
+  const anyItemStarted = items.some((i) => i.state !== 'open')
+  const fieldsFilled = fields.length === 0 || fields.every((f) => f.field_value !== '' && f.field_value != null)
+  const anyFieldFilled = fields.some((f) => f.field_value !== '' && f.field_value != null)
+  if (itemsDone && fieldsFilled) return 'Completed'
+  return (anyItemStarted || anyFieldFilled) ? 'In progress' : 'Not started'
+}
+
+async function recomputeAndSaveTaskStatus(taskId) {
+  const task = await getById('leadTasks', taskId)
+  const [allItems, allFields] = await Promise.all([getAll('leadChecklistItems'), getAll('leadTaskFields')])
+  const taskItems = allItems.filter((i) => i.lead_task_id === taskId)
+  const taskFields = allFields.filter((f) => f.lead_task_id === taskId)
+  const newStatus = recomputeTaskStatus(taskItems, taskFields)
+  if (newStatus !== task.status) {
+    await update('leadTasks', taskId, { status: newStatus })
+  }
+  return task
 }
 
 export async function updateChecklistItem(id, patch, currentUser) {
@@ -39,57 +55,13 @@ export async function updateChecklistItem(id, patch, currentUser) {
   }
   const updated = await update('leadChecklistItems', id, nextPatch)
 
-  const task = await getById('leadTasks', item.lead_task_id)
-  const allItems = await getAll('leadChecklistItems')
-  const newTaskStatus = recomputeTaskStatus(allItems, task.id)
-  if (newTaskStatus !== task.status) {
-    await update('leadTasks', task.id, { status: newTaskStatus })
-  }
+  const task = await recomputeAndSaveTaskStatus(item.lead_task_id)
 
   await logActivity({
     lead_id: task.lead_id, type: 'ChecklistUpdate',
     summary: `"${item.label}" set to ${statusLabel(patch.state)}`, created_by: currentUser.id,
   })
   return updated
-}
-
-// A checklist item's free-text note — separate from its status, so jotting a
-// note doesn't touch task-status recomputation or the activity feed.
-export async function updateChecklistItemNotes(id, notes) {
-  return update('leadChecklistItems', id, { notes })
-}
-
-// Cross-lead task list (§13 "Task" tab, next to the Leads list) — one row per
-// checklist item across every lead visible to the current user, joined with
-// its lead/task context. filters: { assignedTo, status['open'|'done'|'all'], q }
-export async function listAllChecklistItems(currentUser, filters = {}) {
-  const [leads, tasks, items] = await Promise.all([getAll('leads'), getAll('leadTasks'), getAll('leadChecklistItems')])
-  const leadIds = visibleLeadIds(currentUser)
-  let visibleLeads = leadIds === null ? leads : leads.filter((l) => leadIds.has(l.id))
-  visibleLeads = visibleLeads.filter((l) => !l.archived)
-  const leadById = Object.fromEntries(visibleLeads.map((l) => [l.id, l]))
-  const taskById = Object.fromEntries(tasks.filter((t) => leadById[t.lead_id]).map((t) => [t.id, t]))
-
-  let rows = items
-    .filter((i) => taskById[i.lead_task_id])
-    .map((i) => {
-      const task = taskById[i.lead_task_id]
-      const lead = leadById[task.lead_id]
-      return {
-        id: i.id, state: i.state, label: i.label, requires_file: i.requires_file,
-        done_at: i.done_at, task_id: task.id, task_name: task.name,
-        lead_id: lead.id, lead_code: lead.code, company_id: lead.company_id, assigned_to: lead.assigned_to,
-      }
-    })
-
-  if (filters.assignedTo) rows = rows.filter((r) => r.assigned_to === filters.assignedTo)
-  if (filters.status === 'open') rows = rows.filter((r) => r.state === 'open' || r.state === 'in_progress')
-  else if (filters.status === 'done') rows = rows.filter((r) => r.state === 'done' || r.state === 'na')
-  if (filters.q) {
-    const q = filters.q.toLowerCase()
-    rows = rows.filter((r) => r.label.toLowerCase().includes(q) || r.lead_code.toLowerCase().includes(q))
-  }
-  return rows
 }
 
 // Fixed additional input fields for a step (§7.1 Task tab) — not a checklist,
@@ -100,7 +72,10 @@ export async function getLeadTaskFields(taskId) {
 }
 
 export async function updateLeadTaskFieldValue(fieldId, value) {
-  return update('leadTaskFields', fieldId, { field_value: value })
+  const field = await getById('leadTaskFields', fieldId)
+  const updated = await update('leadTaskFields', fieldId, { field_value: value })
+  await recomputeAndSaveTaskStatus(field.lead_task_id)
+  return updated
 }
 
 // Synchronous helper (no simulated latency) for progress-ring display in list
@@ -112,4 +87,22 @@ export function leadProgress(leadId) {
   if (!items.length) return 0
   const done = items.filter((i) => i.state === 'done' || i.state === 'na').length
   return Math.round((done / items.length) * 100)
+}
+
+const STUCK_THRESHOLD_MS = 14 * 86400000
+
+// Synchronous helper for the Leads list's "Stage" column: which step a lead
+// is currently on, and whether it's gone stale ("stuck" — still In Progress
+// with no activity in 14+ days).
+export function getLeadStageInfo(leadId) {
+  const tasks = peek('leadTasks').filter((t) => t.lead_id === leadId).sort((a, b) => a.order - b.order)
+  if (!tasks.length) return { stepName: '—', isStuck: false }
+  const current = tasks.find((t) => t.status !== 'Completed') || tasks[tasks.length - 1]
+  const lead = peek('leads').find((l) => l.id === leadId)
+  const isStuck = !!(
+    lead?.status === 'In Progress' &&
+    lead.last_activity_at &&
+    Date.now() - new Date(lead.last_activity_at).getTime() > STUCK_THRESHOLD_MS
+  )
+  return { stepName: current.name, isStuck }
 }

@@ -11,11 +11,11 @@ import { Logo } from './Logo'
 // functionality still exist, just accessed from inside a lead rather than as
 // their own nav destinations. Reports/Settings return in a later phase.
 const NAV_ITEMS = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/leads', label: 'Leads', icon: Users2, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Admin', 'Manager', 'Representative'] },
-  { to: '/notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'Manager', 'Representative'] },
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
+  { to: '/leads', label: 'Leads', icon: Users2, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
+  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
+  { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
+  { to: '/notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
 ]
 
 function NavItem({ to, label, icon: Icon, collapsed }) {

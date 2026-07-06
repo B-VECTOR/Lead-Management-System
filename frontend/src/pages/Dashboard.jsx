@@ -43,9 +43,10 @@ export default function Dashboard() {
           {user.role === 'Representative' ? 'My work' : 'Dashboard'}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {user.role === 'Admin' && 'Lead health across the whole company.'}
+          {user.role === 'Admin' && 'Your leads and their follow-ups.'}
           {user.role === 'Manager' && 'Your leads and team follow-ups.'}
           {user.role === 'Representative' && 'Everything currently assigned to you.'}
+          {user.role === 'BD Admin' && 'Lead health across the whole company — view only.'}
         </p>
       </div>
 

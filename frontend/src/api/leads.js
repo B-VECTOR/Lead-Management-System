@@ -75,7 +75,8 @@ export async function createLead(data, currentUser) {
     lead_type_id: data.lead_type_id,
     industry: data.industry,
     domain: data.domain || '',
-    product_modules: data.product_modules || [],
+    division: data.division || '',
+    scope: data.scope || '',
     conversion_reminder: normalizeConversionReminder(data.conversion_reminder),
     status: 'In Progress',
     priority: data.priority || 'Medium',
@@ -113,7 +114,8 @@ export async function createLead(data, currentUser) {
     const fields = templateFields.filter((f) => f.task_step_id === step.id).sort((a, b) => a.order - b.order)
     for (const tmpl of fields) {
       await insert('leadTaskFields', {
-        id: genId('ltf'), lead_task_id: task.id, field_name: tmpl.field_name, field_value: '', order: tmpl.order,
+        id: genId('ltf'), lead_task_id: task.id, field_name: tmpl.field_name,
+        field_type: tmpl.field_type || 'text', field_value: '', order: tmpl.order,
       })
     }
   }

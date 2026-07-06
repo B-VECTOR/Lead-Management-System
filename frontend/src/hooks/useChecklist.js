@@ -20,27 +20,9 @@ export function useUpdateChecklistItem(leadId) {
       qc.invalidateQueries({ queryKey: ['lead-tasks', leadId] })
       qc.invalidateQueries({ queryKey: ['lead', leadId] })
       qc.invalidateQueries({ queryKey: ['leads'] })
-      qc.invalidateQueries({ queryKey: ['all-checklist-items'] })
       qc.invalidateQueries({ queryKey: ['activities'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
     },
-  })
-}
-
-export function useUpdateChecklistItemNotes(leadId) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, notes }) => checklistApi.updateChecklistItemNotes(id, notes),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['lead-checklist', leadId] }),
-  })
-}
-
-export function useAllChecklistItems(filters = {}) {
-  const { user } = useAuth()
-  return useQuery({
-    queryKey: ['all-checklist-items', user?.id, filters],
-    queryFn: () => checklistApi.listAllChecklistItems(user, filters),
-    enabled: !!user,
   })
 }
 
@@ -52,10 +34,16 @@ export function useLeadTaskFields(taskId) {
   })
 }
 
-export function useUpdateLeadTaskFieldValue(taskId) {
+export function useUpdateLeadTaskFieldValue(taskId, leadId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ fieldId, value }) => checklistApi.updateLeadTaskFieldValue(fieldId, value),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['lead-task-fields', taskId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead-task-fields', taskId] })
+      qc.invalidateQueries({ queryKey: ['lead-tasks', leadId] })
+      qc.invalidateQueries({ queryKey: ['lead-checklist', leadId] })
+      qc.invalidateQueries({ queryKey: ['lead', leadId] })
+      qc.invalidateQueries({ queryKey: ['leads'] })
+    },
   })
 }

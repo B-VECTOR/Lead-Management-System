@@ -8,17 +8,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { LeadStatusBadge, PriorityBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
 import { UserChip } from '@/components/shared/UserChip'
 import { ProgressRing } from '@/components/shared/ProgressRing'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
+import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { useLead, useUpdateLeadStatus, useAssignLeadOwner, useAssignLeadRep, useArchiveLead } from '@/hooks/useLeads'
 import { useCompany } from '@/hooks/useCompanies'
 import { useLeadTypes } from '@/hooks/useLeadTypes'
-import { useActivitiesForLead, useLogActivity } from '@/hooks/useActivities'
+import { useActivitiesForLead } from '@/hooks/useActivities'
 import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hooks/useAttachments'
 import { useUsers } from '@/hooks/useUsers'
 import { useAuth } from '@/context/AuthContext'
@@ -52,7 +52,6 @@ export default function LeadDetail() {
   const assignOwner = useAssignLeadOwner()
   const assignRep = useAssignLeadRep()
   const archiveLead = useArchiveLead()
-  const logActivity = useLogActivity(id)
   const uploadAttachment = useUploadAttachment('lead', id)
   const deleteAttachment = useDeleteAttachment('lead', id)
 
@@ -61,7 +60,6 @@ export default function LeadDetail() {
   const reps = useMemo(() => users.filter((u) => u.role === 'Representative'), [users])
   const leadTypeName = useMemo(() => leadTypes.find((t) => t.id === lead?.lead_type_id)?.name, [leadTypes, lead])
 
-  const [noteText, setNoteText] = useState('')
   const [fileTitle, setFileTitle] = useState('')
   const [reassignOwnerOpen, setReassignOwnerOpen] = useState(false)
   const [newOwner, setNewOwner] = useState('')
@@ -78,12 +76,6 @@ export default function LeadDetail() {
   function handleStatusChange(status) {
     if (!status || status === lead.status) return
     updateStatus.mutate({ id, status }, { onSuccess: () => toast.success(`Status updated to ${status}`) })
-  }
-
-  async function handleAddNote() {
-    if (!noteText.trim()) return
-    await logActivity.mutateAsync({ type: 'Note', summary: noteText.slice(0, 80), body: noteText })
-    setNoteText('')
   }
 
   async function handleFileChange(e) {
@@ -136,10 +128,10 @@ export default function LeadDetail() {
               <UsersRound className="size-4" /> {lead.assigned_to ? 'Reassign rep' : 'Assign rep'}
             </Button>
           )}
-          {PERMISSIONS.reassignLeadOwner(user) && (
+          {PERMISSIONS.reassignLeadOwner(user, lead) && (
             <Button variant="outline" onClick={() => { setNewOwner(lead.owner_id); setReassignOwnerOpen(true) }}><UserCog className="size-4" /> Reassign owner</Button>
           )}
-          {PERMISSIONS.archiveLead(user) && (
+          {PERMISSIONS.archiveLead(user, lead) && (
             <Button variant="outline" onClick={() => { archiveLead.mutate(id); toast.success('Lead archived'); navigate('/leads') }}>
               <Archive className="size-4" /> Archive
             </Button>
@@ -173,6 +165,7 @@ export default function LeadDetail() {
           <TabsTrigger value="activity">Activity</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="followup">Follow Up</TabsTrigger>
         </TabsList>
 
         <TabsContent value="task">
@@ -183,10 +176,7 @@ export default function LeadDetail() {
           <Card>
             <CardHeader><CardTitle className="text-base">Activity</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
-              <div className="flex gap-2">
-                <Textarea placeholder="Log a call, meeting, or note…" value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={2} className="flex-1" />
-                <Button onClick={handleAddNote} disabled={!noteText.trim()}>Add</Button>
-              </div>
+              <p className="text-xs text-muted-foreground">Auto-logged only — status changes, checklist updates, and assignments. No manual entries.</p>
               <div className="flex flex-col gap-2">
                 {activities.length === 0 && <p className="text-sm text-muted-foreground">No activity yet.</p>}
                 {activities.map((a) => (
@@ -239,7 +229,7 @@ export default function LeadDetail() {
                       <Button asChild variant="ghost" size="icon-sm" title="Download">
                         <a href={a.url} download={a.filename}><Download className="size-4" /></a>
                       </Button>
-                      {PERMISSIONS.deleteAttachment(user) && (
+                      {PERMISSIONS.deleteAttachment(user, lead) && (
                         <Button
                           variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" title="Delete"
                           onClick={() => handleDeleteFile(a.id)}
@@ -261,7 +251,8 @@ export default function LeadDetail() {
             <CardContent>
               <InfoRow label="Industry" value={lead.industry} />
               <InfoRow label="Domain" value={lead.domain} />
-              <InfoRow label="Product modules" value={lead.product_modules?.length ? lead.product_modules.join(', ') : '—'} />
+              <InfoRow label="Division" value={lead.division} />
+              <InfoRow label="Scope" value={lead.scope} />
               <InfoRow label="Source" value={lead.source_detail} />
               <InfoRow label="Tags" value={lead.tags?.length ? lead.tags.join(', ') : '—'} />
               <InfoRow
@@ -283,6 +274,10 @@ export default function LeadDetail() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="followup">
+          <LeadFollowUpsTab leadId={id} />
         </TabsContent>
       </Tabs>
 

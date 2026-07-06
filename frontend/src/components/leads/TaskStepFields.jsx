@@ -4,16 +4,33 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useLeadTaskFields, useUpdateLeadTaskFieldValue } from '@/hooks/useChecklist'
+
+function FieldInput({ field, value, disabled, onChange }) {
+  if (field.field_type === 'boolean') {
+    return (
+      <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
+        <SelectTrigger className="w-full"><SelectValue placeholder="Select…" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="Yes">Yes</SelectItem>
+          <SelectItem value="No">No</SelectItem>
+        </SelectContent>
+      </Select>
+    )
+  }
+  const inputType = field.field_type === 'date' ? 'date' : field.field_type === 'number' ? 'number' : 'text'
+  return <Input type={inputType} value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+}
 
 // Fixed input fields for the active step — a constant shape defined on the
 // step's template (§7.1), not a checklist. Always shown for the step
 // regardless of checklist progress; just data entry (e.g. contract value).
 // Values are edited locally and only written back on "Save" — no silent
 // autosave, so it's clear when the data has actually been submitted.
-export function TaskStepFields({ taskId, canUpdate }) {
+export function TaskStepFields({ taskId, leadId, canUpdate }) {
   const { data: fields = [] } = useLeadTaskFields(taskId)
-  const updateValue = useUpdateLeadTaskFieldValue(taskId)
+  const updateValue = useUpdateLeadTaskFieldValue(taskId, leadId)
   const [values, setValues] = useState({})
 
   const fieldsKey = useMemo(() => fields.map((f) => `${f.id}:${f.field_value}`).join('|'), [fields])
@@ -46,10 +63,11 @@ export function TaskStepFields({ taskId, canUpdate }) {
         {fields.map((f) => (
           <div key={f.id} className="flex flex-col gap-1.5">
             <Label className="text-xs">{f.field_name}</Label>
-            <Input
-              value={values[f.id] ?? ''}
+            <FieldInput
+              field={f}
+              value={values[f.id]}
               disabled={!canUpdate}
-              onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
+              onChange={(val) => setValues((v) => ({ ...v, [f.id]: val }))}
             />
           </div>
         ))}
