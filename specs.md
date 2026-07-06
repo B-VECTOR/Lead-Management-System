@@ -1,6 +1,6 @@
 # Lead Management System — Product Specification
 
-> **Status:** Draft v0.5 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment)
+> **Status:** Draft v0.5 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment, lead create/edit restricted to Admin)
 > **Product type:** Internal delivery/lead management tool for Vector Consulting Group. Phase 1 of a planned multi-phase internal platform (see §1.4).
 > **Purpose:** Single source of truth describing every part of the system, structured so each section can be handed to Claude in VSCode as a build prompt. This document is written to stand alone — a fresh session with no prior chat history should be able to read it and understand exactly what's built and why.
 > **Implementation note:** See §21 for the full changelog of what's actually been built so far and where it diverges from earlier drafts.
@@ -28,7 +28,7 @@ An internal system where senior staff capture every lead with a client company, 
 ### 1.2 Success criteria (phase 1)
 - Every lead lives in one place with its full execution track built in, and is identifiable by a **project name** even when several leads share the same company.
 - Each lead runs the correct **type-specific task/step + checklist workflow**, worked through a stepper UI rather than one long scrolling page.
-- Managers assign leads to representatives (optionally — see §5.2); reps see only what's theirs.
+- Managers assign leads to representatives (optionally — see §5.2); reps see only what's theirs. *(Lead creation/editing itself is Admin-only — §21.20.)*
 - In-app notifications surface assignments, required actions, and due additional tasks.
 - A dashboard shows lead counts by status and overdue items.
 
@@ -54,7 +54,7 @@ The company uses an internal **belt hierarchy** (low → high): **White → Brow
 | Role | Typical belt | Responsibility |
 |---|---|---|
 | **Admin** | Black | Top of hierarchy; owns the system and config |
-| **Manager** | Red/Black | Owns leads; leads a team of reps |
+| **Manager** | Red/Black | Owns leads; leads a team of reps; *cannot* create/edit leads directly (Admin-only, §21.20) |
 | **Representative** (consultant) | Red | Executes assigned work — updates checklists, uploads files, completes tasks |
 
 Reps belong to a manager (`manager_id`). Managers own leads. Reps are assigned leads by their manager, either at creation or afterward.
@@ -64,9 +64,9 @@ Reps belong to a manager (`manager_id`). Managers own leads. Reps are assigned l
 | Action | Admin | Manager | Representative |
 |---|:--:|:--:|:--:|
 | See dashboard | ✅ global | ✅ own leads | ✅ own leads |
-| Create lead / company | ✅ | ✅ | ❌ |
+| Create lead / company | ✅ | ❌ *(revoked — §21.20)* | ❌ |
 | View leads | **all** | **own only** | **only leads assigned to them** |
-| Edit lead details | any | own | ❌ |
+| Edit lead details | any | ❌ *(revoked — §21.20)* | ❌ |
 | Reassign lead owner (manager) | ✅ | ❌ | ❌ |
 | Assign / reassign a lead's representative | ✅ | ✅ (own leads) | ❌ |
 | Add / configure checklist items on own leads | ✅ | ✅ | ❌ |
@@ -78,6 +78,8 @@ Reps belong to a manager (`manager_id`). Managers own leads. Reps are assigned l
 | Manage users | ✅ | ❌ | ❌ *(no admin UI yet — §21.9)* |
 
 **Priority defaults to Medium** when unset (any role that can create a lead). *(Changed from Low — see §21.16.)*
+
+**Note on lead create/edit (§21.20):** Managers used to be able to create leads and edit the leads they own. This was **revoked** — `createLead` and `editLead` are now **Admin-only**, everywhere the checks are used: the "New lead" button (Leads list), the New/Edit Lead form's own route guard, and the Lead Detail page's status dropdown + "Edit" button (status change counts as an edit). A Manager still owns leads (`owner_id`) and retains **every other** own-lead permission below — assigning/reassigning the rep, configuring checklist items, creating additional tasks — only the create/edit-the-record-itself actions moved to Admin.
 
 **Note on the assign-rep permission:** the *same* `assignTasks` permission (Admin, or the owning Manager) that lets someone reassign a rep also lets them make the **first** assignment on a lead that was created without one — see §5.2 and §21.15. No separate permission was needed for "assign later."
 
@@ -297,10 +299,10 @@ Each checklist item's status is one of **4** values, shown as a `Select`:
 ## 9. Tasks, assignments & notifications
 
 ### 9.1 Assignment flow
-1. Manager (or Admin) creates a **Lead**: picks the company, lead type, owner, and **optionally** a Representative (§5.2) — all in one form.
+1. **Admin** creates a **Lead** (§21.20): picks the company, lead type, owner (a Manager), and **optionally** a Representative (§5.2) — all in one form.
 2. Creating the lead immediately instantiates its task/steps, checklist items, and additional-detail fields from the type template (mandatory, automatic — no separate creation step).
 3. If no rep was assigned at creation, the owning Manager (or Admin) assigns one later from the Lead Detail page whenever ready.
-4. Manager may add extra checklist items or ad-hoc **Additional Tasks**, and can reassign the rep at any time.
+4. Manager may add extra checklist items or ad-hoc **Additional Tasks**, and can reassign the rep at any time — but cannot edit the lead's own record or change its status (Admin-only, §21.20).
 5. Rep sees only their assigned leads, works the checklist via the **Task** tab's stepper (§13), uploads any **required files**, jots notes, and moves items through their 4-value status.
 6. Completing items updates the step's status, the lead's overall progress ring, and logs activity.
 
@@ -341,7 +343,7 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 
 ### 12.1 Must-have (phase 1)
 1. Auth + role-based access (Admin/Manager/Rep) with belt attribute.
-2. Company CRUD (inline, single search/create combobox on the lead form — §21.13); Lead CRUD (archive = soft delete, Admin only).
+2. Company CRUD (inline, single search/create combobox on the lead form — §21.13); Lead CRUD is **Admin-only** (create, edit, archive-as-soft-delete — §21.20).
 3. Lead auto-instantiates its checklist + additional-detail fields from the type template at creation.
 4. Lead-type + checklist **template** config (Admin) — data model only in phase 1, no admin UI yet (§21.9).
 5. Assign leads to reps, optionally at creation, always afterward; rep-scoped visibility.
@@ -473,9 +475,9 @@ GET    /api/companies      POST /api/companies      GET/PATCH /api/companies/:id
 GET    /api/contacts       POST /api/contacts
 
 GET    /api/leads          ?status=&type=&owner=&q=&page=       (queryset scoped by role; q matches name/code/company/industry)
-POST   /api/leads                                                (auto-instantiates task/checklist/field template; assigned_to optional)
-GET/PATCH/DELETE /api/leads/:id
-PATCH  /api/leads/:id/status         {status}
+POST   /api/leads                                                (Admin only, §21.20; auto-instantiates task/checklist/field template; assigned_to optional)
+GET/PATCH/DELETE /api/leads/:id                                  (PATCH/DELETE: Admin only, §21.20)
+PATCH  /api/leads/:id/status         {status}                    (Admin only, §21.20)
 PATCH  /api/leads/:id/assign-owner   {owner_id}                  (Admin)
 PATCH  /api/leads/:id/assign-rep     {assigned_to}                (Admin/Manager, own leads — first assignment or reassignment)
 
@@ -660,6 +662,9 @@ Attachments previously stored a dead `url: '#'` placeholder. The mock upload pat
 
 ### 21.19 Branding and sidebar UX (§17)
 Replaced the placeholder logo with the real Vector Consulting Group wordmark/arrow mark (`Logo.jsx`); the sidebar can now collapse to an icon-only rail with hover tooltips (state persisted in `localStorage`).
+
+### 21.20 Lead create/edit restricted to Admin only (§2.1, §9.1, §12.1, §15)
+`PERMISSIONS.createLead` and `PERMISSIONS.editLead` (`frontend/src/api/scope.js`) changed from `Admin || Manager` / `Admin || owning Manager` to **Admin-only**. This is enforced in three places: the "New lead" button on the Leads list (`LeadsList.jsx`) is hidden for non-Admins; the New/Edit Lead form (`LeadForm.jsx`) now has a `useEffect` route guard that redirects a Manager away if they navigate to `/leads/new` or `/leads/:id/edit` directly by URL, plus a render-time `return null` fallback; and the Lead Detail page's status-change dropdown and "Edit" button are both gated on the same `canEdit` flag, so a Manager can no longer change a lead's status either, not just its other fields. Managers keep every other own-lead permission unchanged — `assignTasks` (assign/reassign rep) and `configureChecklistOnLead` were not touched. Also fixed in the same pass: Radix `Select`'s `onValueChange` can fire with an empty string during programmatic value-setting (autofill of owner/lead-type before the hidden native `<select>`'s options register); every `Select` on the Lead form now ignores falsy values (`setIfPresent` helper / inline guards) instead of writing them into form state, and the reassign-owner/reassign-rep dialogs on Lead Detail got the same guard.
 
 ---
 *End of draft v0.5. Supply the real Mining/Extension workflows (§7.4) and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*

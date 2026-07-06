@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users2, Bell, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { LayoutDashboard, Users2, Bell, Boxes, Wallet, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,8 @@ import { Logo } from './Logo'
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['Admin', 'Manager', 'Representative'] },
   { to: '/leads', label: 'Leads', icon: Users2, roles: ['Admin', 'Manager', 'Representative'] },
+  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Admin', 'Manager', 'Representative'] },
+  { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Admin', 'Manager', 'Representative'] },
   { to: '/notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'Manager', 'Representative'] },
 ]
 

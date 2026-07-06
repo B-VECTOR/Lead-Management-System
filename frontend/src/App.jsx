@@ -10,6 +10,8 @@ import AdditionalTasksList from '@/pages/AdditionalTasksList'
 import LeadDetail from '@/pages/LeadDetail'
 import LeadForm from '@/pages/LeadForm'
 import Notifications from '@/pages/Notifications'
+import Resources from '@/pages/Resources'
+import Finance from '@/pages/Finance'
 import NotFound from '@/pages/NotFound'
 
 export default function App() {
@@ -30,6 +32,8 @@ export default function App() {
         <Route path="/leads/:id" element={<LeadDetail />} />
         <Route path="/leads/:id/edit" element={<LeadForm />} />
 
+        <Route path="/resources" element={<Resources />} />
+        <Route path="/finance" element={<Finance />} />
         <Route path="/notifications" element={<Notifications />} />
       </Route>
 
