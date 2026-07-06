@@ -15,6 +15,7 @@ import { UserChip } from '@/components/shared/UserChip'
 import { ProgressRing } from '@/components/shared/ProgressRing'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
+import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
 import { useLead, useUpdateLeadStatus, useAssignLeadOwner, useAssignLeadRep, useArchiveLead } from '@/hooks/useLeads'
 import { useCompany } from '@/hooks/useCompanies'
 import { useLeadTypes } from '@/hooks/useLeadTypes'
@@ -166,6 +167,7 @@ export default function LeadDetail() {
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="followup">Follow Up</TabsTrigger>
+          <TabsTrigger value="resources">Resources</TabsTrigger>
         </TabsList>
 
         <TabsContent value="task">
@@ -278,6 +280,10 @@ export default function LeadDetail() {
 
         <TabsContent value="followup">
           <LeadFollowUpsTab leadId={id} />
+        </TabsContent>
+
+        <TabsContent value="resources">
+          <LeadResourcesTab leadId={id} />
         </TabsContent>
       </Tabs>
 

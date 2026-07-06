@@ -80,11 +80,11 @@ export function FollowupUpdateDialog({ followup, userById, canManage, onClose })
               placeholder="Add a comment for whoever picks this up next…"
             />
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={handleSaveComment} disabled={!comment.trim() || addUpdate.isPending}>
-                Save comment
-              </Button>
-              <Button type="button" onClick={handleCloseFollowup} disabled={closeFollowup.isPending}>
+              <Button type="button" variant="outline" onClick={handleCloseFollowup} disabled={closeFollowup.isPending} className="sm:mr-auto">
                 Close follow-up
+              </Button>
+              <Button type="button" onClick={handleSaveComment} disabled={!comment.trim() || addUpdate.isPending}>
+                Save comment
               </Button>
             </DialogFooter>
           </>

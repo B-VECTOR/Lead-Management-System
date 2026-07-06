@@ -103,6 +103,8 @@ export async function createLead(data, currentUser) {
     const task = await insert('leadTasks', {
       id: genId('lt'), lead_id: created.id, source_task_step_id: step.id,
       name: step.name, order: step.order, status: 'Not started',
+      branch_field_id: step.branch_field_id || null,
+      branch_map: step.branch_map ? { ...step.branch_map } : null,
     })
     const items = templateItems.filter((i) => i.task_step_id === step.id).sort((a, b) => a.order - b.order)
     for (const tmpl of items) {
@@ -113,9 +115,18 @@ export async function createLead(data, currentUser) {
     }
     const fields = templateFields.filter((f) => f.task_step_id === step.id).sort((a, b) => a.order - b.order)
     for (const tmpl of fields) {
+      // A repeatable group's "empty" state is a fixed number of blank rows
+      // (so the table renders with its default row count), not an empty string.
+      const initialValue = tmpl.field_type === 'repeatable_group'
+        ? JSON.stringify(Array.from({ length: tmpl.default_rows || 0 }, () => Object.fromEntries((tmpl.columns || []).map((c) => [c.key, '']))))
+        : ''
       await insert('leadTaskFields', {
         id: genId('ltf'), lead_task_id: task.id, field_name: tmpl.field_name,
-        field_type: tmpl.field_type || 'text', field_value: '', order: tmpl.order,
+        field_type: tmpl.field_type || 'text', field_value: initialValue, order: tmpl.order,
+        source_field_id: tmpl.id,
+        visible_if_field_id: tmpl.visible_if_field_id || null,
+        visible_if_value: tmpl.visible_if_value || null,
+        columns: tmpl.columns || null,
       })
     }
   }

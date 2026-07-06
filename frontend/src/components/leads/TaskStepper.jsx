@@ -13,9 +13,10 @@ export function TaskStepper({ tasks, activeId, onSelect }) {
         const isActive = task.id === activeId
         const isCompleted = task.status === 'Completed'
         const isStarted = task.status === 'In progress'
+        const isSkipped = !!task.skipped
 
         return (
-          <div key={task.id} className="flex items-center">
+          <div key={task.id} className={cn('flex items-center', isSkipped && 'opacity-50')}>
             <button
               type="button"
               onClick={() => onSelect(task.id)}

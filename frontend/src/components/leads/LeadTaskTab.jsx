@@ -27,8 +27,15 @@ export function LeadTaskTab({ leadId, canUpdate }) {
 
   const userById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users])
 
+  // A branch can route around some steps entirely (§ BD flow rework — e.g.
+  // "Is Solution Blueprint Required?" No skips straight to Project Proposal
+  // Submission, server-flagged as task.skipped). The active/current step is
+  // the first not-yet-completed step *on the resolved path*; skipped steps
+  // never gate anything and are never themselves the active step.
   const firstIncompleteIndex = useMemo(() => {
-    const idx = tasks.findIndex((t) => t.status !== 'Completed')
+    const onPath = tasks.filter((t) => !t.skipped)
+    const firstIncomplete = onPath.find((t) => t.status !== 'Completed') || onPath[onPath.length - 1]
+    const idx = firstIncomplete ? tasks.findIndex((t) => t.id === firstIncomplete.id) : -1
     return idx === -1 ? tasks.length - 1 : idx
   }, [tasks])
 
@@ -56,7 +63,7 @@ export function LeadTaskTab({ leadId, canUpdate }) {
 
   const activeTask = tasks.find((t) => t.id === activeId) || tasks[firstIncompleteIndex]
   const activeTaskIndex = tasks.findIndex((t) => t.id === activeTask.id)
-  const stepEditable = activeTaskIndex <= firstIncompleteIndex
+  const stepEditable = !activeTask.skipped && activeTaskIndex <= firstIncompleteIndex
   const activeCanUpdate = canUpdate && stepEditable
   const activeItems = items.filter((i) => i.lead_task_id === activeTask.id).sort((a, b) => a.order - b.order)
   const firstIncompleteItemIndex = activeItems.findIndex((i) => i.state !== 'done' && i.state !== 'na')
@@ -80,9 +87,14 @@ export function LeadTaskTab({ leadId, canUpdate }) {
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">{activeTask.name}</CardTitle>
-              <TaskStatusBadge status={activeTask.status} />
+              {activeTask.skipped
+                ? <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">Skipped</span>
+                : <TaskStatusBadge status={activeTask.status} />}
             </div>
-            {!stepEditable && (
+            {activeTask.skipped && (
+              <p className="text-xs text-muted-foreground">Skipped — an earlier answer routed this lead around this step.</p>
+            )}
+            {!activeTask.skipped && !stepEditable && (
               <p className="text-xs text-muted-foreground">View only — complete every earlier step (including its Additional details) to edit here.</p>
             )}
           </CardHeader>

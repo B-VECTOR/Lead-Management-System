@@ -69,7 +69,7 @@ export default function FollowUpsList() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <Badge variant={f.done ? 'outline' : 'secondary'}>{f.done ? 'Closed' : 'Open'}</Badge>
-                    <p className={`text-sm ${f.done ? 'text-muted-foreground line-through' : ''}`}>{f.title}</p>
+                    <p className={`text-sm ${f.done ? 'text-muted-foreground' : ''}`}>{f.title}</p>
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {lead && <Link to={`/leads/${lead.id}`} className="hover:underline">{companyById[lead.company_id]?.name} · {lead.code}</Link>}

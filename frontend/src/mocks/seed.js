@@ -56,11 +56,42 @@ export const leadTypes = [
   { id: 'lt-extension', name: 'Extension', description: 'Extending or renewing an existing engagement.', active: true },
 ]
 
+// BD flow (§ BD flow rework): 9 steps with two branch points —
+// Step 3 gates whether Solution Blueprint happens at all ("Is Solution
+// Blueprint Required?" No skips straight to Step 8, Project Proposal
+// Submission); Step 5 gates whether a repeat presentation is needed (loops
+// back through Step 6 until answered No, then falls through to Step 7).
+// branch_field_id names the *template* taskStepFields row whose value drives
+// the branch; branch_map maps that value to the next template taskSteps id
+// (a step can map to its own id — meaning "stay on this step for another
+// round" rather than literally re-instantiating it, since a lead only ever
+// has one working copy of each template step).
 export const taskSteps = [
-  { id: 'ts-bd-1', lead_type_id: 'lt-bd', name: 'Introduction', order: 1, description: '' },
+  { id: 'ts-bd-1', lead_type_id: 'lt-bd', name: 'Introduction and First Meeting', order: 1, description: '' },
   { id: 'ts-bd-2', lead_type_id: 'lt-bd', name: '2Hr Study & Presentation', order: 2, description: '' },
-  { id: 'ts-bd-3', lead_type_id: 'lt-bd', name: 'Solution Blueprint', order: 3, description: '' },
-  { id: 'ts-bd-4', lead_type_id: 'lt-bd', name: 'Implementation', order: 4, description: '' },
+  {
+    id: 'ts-bd-3', lead_type_id: 'lt-bd', name: '2Hr Study Reimbursement', order: 3, description: '',
+    branch_field_id: 'tsf-bd-3-1', branch_map: { Yes: 'ts-bd-4', No: 'ts-bd-8' },
+  },
+  { id: 'ts-bd-4', lead_type_id: 'lt-bd', name: 'Solution Blueprint Proposal', order: 4, description: '' },
+  {
+    id: 'ts-bd-5', lead_type_id: 'lt-bd', name: 'Solution Blueprint', order: 5, description: '',
+    branch_field_id: 'tsf-bd-5-3', branch_map: { Yes: 'ts-bd-6', No: 'ts-bd-7' },
+  },
+  {
+    id: 'ts-bd-6', lead_type_id: 'lt-bd', name: 'Solution Blueprint Repeat Presentation', order: 6, description: '',
+    assignee_note: 'Defaults to the same rep assigned to the Solution Blueprint block.',
+    branch_field_id: 'tsf-bd-6-1', branch_map: { Yes: 'ts-bd-6', No: 'ts-bd-7' },
+  },
+  {
+    id: 'ts-bd-7', lead_type_id: 'lt-bd', name: 'Solution Blueprint Payment', order: 7, description: '',
+    assignee_note: 'Defaults to the same rep assigned to the Solution Blueprint block.',
+  },
+  {
+    id: 'ts-bd-8', lead_type_id: 'lt-bd', name: 'Project Proposal Submission', order: 8, description: '',
+    assignee_note: 'Defaults to the BD owner.',
+  },
+  { id: 'ts-bd-9', lead_type_id: 'lt-bd', name: 'Implementation', order: 9, description: '' },
 
   { id: 'ts-mining-1', lead_type_id: 'lt-mining', name: 'Exploration', order: 1, description: '' },
   { id: 'ts-mining-2', lead_type_id: 'lt-mining', name: '2Hr Study & Presentation', order: 2, description: '' },
@@ -72,93 +103,107 @@ export const taskSteps = [
 ]
 
 export const checklistTemplateItems = [
-  // BD — Introduction
-  { id: 'cti-bd-1-1', task_step_id: 'ts-bd-1', label: "1.1 - Vector's Intro Email", order: 1, requires_file: false },
-  { id: 'cti-bd-1-2', task_step_id: 'ts-bd-1', label: '1.2 - Intro presentation to decision maker', order: 2, requires_file: false },
-  { id: 'cti-bd-1-3', task_step_id: 'ts-bd-1', label: '1.3 - Area of work, objective agreed', order: 3, requires_file: false },
-  { id: 'cti-bd-1-4', task_step_id: 'ts-bd-1', label: '1.4 - Email sent to initiate study', order: 4, requires_file: false },
+  // BD — Introduction and First Meeting
+  { id: 'cti-bd-1-1', task_step_id: 'ts-bd-1', label: "Vector's Intro Email", order: 1, requires_file: false },
+  { id: 'cti-bd-1-2', task_step_id: 'ts-bd-1', label: 'Intro presentation to decision maker', order: 2, requires_file: false },
+  { id: 'cti-bd-1-3', task_step_id: 'ts-bd-1', label: 'Area of work, objective agreed', order: 3, requires_file: false },
+  { id: 'cti-bd-1-4', task_step_id: 'ts-bd-1', label: 'Email sent to initiate study', order: 4, requires_file: false },
+  { id: 'cti-bd-1-5', task_step_id: 'ts-bd-1', label: 'First Meeting completed', order: 5, requires_file: false },
 
   // BD — 2Hr Study & Presentation
-  { id: 'cti-bd-2-1', task_step_id: 'ts-bd-2', label: '2.1 - Team Assignment', order: 1, requires_file: false },
-  { id: 'cti-bd-2-2', task_step_id: 'ts-bd-2', label: '2.2 - Study Planning', order: 2, requires_file: false },
-  { id: 'cti-bd-2-3', task_step_id: 'ts-bd-2', label: '2.3 - NDA Formality', order: 3, requires_file: false },
-  { id: 'cti-bd-2-4', task_step_id: 'ts-bd-2', label: '2.4 - Study Interactions', order: 4, requires_file: false },
-  { id: 'cti-bd-2-5', task_step_id: 'ts-bd-2', label: '2.5 - Data Receipt', order: 5, requires_file: false },
-  { id: 'cti-bd-2-6', task_step_id: 'ts-bd-2', label: '2.6 - 2Hr Presentation', order: 6, requires_file: false },
-  { id: 'cti-bd-2-7', task_step_id: 'ts-bd-2', label: '2.7 - Proposal request', order: 7, requires_file: false },
-  { id: 'cti-bd-2-8', task_step_id: 'ts-bd-2', label: '2.8 - Reimbursement Expenses Invoiced', order: 8, requires_file: false },
-  { id: 'cti-bd-2-9', task_step_id: 'ts-bd-2', label: '2.9 - Reimbursement Expenses Received', order: 9, requires_file: false },
+  { id: 'cti-bd-2-1', task_step_id: 'ts-bd-2', label: 'Study Plan done', order: 1, requires_file: false },
+  { id: 'cti-bd-2-2', task_step_id: 'ts-bd-2', label: 'NDA Formality completed', order: 2, requires_file: false },
+  { id: 'cti-bd-2-3', task_step_id: 'ts-bd-2', label: 'Study Interactions done', order: 3, requires_file: false },
+  { id: 'cti-bd-2-4', task_step_id: 'ts-bd-2', label: 'Data Received', order: 4, requires_file: false },
+  { id: 'cti-bd-2-5', task_step_id: 'ts-bd-2', label: '2Hr Presentation date confirmed', order: 5, requires_file: false },
+  { id: 'cti-bd-2-6', task_step_id: 'ts-bd-2', label: '2Hr Presentation done', order: 6, requires_file: false },
+
+  // BD — 2Hr Study Reimbursement
+  { id: 'cti-bd-3-1', task_step_id: 'ts-bd-3', label: 'Reimbursement Expenses Invoiced', order: 1, requires_file: false },
+  { id: 'cti-bd-3-2', task_step_id: 'ts-bd-3', label: 'Reimbursement Expenses Received', order: 2, requires_file: false },
+
+  // BD — Solution Blueprint Proposal
+  { id: 'cti-bd-4-1', task_step_id: 'ts-bd-4', label: 'Proposal Submitted', order: 1, requires_file: false },
+  { id: 'cti-bd-4-2', task_step_id: 'ts-bd-4', label: 'Proposal terms agreed', order: 2, requires_file: false },
 
   // BD — Solution Blueprint
-  { id: 'cti-bd-3-1', task_step_id: 'ts-bd-3', label: '3.1 - Proposal Submission', order: 1, requires_file: false },
-  { id: 'cti-bd-3-2', task_step_id: 'ts-bd-3', label: '3.2 - Negotiation', order: 2, requires_file: false },
-  { id: 'cti-bd-3-3', task_step_id: 'ts-bd-3', label: '3.3 - Team Assignment', order: 3, requires_file: false },
-  { id: 'cti-bd-3-4', task_step_id: 'ts-bd-3', label: '3.4 - Engagement Start', order: 4, requires_file: false },
-  { id: 'cti-bd-3-5', task_step_id: 'ts-bd-3', label: '3.5 - Initial Invoice', order: 5, requires_file: false },
-  { id: 'cti-bd-3-6', task_step_id: 'ts-bd-3', label: '3.6 - Presentation Dates', order: 6, requires_file: false },
-  { id: 'cti-bd-3-7', task_step_id: 'ts-bd-3', label: '3.7 - SnT Workshop', order: 7, requires_file: false },
-  { id: 'cti-bd-3-8', task_step_id: 'ts-bd-3', label: '3.8 - Completion Invoice', order: 8, requires_file: false },
-  { id: 'cti-bd-3-9', task_step_id: 'ts-bd-3', label: '3.9 - Reimbursement Invoice', order: 9, requires_file: false },
-  { id: 'cti-bd-3-10', task_step_id: 'ts-bd-3', label: '4.0 - Proposal Request', order: 10, requires_file: false },
+  { id: 'cti-bd-5-1', task_step_id: 'ts-bd-5', label: 'Engagement Start', order: 1, requires_file: false },
+  { id: 'cti-bd-5-2', task_step_id: 'ts-bd-5', label: 'Initial Invoice raised', order: 2, requires_file: false },
+  { id: 'cti-bd-5-3', task_step_id: 'ts-bd-5', label: 'Data Receipt', order: 3, requires_file: false },
+  { id: 'cti-bd-5-4', task_step_id: 'ts-bd-5', label: 'Presentation Dates locked', order: 4, requires_file: false },
+  { id: 'cti-bd-5-5', task_step_id: 'ts-bd-5', label: 'SnT Workshop Done', order: 5, requires_file: false },
+  { id: 'cti-bd-5-6', task_step_id: 'ts-bd-5', label: 'Completion Invoice', order: 6, requires_file: false },
+
+  // BD — Solution Blueprint Repeat Presentation
+  { id: 'cti-bd-6-1', task_step_id: 'ts-bd-6', label: 'Presentation Dates locked', order: 1, requires_file: false },
+  { id: 'cti-bd-6-2', task_step_id: 'ts-bd-6', label: 'SnT Workshop Done', order: 2, requires_file: false },
+
+  // BD — Solution Blueprint Payment
+  { id: 'cti-bd-7-1', task_step_id: 'ts-bd-7', label: 'Fixed fee invoices received', order: 1, requires_file: false },
+  { id: 'cti-bd-7-2', task_step_id: 'ts-bd-7', label: 'Reimbursement Expenses Invoiced', order: 2, requires_file: false },
+  { id: 'cti-bd-7-3', task_step_id: 'ts-bd-7', label: 'Reimbursement Expenses Received', order: 3, requires_file: false },
+
+  // BD — Project Proposal Submission
+  { id: 'cti-bd-8-1', task_step_id: 'ts-bd-8', label: 'Proposal Submission', order: 1, requires_file: false },
+  { id: 'cti-bd-8-2', task_step_id: 'ts-bd-8', label: 'Negotiation', order: 2, requires_file: false },
 
   // BD — Implementation
-  { id: 'cti-bd-4-1', task_step_id: 'ts-bd-4', label: '4.1 - Proposal Submission', order: 1, requires_file: false },
-  { id: 'cti-bd-4-2', task_step_id: 'ts-bd-4', label: '4.2 - Negotiation', order: 2, requires_file: false },
-  { id: 'cti-bd-4-3', task_step_id: 'ts-bd-4', label: '4.3 - Team Assignment', order: 3, requires_file: false },
-  { id: 'cti-bd-4-4', task_step_id: 'ts-bd-4', label: '4.4 - Engagement Start', order: 4, requires_file: false },
-  { id: 'cti-bd-4-5', task_step_id: 'ts-bd-4', label: '4.5 - Agreement / Contract', order: 5, requires_file: false },
-  { id: 'cti-bd-4-6', task_step_id: 'ts-bd-4', label: '4.6 - Variable Parameter Finalisation', order: 6, requires_file: false },
-  { id: 'cti-bd-4-7', task_step_id: 'ts-bd-4', label: '4.7 - Variable Baseline Sign-off', order: 7, requires_file: false },
-  { id: 'cti-bd-4-8', task_step_id: 'ts-bd-4', label: '4.8 - Addendum Agreement', order: 8, requires_file: false },
-  { id: 'cti-bd-4-9', task_step_id: 'ts-bd-4', label: '4.9 - PO', order: 9, requires_file: false },
+  { id: 'cti-bd-9-1', task_step_id: 'ts-bd-9', label: 'Team Assignment', order: 1, requires_file: false },
+  { id: 'cti-bd-9-2', task_step_id: 'ts-bd-9', label: 'Handover and Engagement Start', order: 2, requires_file: false },
+  { id: 'cti-bd-9-3', task_step_id: 'ts-bd-9', label: 'PO from Customer', order: 3, requires_file: false },
+  { id: 'cti-bd-9-4', task_step_id: 'ts-bd-9', label: 'First Fixed fee invoice Raised from Customer', order: 4, requires_file: false },
+  { id: 'cti-bd-9-5', task_step_id: 'ts-bd-9', label: 'Agreement / Contract', order: 5, requires_file: false },
+  { id: 'cti-bd-9-6', task_step_id: 'ts-bd-9', label: 'Variable Parameter Finalisation', order: 6, requires_file: false },
+  { id: 'cti-bd-9-7', task_step_id: 'ts-bd-9', label: 'Variable Baseline Sign-off', order: 7, requires_file: false },
+  { id: 'cti-bd-9-8', task_step_id: 'ts-bd-9', label: 'Addendum Agreement', order: 8, requires_file: false },
 
   // Mining — Exploration
-  { id: 'cti-mining-1-0', task_step_id: 'ts-mining-1', label: '1.0 - Area Identification', order: 1, requires_file: false },
-  { id: 'cti-mining-1-1', task_step_id: 'ts-mining-1', label: '1.1 - Background Preparation', order: 2, requires_file: false },
-  { id: 'cti-mining-1-2', task_step_id: 'ts-mining-1', label: '1.2 - Intro presentation to decision maker', order: 3, requires_file: false },
-  { id: 'cti-mining-1-3', task_step_id: 'ts-mining-1', label: '1.3 - Area of work, objective agreed', order: 4, requires_file: false },
-  { id: 'cti-mining-1-4', task_step_id: 'ts-mining-1', label: '1.4 - Email sent to initiate study', order: 5, requires_file: false },
+  { id: 'cti-mining-1-0', task_step_id: 'ts-mining-1', label: 'Area Identification', order: 1, requires_file: false },
+  { id: 'cti-mining-1-1', task_step_id: 'ts-mining-1', label: 'Background Preparation', order: 2, requires_file: false },
+  { id: 'cti-mining-1-2', task_step_id: 'ts-mining-1', label: 'Intro presentation to decision maker', order: 3, requires_file: false },
+  { id: 'cti-mining-1-3', task_step_id: 'ts-mining-1', label: 'Area of work, objective agreed', order: 4, requires_file: false },
+  { id: 'cti-mining-1-4', task_step_id: 'ts-mining-1', label: 'Email sent to initiate study', order: 5, requires_file: false },
 
   // Mining — 2Hr Study & Presentation (same as BD)
-  { id: 'cti-mining-2-1', task_step_id: 'ts-mining-2', label: '2.1 - Team Assignment', order: 1, requires_file: false },
-  { id: 'cti-mining-2-2', task_step_id: 'ts-mining-2', label: '2.2 - Study Planning', order: 2, requires_file: false },
-  { id: 'cti-mining-2-3', task_step_id: 'ts-mining-2', label: '2.3 - NDA Formality', order: 3, requires_file: false },
-  { id: 'cti-mining-2-4', task_step_id: 'ts-mining-2', label: '2.4 - Study Interactions', order: 4, requires_file: false },
-  { id: 'cti-mining-2-5', task_step_id: 'ts-mining-2', label: '2.5 - Data Receipt', order: 5, requires_file: false },
-  { id: 'cti-mining-2-6', task_step_id: 'ts-mining-2', label: '2.6 - 2Hr Presentation', order: 6, requires_file: false },
-  { id: 'cti-mining-2-7', task_step_id: 'ts-mining-2', label: '2.7 - Proposal request', order: 7, requires_file: false },
-  { id: 'cti-mining-2-8', task_step_id: 'ts-mining-2', label: '2.8 - Reimbursement Expenses Invoiced', order: 8, requires_file: false },
-  { id: 'cti-mining-2-9', task_step_id: 'ts-mining-2', label: '2.9 - Reimbursement Expenses Received', order: 9, requires_file: false },
+  { id: 'cti-mining-2-1', task_step_id: 'ts-mining-2', label: 'Team Assignment', order: 1, requires_file: false },
+  { id: 'cti-mining-2-2', task_step_id: 'ts-mining-2', label: 'Study Planning', order: 2, requires_file: false },
+  { id: 'cti-mining-2-3', task_step_id: 'ts-mining-2', label: 'NDA Formality', order: 3, requires_file: false },
+  { id: 'cti-mining-2-4', task_step_id: 'ts-mining-2', label: 'Study Interactions', order: 4, requires_file: false },
+  { id: 'cti-mining-2-5', task_step_id: 'ts-mining-2', label: 'Data Receipt', order: 5, requires_file: false },
+  { id: 'cti-mining-2-6', task_step_id: 'ts-mining-2', label: '2Hr Presentation', order: 6, requires_file: false },
+  { id: 'cti-mining-2-7', task_step_id: 'ts-mining-2', label: 'Proposal request', order: 7, requires_file: false },
+  { id: 'cti-mining-2-8', task_step_id: 'ts-mining-2', label: 'Reimbursement Expenses Invoiced', order: 8, requires_file: false },
+  { id: 'cti-mining-2-9', task_step_id: 'ts-mining-2', label: 'Reimbursement Expenses Received', order: 9, requires_file: false },
 
   // Mining — Solution Blueprint (same as BD)
-  { id: 'cti-mining-3-1', task_step_id: 'ts-mining-3', label: '3.1 - Proposal Submission', order: 1, requires_file: false },
-  { id: 'cti-mining-3-2', task_step_id: 'ts-mining-3', label: '3.2 - Negotiation', order: 2, requires_file: false },
-  { id: 'cti-mining-3-3', task_step_id: 'ts-mining-3', label: '3.3 - Team Assignment', order: 3, requires_file: false },
-  { id: 'cti-mining-3-4', task_step_id: 'ts-mining-3', label: '3.4 - Engagement Start', order: 4, requires_file: false },
-  { id: 'cti-mining-3-5', task_step_id: 'ts-mining-3', label: '3.5 - Initial Invoice', order: 5, requires_file: false },
-  { id: 'cti-mining-3-6', task_step_id: 'ts-mining-3', label: '3.6 - Presentation Dates', order: 6, requires_file: false },
-  { id: 'cti-mining-3-7', task_step_id: 'ts-mining-3', label: '3.7 - SnT Workshop', order: 7, requires_file: false },
-  { id: 'cti-mining-3-8', task_step_id: 'ts-mining-3', label: '3.8 - Completion Invoice', order: 8, requires_file: false },
-  { id: 'cti-mining-3-9', task_step_id: 'ts-mining-3', label: '3.9 - Reimbursement Invoice', order: 9, requires_file: false },
-  { id: 'cti-mining-3-10', task_step_id: 'ts-mining-3', label: '4.0 - Proposal Request', order: 10, requires_file: false },
+  { id: 'cti-mining-3-1', task_step_id: 'ts-mining-3', label: 'Proposal Submission', order: 1, requires_file: false },
+  { id: 'cti-mining-3-2', task_step_id: 'ts-mining-3', label: 'Negotiation', order: 2, requires_file: false },
+  { id: 'cti-mining-3-3', task_step_id: 'ts-mining-3', label: 'Team Assignment', order: 3, requires_file: false },
+  { id: 'cti-mining-3-4', task_step_id: 'ts-mining-3', label: 'Engagement Start', order: 4, requires_file: false },
+  { id: 'cti-mining-3-5', task_step_id: 'ts-mining-3', label: 'Initial Invoice', order: 5, requires_file: false },
+  { id: 'cti-mining-3-6', task_step_id: 'ts-mining-3', label: 'Presentation Dates', order: 6, requires_file: false },
+  { id: 'cti-mining-3-7', task_step_id: 'ts-mining-3', label: 'SnT Workshop', order: 7, requires_file: false },
+  { id: 'cti-mining-3-8', task_step_id: 'ts-mining-3', label: 'Completion Invoice', order: 8, requires_file: false },
+  { id: 'cti-mining-3-9', task_step_id: 'ts-mining-3', label: 'Reimbursement Invoice', order: 9, requires_file: false },
+  { id: 'cti-mining-3-10', task_step_id: 'ts-mining-3', label: 'Proposal Request', order: 10, requires_file: false },
 
   // Mining — Implementation (same as BD)
-  { id: 'cti-mining-4-1', task_step_id: 'ts-mining-4', label: '4.1 - Proposal Submission', order: 1, requires_file: false },
-  { id: 'cti-mining-4-2', task_step_id: 'ts-mining-4', label: '4.2 - Negotiation', order: 2, requires_file: false },
-  { id: 'cti-mining-4-3', task_step_id: 'ts-mining-4', label: '4.3 - Team Assignment', order: 3, requires_file: false },
-  { id: 'cti-mining-4-4', task_step_id: 'ts-mining-4', label: '4.4 - Engagement Start', order: 4, requires_file: false },
-  { id: 'cti-mining-4-5', task_step_id: 'ts-mining-4', label: '4.5 - Agreement / Contract', order: 5, requires_file: false },
-  { id: 'cti-mining-4-6', task_step_id: 'ts-mining-4', label: '4.6 - Variable Parameter Finalisation', order: 6, requires_file: false },
-  { id: 'cti-mining-4-7', task_step_id: 'ts-mining-4', label: '4.7 - Variable Baseline Sign-off', order: 7, requires_file: false },
-  { id: 'cti-mining-4-8', task_step_id: 'ts-mining-4', label: '4.8 - Addendum Agreement', order: 8, requires_file: false },
-  { id: 'cti-mining-4-9', task_step_id: 'ts-mining-4', label: '4.9 - PO', order: 9, requires_file: false },
+  { id: 'cti-mining-4-1', task_step_id: 'ts-mining-4', label: 'Proposal Submission', order: 1, requires_file: false },
+  { id: 'cti-mining-4-2', task_step_id: 'ts-mining-4', label: 'Negotiation', order: 2, requires_file: false },
+  { id: 'cti-mining-4-3', task_step_id: 'ts-mining-4', label: 'Team Assignment', order: 3, requires_file: false },
+  { id: 'cti-mining-4-4', task_step_id: 'ts-mining-4', label: 'Engagement Start', order: 4, requires_file: false },
+  { id: 'cti-mining-4-5', task_step_id: 'ts-mining-4', label: 'Agreement / Contract', order: 5, requires_file: false },
+  { id: 'cti-mining-4-6', task_step_id: 'ts-mining-4', label: 'Variable Parameter Finalisation', order: 6, requires_file: false },
+  { id: 'cti-mining-4-7', task_step_id: 'ts-mining-4', label: 'Variable Baseline Sign-off', order: 7, requires_file: false },
+  { id: 'cti-mining-4-8', task_step_id: 'ts-mining-4', label: 'Addendum Agreement', order: 8, requires_file: false },
+  { id: 'cti-mining-4-9', task_step_id: 'ts-mining-4', label: 'PO', order: 9, requires_file: false },
 
   // Extension — Extension Discussion
-  { id: 'cti-ext-1-1', task_step_id: 'ts-ext-1', label: '1.1 - Scope document', order: 1, requires_file: false },
-  { id: 'cti-ext-1-2', task_step_id: 'ts-ext-1', label: '1.2 - Scope agreement', order: 2, requires_file: false },
-  { id: 'cti-ext-1-3', task_step_id: 'ts-ext-1', label: '1.3 - Proposal Submission', order: 3, requires_file: false },
-  { id: 'cti-ext-1-4', task_step_id: 'ts-ext-1', label: '1.4 - Negotiation', order: 4, requires_file: false },
-  { id: 'cti-ext-1-5', task_step_id: 'ts-ext-1', label: '1.5 - Addendum Agreement', order: 5, requires_file: false },
+  { id: 'cti-ext-1-1', task_step_id: 'ts-ext-1', label: 'Scope document', order: 1, requires_file: false },
+  { id: 'cti-ext-1-2', task_step_id: 'ts-ext-1', label: 'Scope agreement', order: 2, requires_file: false },
+  { id: 'cti-ext-1-3', task_step_id: 'ts-ext-1', label: 'Proposal Submission', order: 3, requires_file: false },
+  { id: 'cti-ext-1-4', task_step_id: 'ts-ext-1', label: 'Negotiation', order: 4, requires_file: false },
+  { id: 'cti-ext-1-5', task_step_id: 'ts-ext-1', label: 'Addendum Agreement', order: 5, requires_file: false },
 
   // Extension — Extension - Implementation: no checklist items, data-entry fields only.
 ]
@@ -168,33 +213,62 @@ export const checklistTemplateItems = [
 // dates). Admin-configured in the template, same pattern as checklist items.
 // field_type drives the input control rendered in TaskStepFields.
 export const taskStepFields = [
-  // BD
+  // BD — Introduction and First Meeting
   { id: 'tsf-bd-1-1', task_step_id: 'ts-bd-1', field_name: 'Expected start date of next stage', field_type: 'date', order: 1 },
 
-  { id: 'tsf-bd-2-1', task_step_id: 'ts-bd-2', field_name: 'Fee for engagement', field_type: 'number', order: 1 },
-  { id: 'tsf-bd-2-2', task_step_id: 'ts-bd-2', field_name: 'ManPower (Project Manager + Additional resources)', field_type: 'text', order: 2 },
-  { id: 'tsf-bd-2-3', task_step_id: 'ts-bd-2', field_name: 'Expected start date of next stage', field_type: 'date', order: 3 },
+  // BD — 2Hr Study & Presentation
+  { id: 'tsf-bd-2-1', task_step_id: 'ts-bd-2', field_name: "Date of 2Hr Presentation (linked to '2Hr Presentation date confirmed')", field_type: 'date', order: 1 },
+  {
+    id: 'tsf-bd-2-2', task_step_id: 'ts-bd-2', field_name: 'Key stakeholders mapped', field_type: 'repeatable_group', order: 2,
+    columns: [{ key: 'name', label: 'Name', type: 'text' }, { key: 'role', label: 'Role', type: 'text' }], default_rows: 3,
+  },
 
-  { id: 'tsf-bd-3-1', task_step_id: 'ts-bd-3', field_name: 'Engagement Start Date', field_type: 'date', order: 1 },
-  { id: 'tsf-bd-3-2', task_step_id: 'ts-bd-3', field_name: 'SnT Workshop Date', field_type: 'text', order: 2 },
-  { id: 'tsf-bd-3-3', task_step_id: 'ts-bd-3', field_name: 'Fee for engagement', field_type: 'number', order: 3 },
-  { id: 'tsf-bd-3-4', task_step_id: 'ts-bd-3', field_name: 'Period in weeks', field_type: 'number', order: 4 },
-  { id: 'tsf-bd-3-5', task_step_id: 'ts-bd-3', field_name: 'Additional Fees for delay', field_type: 'number', order: 5 },
-  { id: 'tsf-bd-3-6', task_step_id: 'ts-bd-3', field_name: 'ManPower (Project Manager + Additional resources)', field_type: 'text', order: 6 },
-  { id: 'tsf-bd-3-7', task_step_id: 'ts-bd-3', field_name: 'Expected start date of next stage', field_type: 'date', order: 7 },
+  // BD — 2Hr Study Reimbursement — the branch gate: No skips straight to
+  // Project Proposal Submission (ts-bd-8); Yes reveals the fields below and
+  // continues on to Solution Blueprint Proposal (ts-bd-4).
+  { id: 'tsf-bd-3-1', task_step_id: 'ts-bd-3', field_name: 'Is Solution Blueprint Required?', field_type: 'boolean', order: 1 },
+  { id: 'tsf-bd-3-2', task_step_id: 'ts-bd-3', field_name: 'Fee for engagement', field_type: 'number', order: 2, visible_if_field_id: 'tsf-bd-3-1', visible_if_value: 'Yes' },
+  { id: 'tsf-bd-3-3', task_step_id: 'ts-bd-3', field_name: 'ManPower (Project Manager + Additional resources)', field_type: 'text', order: 3, visible_if_field_id: 'tsf-bd-3-1', visible_if_value: 'Yes' },
+  { id: 'tsf-bd-3-4', task_step_id: 'ts-bd-3', field_name: 'Expected start date of next stage', field_type: 'date', order: 4, visible_if_field_id: 'tsf-bd-3-1', visible_if_value: 'Yes' },
+  { id: 'tsf-bd-3-5', task_step_id: 'ts-bd-3', field_name: 'Number of tranches of payment', field_type: 'number', order: 5, visible_if_field_id: 'tsf-bd-3-1', visible_if_value: 'Yes' },
 
-  { id: 'tsf-bd-4-1', task_step_id: 'ts-bd-4', field_name: 'Engagement Start Date', field_type: 'date', order: 1 },
-  { id: 'tsf-bd-4-2', task_step_id: 'ts-bd-4', field_name: 'Engagement End Date', field_type: 'date', order: 2 },
-  { id: 'tsf-bd-4-3', task_step_id: 'ts-bd-4', field_name: 'Period Months', field_type: 'number', order: 3 },
-  { id: 'tsf-bd-4-4', task_step_id: 'ts-bd-4', field_name: 'Variable Fee Start Date', field_type: 'date', order: 4 },
-  { id: 'tsf-bd-4-5', task_step_id: 'ts-bd-4', field_name: 'Variable Fee End Date', field_type: 'date', order: 5 },
-  { id: 'tsf-bd-4-6', task_step_id: 'ts-bd-4', field_name: 'Fixed Fee', field_type: 'number', order: 6 },
-  { id: 'tsf-bd-4-7', task_step_id: 'ts-bd-4', field_name: 'Fixed fee start date', field_type: 'date', order: 7 },
-  { id: 'tsf-bd-4-8', task_step_id: 'ts-bd-4', field_name: 'Variable Fee (Cap)', field_type: 'number', order: 8 },
-  { id: 'tsf-bd-4-9', task_step_id: 'ts-bd-4', field_name: 'Milestone Fee', field_type: 'number', order: 9 },
-  { id: 'tsf-bd-4-10', task_step_id: 'ts-bd-4', field_name: 'ManPower (Project Manager + Additional resources)', field_type: 'text', order: 10 },
+  // BD — Solution Blueprint Proposal: no additional fields (the gate above covers it).
 
-  // Mining (same shape as BD steps 2-4)
+  // BD — Solution Blueprint — the second branch gate: Yes loops through
+  // Solution Blueprint Repeat Presentation (ts-bd-6) until answered No, which
+  // falls through to Solution Blueprint Payment (ts-bd-7).
+  { id: 'tsf-bd-5-1', task_step_id: 'ts-bd-5', field_name: "Presentation date (linked to 'Presentation Dates locked')", field_type: 'date', order: 1 },
+  {
+    id: 'tsf-bd-5-2', task_step_id: 'ts-bd-5', field_name: 'Invoices raised', field_type: 'repeatable_group', order: 2,
+    columns: [{ key: 'invoice_number', label: 'Invoice Number', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }, { key: 'date', label: 'Date', type: 'date' }], default_rows: 3,
+  },
+  { id: 'tsf-bd-5-3', task_step_id: 'ts-bd-5', field_name: 'Is re-presentation required?', field_type: 'boolean', order: 3 },
+
+  // BD — Solution Blueprint Repeat Presentation
+  { id: 'tsf-bd-6-1', task_step_id: 'ts-bd-6', field_name: 'Is re-presentation required?', field_type: 'boolean', order: 1 },
+
+  // BD — Solution Blueprint Payment: no additional fields.
+
+  // BD — Project Proposal Submission
+  { id: 'tsf-bd-8-1', task_step_id: 'ts-bd-8', field_name: 'Engagement Start Date', field_type: 'date', order: 1 },
+  { id: 'tsf-bd-8-2', task_step_id: 'ts-bd-8', field_name: 'Fee for engagement', field_type: 'number', order: 2 },
+  { id: 'tsf-bd-8-3', task_step_id: 'ts-bd-8', field_name: 'Period in weeks', field_type: 'number', order: 3 },
+  { id: 'tsf-bd-8-4', task_step_id: 'ts-bd-8', field_name: 'Additional Fees for delay', field_type: 'number', order: 4 },
+  { id: 'tsf-bd-8-5', task_step_id: 'ts-bd-8', field_name: 'ManPower (Project Manager + Additional resources)', field_type: 'text', order: 5 },
+
+  // BD — Implementation
+  { id: 'tsf-bd-9-1', task_step_id: 'ts-bd-9', field_name: 'Engagement Start Date', field_type: 'date', order: 1 },
+  { id: 'tsf-bd-9-2', task_step_id: 'ts-bd-9', field_name: 'Engagement End Date', field_type: 'date', order: 2 },
+  { id: 'tsf-bd-9-3', task_step_id: 'ts-bd-9', field_name: 'Period Months', field_type: 'number', order: 3 },
+  { id: 'tsf-bd-9-4', task_step_id: 'ts-bd-9', field_name: 'Fixed Fee', field_type: 'number', order: 4 },
+  { id: 'tsf-bd-9-5', task_step_id: 'ts-bd-9', field_name: 'Fixed fee start date', field_type: 'date', order: 5 },
+  { id: 'tsf-bd-9-6', task_step_id: 'ts-bd-9', field_name: 'Variable Fee Start Date', field_type: 'date', order: 6 },
+  { id: 'tsf-bd-9-7', task_step_id: 'ts-bd-9', field_name: 'Variable Fee End Date', field_type: 'date', order: 7 },
+  { id: 'tsf-bd-9-8', task_step_id: 'ts-bd-9', field_name: 'Variable Fee Total (Cap)', field_type: 'number', order: 8 },
+  { id: 'tsf-bd-9-9', task_step_id: 'ts-bd-9', field_name: 'Variable Milestone Fee Cap', field_type: 'number', order: 9 },
+  { id: 'tsf-bd-9-10', task_step_id: 'ts-bd-9', field_name: 'Variable Performance Fee Cap', field_type: 'number', order: 10 },
+
+  // Mining (same shape as BD steps 2-4 pre-rework)
   { id: 'tsf-mining-1-1', task_step_id: 'ts-mining-1', field_name: 'Expected start date of next stage', field_type: 'date', order: 1 },
 
   { id: 'tsf-mining-2-1', task_step_id: 'ts-mining-2', field_name: 'Fee for engagement', field_type: 'number', order: 1 },
@@ -303,15 +377,22 @@ export const leads = [
 // (§8.3 rework) alongside its checklist items. Steps whose demo doneCounts
 // already made them look finished get a placeholder value per field so
 // they don't regress to "In progress" purely for lacking seed data.
-function placeholderFieldValue(fieldType) {
-  if (fieldType === 'date') return daysFromNow(30)
-  if (fieldType === 'number') return '10000'
-  if (fieldType === 'boolean') return 'Yes'
+function placeholderFieldValue(tmpl) {
+  if (tmpl.field_type === 'repeatable_group') {
+    const rows = Array.from({ length: tmpl.default_rows || 0 }, () => Object.fromEntries((tmpl.columns || []).map((c) => [c.key, ''])))
+    return JSON.stringify(rows)
+  }
+  if (tmpl.field_type === 'date') return daysFromNow(30)
+  if (tmpl.field_type === 'number') return '10000'
+  if (tmpl.field_type === 'boolean') return 'Yes'
   return 'TBD'
 }
 
-function makeLeadTasksAndItems(leadId, leadTypeId, doneCounts, completedBy) {
-  // doneCounts: how many items in each of this type's steps are marked done, in order
+// doneCounts: how many checklist items in each of this type's steps are
+// marked done, in step order. fieldOverrides: { [templateFieldId]: value }
+// for fields that need a specific demo value (e.g. a branch gate's answer)
+// rather than the generic placeholder.
+function makeLeadTasksAndItems(leadId, leadTypeId, doneCounts, completedBy, fieldOverrides = {}) {
   const tasks = []
   const items = []
   const fields = []
@@ -321,9 +402,13 @@ function makeLeadTasksAndItems(leadId, leadTypeId, doneCounts, completedBy) {
     const stepItems = checklistTemplateItems.filter((c) => c.task_step_id === step.id)
     const doneN = doneCounts[stepIdx] ?? 0
     let taskStatus = 'Not started'
-    if (doneN >= stepItems.length) taskStatus = 'Completed'
+    if (doneN >= stepItems.length && stepItems.length > 0) taskStatus = 'Completed'
     else if (doneN > 0) taskStatus = 'In progress'
-    tasks.push({ id: taskId, lead_id: leadId, source_task_step_id: step.id, name: step.name, order: step.order, status: taskStatus })
+    tasks.push({
+      id: taskId, lead_id: leadId, source_task_step_id: step.id, name: step.name, order: step.order, status: taskStatus,
+      branch_field_id: step.branch_field_id || null,
+      branch_map: step.branch_map ? { ...step.branch_map } : null,
+    })
     stepItems.forEach((tmpl, i) => {
       items.push({
         id: `${taskId}-ci-${i + 1}`,
@@ -338,20 +423,32 @@ function makeLeadTasksAndItems(leadId, leadTypeId, doneCounts, completedBy) {
       })
     })
     const stepFields = taskStepFields.filter((f) => f.task_step_id === step.id).sort((a, b) => a.order - b.order)
-    const stepLooksComplete = doneN >= stepItems.length
+    const stepLooksComplete = doneN >= stepItems.length && stepItems.length > 0
     stepFields.forEach((tmpl) => {
-      const value = stepLooksComplete ? placeholderFieldValue(tmpl.field_type) : ''
-      fields.push({ id: `${taskId}-f-${tmpl.order}`, lead_task_id: taskId, field_name: tmpl.field_name, field_type: tmpl.field_type || 'text', field_value: value, order: tmpl.order })
+      let value = tmpl.field_type === 'repeatable_group' ? placeholderFieldValue(tmpl) : ''
+      if (tmpl.id in fieldOverrides) value = fieldOverrides[tmpl.id]
+      else if (stepLooksComplete && !tmpl.visible_if_field_id && tmpl.field_type !== 'repeatable_group') value = placeholderFieldValue(tmpl)
+      fields.push({
+        id: `${taskId}-f-${tmpl.order}`, lead_task_id: taskId, field_name: tmpl.field_name,
+        field_type: tmpl.field_type || 'text', field_value: value, order: tmpl.order,
+        source_field_id: tmpl.id,
+        visible_if_field_id: tmpl.visible_if_field_id || null,
+        visible_if_value: tmpl.visible_if_value || null,
+        columns: tmpl.columns || null,
+      })
     })
   })
   return { tasks, items, fields }
 }
 
-// l-1: Introduction done, 2Hr Study in progress. l-2: further along — Introduction
-// and 2Hr Study done, Solution Blueprint in progress. l-3: unassigned, so the
-// owner (Priya) is the one shown completing work so far.
-const t1 = makeLeadTasksAndItems('l-1', 'lt-bd', [4, 3, 0, 0], 'u-satyashri')
-const t2 = makeLeadTasksAndItems('l-2', 'lt-bd', [4, 9, 4, 0], 'u-shailesh')
+// l-1: Introduction and First Meeting done, 2Hr Study & Presentation in
+// progress. l-2: further along — Introduction and 2Hr Study done, answered
+// "Yes" on the Solution Blueprint gate (§ BD flow rework) so it continues
+// into Solution Blueprint Proposal, currently in progress. l-3 is Mining
+// (unaffected by the BD rework) — unassigned, so the owner (Priya) is shown
+// completing work so far.
+const t1 = makeLeadTasksAndItems('l-1', 'lt-bd', [5, 3, 0, 0, 0, 0, 0, 0, 0], 'u-satyashri')
+const t2 = makeLeadTasksAndItems('l-2', 'lt-bd', [5, 6, 2, 1, 0, 0, 0, 0, 0], 'u-shailesh', { 'tsf-bd-3-1': 'Yes' })
 const t3 = makeLeadTasksAndItems('l-3', 'lt-mining', [5, 2, 0, 0], 'u-priya')
 
 export const leadTasks = [...t1.tasks, ...t2.tasks, ...t3.tasks]
@@ -362,13 +459,10 @@ export const leadTaskFields = [...t1.fields, ...t2.fields, ...t3.fields]
 const l1FirstChecklistItem = leadChecklistItems.find((i) => i.id === 'l-1-t-1-ci-1')
 if (l1FirstChecklistItem) l1FirstChecklistItem.notes = 'Confirmed with Laura Kim — she has budget authority.'
 
-// Fill in a couple of example values on l-1's already-completed steps so the
-// "Additional details" feature shows real data out of the box.
+// Fill in an example value on l-1's already-completed Introduction step so
+// the "Additional details" feature shows real data out of the box.
 const l1IntroField = leadTaskFields.find((f) => f.lead_task_id === 'l-1-t-1')
 if (l1IntroField) l1IntroField.field_value = daysFromNow(14)
-const l1StudyFields = leadTaskFields.filter((f) => f.lead_task_id === 'l-1-t-2')
-if (l1StudyFields[0]) l1StudyFields[0].field_value = '150000'
-if (l1StudyFields[1]) l1StudyFields[1].field_value = '2'
 
 export const leadCustomValues = [
   { id: 'lcv-1', lead_id: 'l-1', custom_field_id: 'ltcf-1', value: daysFromNow(14) },
@@ -387,12 +481,12 @@ export const attachments = [
 export const activities = [
   { id: 'a-1', lead_id: 'l-1', type: 'Note', summary: 'Lead created by Meera Shah; Priya Nair assigned as owner', body: '', created_by: 'u-meera', created_at: daysAgo(30) },
   { id: 'a-2', lead_id: 'l-1', type: 'Assignment', summary: 'Assigned to Satyashri Mohanti', body: '', created_by: 'u-priya', created_at: daysAgo(29) },
-  { id: 'a-3', lead_id: 'l-1', type: 'ChecklistUpdate', summary: 'Introduction: 4/4 items completed', body: '', created_by: 'u-satyashri', created_at: daysAgo(10) },
+  { id: 'a-3', lead_id: 'l-1', type: 'ChecklistUpdate', summary: 'Introduction and First Meeting: 5/5 items completed', body: '', created_by: 'u-satyashri', created_at: daysAgo(10) },
   { id: 'a-4', lead_id: 'l-1', type: 'Call', summary: 'Discovery call with Laura Kim', body: 'Walked through analytics requirements; needs board-level reporting.', created_by: 'u-priya', created_at: daysAgo(2) },
   { id: 'a-5', lead_id: 'l-2', type: 'Note', summary: 'Lead created by Rohan Mehta; Arjun Verma assigned as owner', body: '', created_by: 'u-rohan', created_at: daysAgo(55) },
   { id: 'a-6', lead_id: 'l-2', type: 'Assignment', summary: 'Assigned to Shailesh Ranjan', body: '', created_by: 'u-arjun', created_at: daysAgo(54) },
   { id: 'a-7', lead_id: 'l-2', type: 'Note', summary: 'Legal flagged data residency clause', body: 'Need US-only hosting confirmed in contract.', created_by: 'u-arjun', created_at: daysAgo(5) },
-  { id: 'a-8', lead_id: 'l-2', type: 'ChecklistUpdate', summary: '2Hr Study & Presentation: 9/9 items completed', body: '', created_by: 'u-shailesh', created_at: daysAgo(15) },
+  { id: 'a-8', lead_id: 'l-2', type: 'ChecklistUpdate', summary: '2Hr Study & Presentation: 6/6 items completed', body: '', created_by: 'u-shailesh', created_at: daysAgo(15) },
   { id: 'a-9', lead_id: 'l-3', type: 'Note', summary: 'Lead created by Priya Nair (self-owned, no rep assigned yet)', body: '', created_by: 'u-priya', created_at: daysAgo(18) },
   { id: 'a-10', lead_id: 'l-3', type: 'ChecklistUpdate', summary: 'Exploration: 5/5 items completed', body: '', created_by: 'u-priya', created_at: daysAgo(8) },
 ]
@@ -419,4 +513,13 @@ export const notifications = [
   { id: 'n-6', user_id: 'u-shailesh', type: 'assignment', message: 'You were assigned to lead LD-2026-0002 (MediCare Systems)', link: '/leads/l-2', read: true, created_at: daysAgo(54) },
   { id: 'n-7', user_id: 'u-arjun', type: 'followup', message: 'Follow-up overdue: Follow up on legal redlines', link: '/leads/l-2', read: false, created_at: daysAgo(1) },
   { id: 'n-8', user_id: 'u-priya', type: 'followup', message: 'Follow-up due: Share POC access credentials', link: '/leads/l-3', read: false, created_at: daysFromNow(4) },
+]
+
+// --- Resource requests (Lead Detail → Resources tab) --------------------------
+// Routing to whoever fulfills these (a new role/person, TBD) isn't built yet —
+// for now a request just records what's needed and by when.
+export const RESOURCE_REQUEST_TYPES = ['2Hr Study', 'SnT']
+
+export const resourceRequests = [
+  { id: 'rr-1', lead_id: 'l-1', type: '2Hr Study', due_date: daysFromNow(6), status: 'Requested', requested_by: 'u-priya', created_at: daysAgo(1) },
 ]

@@ -12,6 +12,7 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
         const isActive = task.id === activeId
         const isCompleted = task.status === 'Completed'
         const isStarted = task.status === 'In progress'
+        const isSkipped = !!task.skipped
         const counts = itemCounts?.[task.id]
 
         return (
@@ -21,7 +22,8 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
             onClick={() => onSelect(task.id)}
             className={cn(
               'flex items-stretch gap-3 rounded-md px-2 py-2 text-left transition-colors',
-              isActive ? 'bg-accent' : 'hover:bg-accent/50'
+              isActive ? 'bg-accent' : 'hover:bg-accent/50',
+              isSkipped && 'opacity-50'
             )}
           >
             <div className="flex flex-col items-center">
@@ -44,7 +46,9 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
               <p className={cn('truncate text-sm font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
                 {task.name}
               </p>
-              {counts && (
+              {isSkipped ? (
+                <p className="text-xs text-muted-foreground">Skipped</p>
+              ) : counts && (
                 <p className="text-xs text-muted-foreground">{counts.done}/{counts.total} done</p>
               )}
             </div>
