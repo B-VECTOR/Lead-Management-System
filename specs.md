@@ -1,6 +1,6 @@
 # Lead Management System — Product Specification
 
-> **Status:** Draft v0.5 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment, owner-scoped Admin + Manager lead create/edit, BD Admin read-only oversight role, per-lead Follow Up tab — §21.21)
+> **Status:** Draft v0.6 (phase 1 — Task tab redesign, conversion reminder implemented, optional rep assignment, owner-scoped Admin + Manager lead create/edit, BD Admin read-only oversight role, per-lead Follow Up tab (§21.21); BD flow reworked to 9 steps with branching/skipped steps, repeatable-group + conditional fields, per-lead Resources tab (§21.22))
 > **Product type:** Internal delivery/lead management tool for Vector Consulting Group. Phase 1 of a planned multi-phase internal platform (see §1.4).
 > **Purpose:** Single source of truth describing every part of the system, structured so each section can be handed to Claude in VSCode as a build prompt. This document is written to stand alone — a fresh session with no prior chat history should be able to read it and understand exactly what's built and why.
 > **Implementation note:** See §21 for the full changelog of what's actually been built so far and where it diverges from earlier drafts.
@@ -114,6 +114,10 @@ Company (client account)
 | **Additional Task** *(formerly "Follow-up / Action item")* | An ad-hoc task a manager creates and assigns, separate from the template checklist. Cross-lead list lives in its own tab next to the Leads list — see §13. |
 | **Activity** | Timestamped log entry (call, note, status change, checklist update). |
 | **Notification** | In-app alert to a user (assignment, additional-task due date, etc.). |
+| **Branch / skipped step** *(new, §21.22)* | A task/step's template can carry a `branch_field_id` + `branch_map`: once the lead's answer to that field is known, some later steps are no longer on the path and render as **skipped** — excluded from progress/completion but still viewable. BD-only in this pass. See §7.1, §8.3. |
+| **Repeatable-group field** *(new, §21.22)* | An additional-detail field whose value is a small user-editable table (e.g. "Key stakeholders mapped": Name, Role) rather than a single input. Always optional — never blocks step completion. See §7.1. |
+| **Conditional (visible-if) field** *(new, §21.22)* | An additional-detail field that only renders once a sibling "controller" field on the same step equals a specific value (e.g. reimbursement fields only appear once "Is Solution Blueprint Required?" = Yes). Hidden fields don't count toward step completion. See §7.1, §8.3. |
+| **Resource Request** *(new, §21.22)* | A lightweight per-lead record ("I need a 2Hr Study / SnT resource by this date") created from the lead's **Resources** tab. Records what was asked, by whom, and by when — there's no fulfillment/assignment flow yet. See §13. |
 
 > **Type vs. Status:** *Lead type* = which of the 3 kinds it is (fixed, drives the workflow). *Status* = the lead's current execution state (changes over time — see §8). Independent axes.
 
@@ -209,13 +213,23 @@ This is the configurable core. **Admins** define the templates globally; **manag
 Lead Type (1 of 3: BD / Mining / Extension)
   ├── Custom fields              (extra fields beyond defaults, specific to this type)
   └── Task / Step (ordered, named)
+        ├── branch_field_id / branch_map   ← NEW, §21.22: optional step-level branch gate
+        │     (once this step's named field is answered, branch_map[value] names
+        │      the next step id to continue to; steps left off the resulting path
+        │      render as "skipped" — see §8.3)
         ├── Checklist item (ordered)
         │     └── requires_file?   (bool — rep must upload a document before marking it Completed)
         └── Additional-detail field (ordered)     ← NEW, §21.12
-              (a fixed plain-text input, e.g. "Contract value ($)" — not a checklist,
-               not ad-hoc; always shown for the step, same shape for every lead of this type)
+              (a fixed input, e.g. "Contract value ($)" — not a checklist, not ad-hoc;
+               always shown for the step, same shape for every lead of this type, unless:)
+              ├── visible_if_field_id / visible_if_value   ← NEW, §21.22: only rendered
+              │     (and only required for completion) once a sibling field on the
+              │      same step currently equals this value
+              └── field_type = 'repeatable_group'          ← NEW, §21.22: value is a small
+                    user-editable table (columns[], default_rows) instead of a scalar;
+                    always optional, never blocks step completion
 ```
-The moment a **lead** of this type is created, the template above is **copied** onto it as an editable working instance: `lead_tasks` + `lead_checklist_items` + `lead_task_fields` (with empty values, ready for the rep to fill in). Editing the template later does **not** retroactively change existing leads.
+The moment a **lead** of this type is created, the template above is **copied** onto it as an editable working instance: `lead_tasks` (carrying its own `branch_field_id`/`branch_map`) + `lead_checklist_items` + `lead_task_fields` (with empty values — a `repeatable_group` field's "empty" is a JSON array of `default_rows` blank rows, ready for the rep to fill in). Editing the template later does **not** retroactively change existing leads.
 
 > **[CHANGED v0.4 → removed further in §21.11]** Checklist items used to also carry a `notify` flag (fires a notification when actionable) and rendered a "Notifies" badge. This has been **removed entirely** — checklist items no longer have any notification concept, just `requires_file`.
 
@@ -229,24 +243,24 @@ The moment a **lead** of this type is created, the template above is **copied** 
 | 3 | **Extension** | **[PLACEHOLDER]** single-step placeholder seeded; real workflow pending |
 
 ### 7.3 BD — task/steps
+
+> **[CHANGED — §21.22]** Reworked from a flat 4-step flow to a **9-step flow with two branch gates**, reflecting the real BD process (2Hr Study → Solution Blueprint → Proposal → Implementation) instead of a generic demo/proposal/close shape. Numeric prefixes ("1.1 -", "2.3 -") were also stripped from every checklist item label across all 3 lead types as a cosmetic cleanup — no items were removed by that pass.
+
 Custom fields (lead-type-level, §7 "Custom fields" — currently unused in any UI): `POC start date (date)`, `Compliance review needed? (yes/no)`
 
-- **Step 1 — Discovery** · additional-detail fields: *Budget confirmed ($)*, *Timeline (weeks)*
-  - [ ] Confirm decision maker & authority
-  - [ ] Capture required product modules — *requires file: requirement doc*
-  - [ ] Log budget & timeline
-- **Step 2 — Demo / Evaluation** · additional-detail fields: *Demo date*, *Attendees*
-  - [ ] Schedule product demo
-  - [ ] Deliver demo & capture feedback — *requires file: demo notes*
-  - [ ] Provision trial/POC access
-- **Step 3 — Proposal** · additional-detail fields: *Proposal amount ($)*, *Discount (%)*
-  - [ ] Prepare pricing & proposal — *requires file: proposal PDF*
-  - [ ] Internal approval
-  - [ ] Send proposal to client
-- **Step 4 — Close** · additional-detail fields: *Contract value ($)*, *PO number*
-  - [ ] Negotiate terms
-  - [ ] Collect signed contract — *requires file: signed agreement*
-  - [ ] Handoff to onboarding
+| # | Step | Additional-detail fields | Branch / notes |
+|---|---|---|---|
+| 1 | Introduction and First Meeting | — | Items: confirm decision maker & authority, capture required product modules (*requires file: requirement doc*), **First Meeting completed** |
+| 2 | 2Hr Study & Presentation | Date field (2Hr Presentation date confirmed); repeatable group **"Key stakeholders mapped"** (Name, Role) | 6 checklist items |
+| 3 | 2Hr Study Reimbursement | **Branch gate:** *"Is Solution Blueprint Required?"* (yes/no) | `Yes → Solution Blueprint Proposal` (step 4); `No → Project Proposal Submission` (step 8) |
+| 4 | Solution Blueprint Proposal | — | Items: Proposal Submitted, Proposal terms agreed |
+| 5 | Solution Blueprint | Date field; repeatable group **"Invoices raised"** (Invoice Number, Value, Date); **branch gate:** *"Is re-presentation required?"* | `Yes → Solution Blueprint Repeat Presentation` (step 6); `No → Solution Blueprint Payment` (step 7) |
+| 6 | Solution Blueprint Repeat Presentation | Same **branch gate** as step 5 | `Yes →` loops back to **itself** (step 6, another round); `No → Solution Blueprint Payment` (step 7). *Assignee note: defaults to the same rep assigned to the Solution Blueprint block.* |
+| 7 | Solution Blueprint Payment | Fixed-fee / reimbursement invoice fields | *Assignee note: defaults to the same rep assigned to the Solution Blueprint block.* |
+| 8 | Project Proposal Submission | Engagement Start Date, Fee for engagement, Period (weeks), Additional Fees for delay, ManPower | This is where step 3's "No" branch lands directly. *Assignee note: defaults to the BD owner.* |
+| 9 | Implementation | PO from Customer, First Fixed fee invoice, Total/Milestone/Performance Cap fee fields (variable fee split into three) | Was step 4 in the old 4-step flow; field set expanded |
+
+A step reached only via a "No"/skip branch (e.g. steps 4–7 when step 3 answers "No") renders as **skipped** in the stepper and is excluded from progress/completion — see §8.3 and §13. The `assignee_note` on steps 6–8 is descriptive text only in this pass; it is **not** wired into any assignment-automation logic yet.
 
 ### 7.4 Mining / Extension — **[PLACEHOLDER]**
 > Supply the real task/steps (and any additional-detail fields) and I'll wire them in exactly. Currently seeded with a single placeholder step ("Getting Started"), 2 placeholder checklist items, and one placeholder additional-detail field ("Notes") each, just so a lead of these types is fully functional in the meantime.
@@ -298,6 +312,12 @@ Each checklist item's status is one of **4** values, shown as a `Select`:
 
 `done` is disabled in the dropdown until a required file (§7.1 `requires_file`) has been attached. A step's own status (§8.1) is recomputed from its items **and, as of §21.21, its Additional details fields (§7.1) too**: Completed requires every item `done`/`na` **and** every field non-empty; if either any item isn't `open` or any field has a value, it's In progress; otherwise Not started. This makes the per-step gate in §13 stricter than a pure checklist check.
 
+> **[CHANGED — §21.22]** Two refinements to that computation:
+> - **Skipped steps don't count.** If a step's `branch_field_id` answer (or an earlier step's) routes the lead's path around a step (§7.1), that step is flagged `skipped` and excluded from both the completion requirement and the progress-ring denominator. The "current stage" shown on the leads table (§13) also skips over these steps when finding where a lead actually stands, including the existing 14-day "stuck" check.
+> - **Only *visible*, non-repeatable fields are required.** A field hidden by its `visible_if_field_id`/`visible_if_value` gate (§7.1) doesn't block completion while hidden. A `repeatable_group` field (§7.1) never blocks completion — it's always supplementary, regardless of visibility.
+>
+> A step with **zero** checklist items can no longer read as trivially "Completed" by default (closed a seed-data edge case, not a template rule change).
+
 ---
 
 ## 9. Tasks, assignments & notifications
@@ -323,6 +343,9 @@ Each notification has `type, message, link (to the item), read (bool), created_a
 
 ### 9.3 Additional tasks *(formerly "ad-hoc follow-ups / action items")*
 `id, lead_id, title, due_date, assigned_to, done, reminder_at`. Distinct from the template task/steps; created by managers (or auto-created by the conversion-reminder mechanism, §8.2), surfaced to reps and on the dashboard. Cross-lead list lives in its own **Additional Task** tab next to the Leads list (§13), with a "related lead" field on manual creation.
+
+### 9.4 Resource requests — **new, §21.22**
+`resource_requests(id, lead_id, type, due_date, status, requested_by, created_at)`. A per-lead ask for a resource needed to progress it — **not** an attachment/document, just a structured record of what/who/when. `type` is one of `RESOURCE_REQUEST_TYPES` (currently `2Hr Study`, `SnT`); `status` is always `Requested` in this pass — there is no fulfil/assign/close transition yet, and no notification is fired on creation. Created from the lead's **Resources** tab (§13) by anyone who can manage follow-ups (`PERMISSIONS.manageFollowups` — everyone except BD Admin), listed newest-first, scoped by the same lead visibility rules as everything else (§2.1). **[DECIDE]** who/how a request gets fulfilled — routing to a person or team is explicitly out of scope for this pass.
 
 ---
 
@@ -356,7 +379,7 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 8. In-app notifications (bell + unread count).
 9. Additional tasks (ad-hoc, cross-lead) with due dates, including auto-generated BD conversion reminders (§8.2).
 10. List view (filter/search/sort) — search matches project name, Lead ID, company, and industry.
-11. Lead detail: top overview card (assigned rep, owner, progress, timeline) + 4 tabs — **Task**, **Activity**, **Files**, **Details**. *(Distinct from the top-level Leads section's own 3 tabs — see §13 for the disambiguation.)*
+11. Lead detail: top overview card (assigned rep, owner, progress, timeline) + 6 tabs — **Task**, **Activity**, **Files**, **Details**, **Follow Up** (§21.21), **Resources** (§21.22). *(Distinct from the top-level Leads section's own 3 tabs — see §13 for the disambiguation.)*
 12. File view/download/delete (Admin) on top of upload.
 13. Dashboard: lead counts by status, overdue additional tasks, active leads in scope.
 
@@ -386,12 +409,13 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
    - **Lead** → the leads list/table itself (`/leads`).
    - **Task** → a **cross-lead** list of checklist items assigned to/visible to the current user (`/leads/tasks`).
    - **Additional Task** → a **cross-lead** list of follow-ups (`/leads/additional-tasks`), with a "related lead" field on manual creation.
-2. **Individual Lead Detail page** (`/leads/:id`): a top overview card, then its **own, separate** 5 tabs (5th added §21.21) —
+2. **Individual Lead Detail page** (`/leads/:id`): a top overview card, then its **own, separate** 6 tabs (5th added §21.21, 6th added §21.22) —
    - **Task** → this one lead's stepper + checklist (§7.1, §8.3) plus the active step's "Additional details" fields (§7.1).
    - **Activity** → the log/notes feed (§11) — **read-only, no manual entry (§21.21)**; only auto-logged entries (status/checklist/assignment changes) appear.
    - **Files** → upload + view/download/delete (§10).
    - **Details** → Classification (industry, domain, product modules, source, tags, conversion reminder) + Description & notes. No Commercials card (§5.3 — removed).
-   - **Follow Up** *(new, §21.21)* → the same follow-up list/create/comment functionality as the cross-lead Follow ups page, scoped to this one lead — the "related lead" field is omitted entirely since the current lead is implicit and can't be changed.
+   - **Follow Up** *(§21.21)* → the same follow-up list/create/comment functionality as the cross-lead Follow ups page, scoped to this one lead — the "related lead" field is omitted entirely since the current lead is implicit and can't be changed.
+   - **Resources** *(new, §21.22)* → request tracker for a lead. Helper copy: "Request a resource needed to move this lead forward." A **"New request"** button (gated on `PERMISSIONS.manageFollowups` — same permission as Follow Up, i.e. hidden for BD Admin) opens a "Request a resource" dialog with required **Resource type** (`2Hr Study` / `SnT`) and **Due date**; submitting creates a `Requested`-status record shown as a card (type, due date, requested-by). No edit/fulfil/cancel flow yet — see §9.4.
 
 | Screen | Purpose | Notes |
 |---|---|---|
@@ -407,9 +431,12 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 **Task tab layout (§21.12) — mobile-responsive stepper:**
 - **Desktop (≥`md`):** a vertical step rail on the left (sticky), showing each step's number/checkmark, name, and an "n/m done" count; the active step's checklist card renders to its right, followed by its "Additional details" card below the checklist.
 - **Mobile (<`md`):** the rail collapses into a horizontal, scrollable strip above the checklist card, so nothing needs horizontal page scrolling.
-- Steps are **always clickable/viewable in any order (§21.21)** — the rep can look ahead or back freely. *Editing* a step (checking items, saving its Additional details) is a separate, stricter gate: a step only becomes editable once every earlier step is fully **Completed** — which now means both its checklist items **and** its Additional details fields (§8.3) — otherwise the step renders read-only with a "View only" note. Within the currently-editable step, items themselves are still worked in order (can't check item N before N-1).
+- Steps are **always clickable/viewable in any order (§21.21)** — the rep can look ahead or back freely. *Editing* a step (checking items, saving its Additional details) is a separate, stricter gate: a step only becomes editable once every earlier **on-path** step is fully **Completed** — which now means both its checklist items **and** its Additional details fields (§8.3) — otherwise the step renders read-only with a "View only" note. Within the currently-editable step, items themselves are still worked in order (can't check item N before N-1).
+- **Skipped steps (§21.22):** a step bypassed by an earlier branch answer (§7.1, §8.3) renders at `opacity-50` in both the desktop rail and mobile strip; the vertical rail additionally swaps its "n/m done" count for a **"Skipped"** label. A skipped step is never treated as the active/editable step — the stepper's "current step" calculation walks only on-path steps to find the first incomplete one. If a user does open a skipped step to look at it, its status badge reads a muted "Skipped" and the usual "View only — complete every earlier step…" caption is replaced with *"Skipped — an earlier answer routed this lead around this step."*
 - Each checklist item row shows its label and a read-only status badge (§8.3) — the **only** way to change status, add a remark, or attach a file is the row's **Edit** icon button (pinned to the row's right edge); the checkbox remains as a quick shortcut for marking an item Completed. There's no separate file-attach control on the row anymore — files live inside the Edit dialog alongside status and remark, committed together on Save. A small file-count badge on the row is read-only.
 - The step's "Additional details" card (fixed fields, §7.1) sits below the checklist card, with its own explicit **Save** button (disabled until a field's value actually changes) — no silent autosave. **A step's fields now count toward its completion (§8.3, §21.21)** — the "Completed" step status is no longer purely a checklist-item computation.
+- **Conditional fields (§21.22):** a field with `visible_if_field_id` only renders once its controller field (elsewhere on the same step) currently equals `visible_if_value` — checked against the *live, unsaved* form state, so fields appear/disappear immediately as the user fills the form, before Save. Only the fields visible at Save time are written or counted toward completion.
+- **Repeatable-group fields (§21.22):** a field with `field_type: 'repeatable_group'` renders as a small editable table (columns from the template, e.g. Name/Role) pre-populated with the template's `default_rows` blank rows, plus an **"Add row"** button. Always optional — excluded from the step-completion requirement regardless of visibility.
 
 **Removed from phase 1 nav** (§12.2): Leads — Kanban, Companies, Reports, Settings as standalone screens.
 
@@ -438,22 +465,35 @@ leads(id, code, name,                                            -- `name` = pro
 
 -- Templates (Admin-configured; no admin UI yet — edit seed data directly, §21.9)
 lead_types(id, name, description, active)                       -- BD | Mining | Extension
-task_steps(id, lead_type_id→lead_types, name, order, description)
+task_steps(id, lead_type_id→lead_types, name, order, description,
+           branch_field_id→task_step_fields NULLABLE,           -- NEW, §21.22
+           branch_map jsonb NULLABLE,                           -- NEW, §21.22: { fieldValue: nextStepId }
+           assignee_note text NULLABLE)                         -- NEW, §21.22: descriptive only, not wired to automation
 checklist_template_items(id, task_step_id→task_steps, label, order, requires_file bool)
                                                                   -- `notify` column removed, §21.11
-task_step_fields(id, task_step_id→task_steps, field_name, order)  -- NEW, §21.12: fixed
-                                                                   -- "additional detail" field template
+task_step_fields(id, task_step_id→task_steps, field_name, order,
+                 field_type default 'text',                     -- NEW, §21.22: e.g. 'repeatable_group'
+                 columns jsonb NULLABLE,                         -- NEW, §21.22: [{key,label,type}], repeatable_group only
+                 default_rows int NULLABLE,                      -- NEW, §21.22: repeatable_group only
+                 visible_if_field_id→task_step_fields NULLABLE,  -- NEW, §21.22
+                 visible_if_value NULLABLE)                      -- NEW, §21.22
+                                                                   -- fixed "additional detail" field template, §21.12
 lead_type_custom_fields(id, lead_type_id→lead_types, field_name, field_type, required, options[])
 
 -- Working instances (one set per lead, instantiated automatically at creation)
-lead_tasks(id, lead_id→leads, source_task_step_id→task_steps, name, order, status)
+lead_tasks(id, lead_id→leads, source_task_step_id→task_steps, name, order, status,
+           branch_field_id→lead_task_fields NULLABLE, branch_map jsonb NULLABLE,  -- NEW, §21.22: copied from template
+           skipped bool default false)                          -- NEW, §21.22: computed, not stored server-side in the mock layer — derived by computeTaskPath() at read time
 lead_checklist_items(id, lead_task_id→lead_tasks, label, order,
                      state[open|in_progress|done|na],             -- 4 values now, §21.12/§8.3
                      requires_file bool, notes text default '',   -- `notify` removed, `notes` added
                      done_by→users, done_at)
-lead_task_fields(id, lead_task_id→lead_tasks, field_name, field_value, order)  -- NEW, §21.12:
+lead_task_fields(id, lead_task_id→lead_tasks, field_name, field_value, order,
+                 source_field_id→task_step_fields,               -- NEW, §21.22
+                 visible_if_field_id→lead_task_fields NULLABLE, visible_if_value NULLABLE,  -- NEW, §21.22
+                 columns jsonb NULLABLE)                          -- NEW, §21.22: repeatable_group only
                                                                                  -- one row per step per lead,
-                                                                                 -- instantiated from task_step_fields
+                                                                                 -- instantiated from task_step_fields, §21.12
 lead_custom_values(id, lead_id→leads, custom_field_id→lead_type_custom_fields, value)
 
 -- Cross-cutting
@@ -462,9 +502,13 @@ attachments(id, entity_type[lead|checklist_item], entity_id, filename, title, ur
 activities(id, lead_id→leads, type, summary, body, created_by→users, created_at)
 additional_tasks(id, lead_id→leads, title, due_date, assigned_to→users, done bool, reminder_at)
 notifications(id, user_id→users, type, message, link, read bool, created_at)
+resource_requests(id, lead_id→leads, type, due_date, status default 'Requested',   -- NEW, §21.22
+                   requested_by→users, created_at)                                  -- see §9.4
 ```
 
 > **[CHANGED v0.4]** `projects`, `project_tasks`, `project_checklist_items`, and `project_custom_values` no longer exist. They merged into `leads`, `lead_tasks`, `lead_checklist_items`, and `lead_custom_values` respectively. `followups` renamed to `additional_tasks` (and dropped its `project_id` column, since there's no project to reference). See §21.7.
+>
+> **[CHANGED v0.6 — §21.22]** `task_steps`/`lead_tasks` gained branch-gate columns (`branch_field_id`, `branch_map`) plus a `skipped` flag on the working instance; `task_step_fields`/`lead_task_fields` gained `field_type`/`columns`/`default_rows` (repeatable-group fields) and `visible_if_field_id`/`visible_if_value` (conditional fields). New table `resource_requests` (§9.4). None of this touched `lead_checklist_items`' shape.
 >
 > **[CHANGED v0.5]** `leads` gained `name` (project name) and `conversion_reminder`; lost every commercial field (`plan`, `seats`, `billing_cycle`, `contract_length`, `currency`, `renewal_date` — §5.3) and now allows `assigned_to` to be null (§5.2). `checklist_template_items` and `lead_checklist_items` lost their `notify` column; `lead_checklist_items` gained `notes`; its `state` enum grew from 3 values to 4 (`in_progress` added). Two new tables, `task_step_fields` and `lead_task_fields`, back the per-step "additional details" feature (§7.1). `attachments` gained `title`. See §21.11–§21.18.
 
@@ -500,6 +544,8 @@ GET    /api/leads/:id/activities        POST /api/leads/:id/activities
 GET    /api/leads/:id/additional-tasks  POST /api/leads/:id/additional-tasks  PATCH /api/additional-tasks/:id
 GET    /api/additional-tasks       ?assignedToMe=&overdueOnly=    (cross-lead list, §13)
 GET    /api/checklist-items        ?assignedTo=&status=&q=        (cross-lead list, §13)
+GET    /api/leads/:id/resource-requests   POST /api/leads/:id/resource-requests   -- NEW, §21.22/§9.4:
+                                                                                    -- list+create only, no PATCH/DELETE yet
 GET    /api/notifications   PATCH /api/notifications/:id/read
 
 -- Admin config (data model only in phase 1 — not wired to a screen yet, §21.9)
@@ -566,6 +612,8 @@ GET    /api/dashboard/summary
 4. Can a Manager reassign a lead to another manager, or is that Admin-only? — **implemented as Admin-only.**
 5. **[DECIDE]** Backup cadence/retention.
 6. **[FUTURE]** Resource allocation, finance tracker, feedback management systems (§1.4) — no schema yet, flagged here so it isn't forgotten.
+7. **[DECIDE]** How a **Resource Request** (§9.4, §21.22) actually gets fulfilled — who sees/owns the queue, whether it needs its own assignee/status transitions and notifications, or whether it should fold into the existing Additional Task mechanism instead of staying a separate entity.
+8. **[DECIDE]** Whether the new `assignee_note` text on BD steps 6–8 (§7.3, §21.22) should become real default-assignee automation, or stay purely descriptive.
 
 *(Former item 6, the BD → Mining/Extension conversion reminder, is no longer open — implemented, see §8.2/§21.17.)*
 
@@ -687,5 +735,19 @@ A large bundled pass reversing/extending several earlier decisions:
 - Mock DB version bumped to `lms-mock-db-v13` (role/status-semantics changes require a reseed).
 - **Known terminology drift, not addressed in this pass:** the domain model (§3, §9.3) and some of §13 still say "Additional Task" in places, but the actual UI/code (`pages/FollowUpsList.jsx`, the "Follow ups" tab, this section's new "Follow Up" tab) already calls the concept "Follow up(s)" — a naming cleanup predating this change. Treat "Additional Task" and "Follow-up" as the same entity until a documentation pass reconciles the term throughout.
 
+### 21.22 BD flow reworked to 9 steps with branching, repeatable/conditional fields, and a new Resources tab (§7.1, §7.3, §8.3, §9.4, §13, §14, §15)
+
+A large pass reflecting the real BD process shape, plus a new lightweight resource-tracking feature:
+
+- **BD flow expanded from 4 to 9 steps** (§7.3): Introduction and First Meeting → 2Hr Study & Presentation → 2Hr Study Reimbursement → Solution Blueprint Proposal → Solution Blueprint → Solution Blueprint Repeat Presentation → Solution Blueprint Payment → Project Proposal Submission → Implementation. Mining and Extension were **not** restructured — only cosmetic numeric-prefix stripping was applied to their checklist item labels (also applied to BD's).
+- **Step branching (§7.1, §7.3, §8.3):** `task_steps`/`lead_tasks` gained `branch_field_id`/`branch_map` — once that step's named field is answered, the branch map names the next step id, and every step left off the resulting path is flagged `skipped`. Two gates were seeded on BD: step 3 ("Is Solution Blueprint Required?") skips steps 4–7 entirely when answered "No"; step 5/6 ("Is re-presentation required?") loops step 6 back onto itself for repeat presentations, or advances to payment. `computeTaskPath()` (new, `api/checklist.js`) walks the step order to resolve this. Skipped steps are excluded from the progress-ring denominator, the step-completion requirement, and the "current stage" resolution shown on the leads table (§13) — including its existing stuck-lead threshold check.
+- **Conditional (visible-if) fields (§7.1, §13):** `task_step_fields`/`lead_task_fields` gained `visible_if_field_id`/`visible_if_value` — a field only renders (and only counts toward step completion) once a sibling field on the same step currently equals that value, checked against live unsaved form state so it reacts before Save. Seeded on "2Hr Study Reimbursement," where several fee/manpower/payment fields stay hidden until "Is Solution Blueprint Required?" = Yes.
+- **Repeatable-group fields (§7.1, §13):** new `field_type: 'repeatable_group'` — value is a small editable table (`columns[]` template, `default_rows` pre-populated blank rows, "Add row" button) rendered by a new `RepeatableGroupInput` in `TaskStepFields.jsx`, values stored as a JSON-stringified array. Always optional and excluded from step-completion requirements regardless of visibility. Seeded as "Key stakeholders mapped" (Name, Role) on 2Hr Study & Presentation, and "Invoices raised" (Invoice Number, Value, Date) on Solution Blueprint.
+- **Stepper visuals for skipped steps (§13):** `TaskStepper`/`TaskStepperVertical` render a skipped step at `opacity-50`; the vertical rail swaps its "n/m done" count for a "Skipped" label. `LeadTaskTab`'s active-step resolution now walks only on-path (non-skipped) steps to find the first incomplete one, so a skipped step can never become the active/editable step; viewing one directly shows a muted "Skipped" status badge and the caption "Skipped — an earlier answer routed this lead around this step" instead of the usual "View only" copy.
+- **New per-lead Resources tab (§9.4, §13):** a new `resource_requests` entity/table (`id, lead_id, type, due_date, status, requested_by, created_at`) with list+create only (no edit/fulfil/delete yet — routing a request to whoever fulfills it is explicitly out of scope for this pass). New files `api/resources.js`, `hooks/useResources.js`, `components/leads/LeadResourcesTab.jsx`; wired in as Lead Detail's 6th tab, after Follow Up. "New request" reuses the existing `PERMISSIONS.manageFollowups` check (no new permission) — hidden only for BD Admin. `RESOURCE_REQUEST_TYPES` seeded as `['2Hr Study', 'SnT']`.
+- **Assignee-note metadata (§7.3):** `task_steps` gained a descriptive `assignee_note` column, seeded on the 3 new post-branch steps (e.g. "Defaults to the same rep assigned to the Solution Blueprint block"). **Not** wired into any actual assignment-automation logic in this pass — display-only, and not currently rendered anywhere in the UI either; flagged here so a future pass either surfaces or automates it rather than forgetting it exists.
+- **Small unrelated fixes bundled into the same commit:** `FollowupUpdateDialog` footer buttons reordered ("Close follow-up" now left-aligned, "Save comment" primary/right); closed follow-up titles in `LeadFollowUpsTab`/`FollowUpsList` no longer render with strikethrough (muted color + "Closed" badge only).
+- Seed data: `createLead()` (`api/leads.js`) now copies the new branch/visibility/column metadata onto working-instance rows at creation time; a step with zero checklist items can no longer trivially read as "Completed" (closed a seed-data edge case). Mock DB version bumped `lms-mock-db-v15` → **`lms-mock-db-v17`** (forces reseed).
+
 ---
-*End of draft v0.5. Supply the real Mining/Extension workflows (§7.4) and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*
+*End of draft v0.6. Supply the real Mining/Extension workflows (§7.4), decide who/how a resource request gets fulfilled (§9.4), and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*
