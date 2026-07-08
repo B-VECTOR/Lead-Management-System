@@ -12,7 +12,7 @@ import { useLeadTypes } from '@/hooks/useLeadTypes'
 import { useUsers } from '@/hooks/useUsers'
 import { useCreateLead, useLead, useUpdateLead } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
-import { PERMISSIONS } from '@/api/scope'
+import { PERMISSIONS, hasRole } from '@/api/scope'
 import { INDUSTRIES, PRIORITIES, DOMAINS, DIVISIONS } from '@/mocks/seed'
 import { toast } from 'sonner'
 
@@ -39,10 +39,12 @@ export default function LeadForm() {
   const updateLead = useUpdateLead()
   const createCompany = useCreateCompany()
 
-  const reps = useMemo(() => users.filter((u) => u.role === 'Representative'), [users])
-  const managers = useMemo(() => users.filter((u) => u.role === 'Manager'), [users])
+  const reps = useMemo(() => users.filter((u) => !hasRole(u, 'Lead Manager') && !hasRole(u, 'Lead Admin')), [users])
+  const managers = useMemo(() => users.filter((u) => hasRole(u, 'Lead Manager')), [users])
   const bdType = useMemo(() => leadTypes.find((t) => t.name === 'BD'), [leadTypes])
-  const isAdmin = user.role === 'Admin'
+  // Anyone creating a lead without being a Lead Manager themselves (i.e. Marketing,
+  // per PERMISSIONS.createLead) must hand it off to a Lead Manager as owner.
+  const needsOwnerPicker = !hasRole(user, 'Lead Manager')
 
   const [form, setForm] = useState(emptyForm)
 
@@ -73,11 +75,11 @@ export default function LeadForm() {
         description: existingLead.description || '', internal_notes: existingLead.internal_notes || '',
       })
     } else if (!isEdit) {
-      // Admin must pick which Manager owns the lead; a Manager always owns
-      // what it creates, same as before (§21.21) — no picker shown for them.
-      setForm((f) => ({ ...f, lead_type_id: leadTypes[0]?.id || '', owner_id: isAdmin ? '' : user.id }))
+      // Marketing must pick which Lead Manager owns the lead; a Lead Manager
+      // always owns what it creates itself — no picker shown for them.
+      setForm((f) => ({ ...f, lead_type_id: leadTypes[0]?.id || '', owner_id: needsOwnerPicker ? '' : user.id }))
     }
-  }, [isEdit, existingLead, leadTypes, user, isAdmin])
+  }, [isEdit, existingLead, leadTypes, user, needsOwnerPicker])
 
   useEffect(() => {
     if (bdType && form.lead_type_id !== bdType.id && form.conversion_reminder !== 'none') {
@@ -136,7 +138,7 @@ export default function LeadForm() {
   }
 
   const saving = createLead.isPending || updateLead.isPending
-  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && (!isAdmin || isEdit || form.owner_id)
+  const canSubmit = form.name.trim() && form.company_id && form.lead_type_id && form.industry && (!needsOwnerPicker || isEdit || form.owner_id)
 
   if (!isEdit && !PERMISSIONS.createLead(user)) return null
   if (isEdit && existingLead && !PERMISSIONS.editLead(user, existingLead)) return null
@@ -234,16 +236,16 @@ export default function LeadForm() {
         <CardHeader><CardTitle className="text-base">Ownership & assignment</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5 sm:col-span-2">
-            <Label>Owner{isAdmin && !isEdit ? ' (Manager) *' : ''}</Label>
-            {isAdmin && !isEdit ? (
+            <Label>Owner{needsOwnerPicker && !isEdit ? ' (Lead Manager) *' : ''}</Label>
+            {needsOwnerPicker && !isEdit ? (
               <>
                 <Select value={form.owner_id} onValueChange={(v) => setIfPresent('owner_id', v)}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder="Select a manager" /></SelectTrigger>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Select a lead manager" /></SelectTrigger>
                   <SelectContent>
                     {managers.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">The Manager who will run this lead day-to-day. They can assign a rep themselves, or you can pick one below now.</p>
+                <p className="text-xs text-muted-foreground">The Lead Manager who will run this lead day-to-day. They can assign a rep themselves, or you can pick one below now.</p>
               </>
             ) : (
               <>

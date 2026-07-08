@@ -1,7 +1,8 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users2, Bell, Boxes, Wallet, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { LayoutDashboard, Users2, Bell, Boxes, Wallet, UserCog, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
+import { hasRole } from '@/api/scope'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Logo } from './Logo'
@@ -10,12 +11,15 @@ import { Logo } from './Logo'
 // Reports/Settings are removed for now (§21 rework) — Companies and Follow-ups
 // functionality still exist, just accessed from inside a lead rather than as
 // their own nav destinations. Reports/Settings return in a later phase.
+// Items with no `roles` are visible to every signed-in user (everyone always
+// holds the implicit Employee role); `roles` gates an item to specific roles.
 const NAV_ITEMS = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
-  { to: '/leads', label: 'Leads', icon: Users2, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
-  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
-  { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
-  { to: '/notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'Manager', 'Representative', 'BD Admin'] },
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/leads', label: 'Leads', icon: Users2 },
+  { to: '/resources', label: 'Resources', icon: Boxes },
+  { to: '/finance', label: 'Finance', icon: Wallet },
+  { to: '/users', label: 'Users', icon: UserCog, roles: ['User Management'] },
+  { to: '/notifications', label: 'Notifications', icon: Bell },
 ]
 
 function NavItem({ to, label, icon: Icon, collapsed }) {
@@ -49,7 +53,7 @@ function NavItem({ to, label, icon: Icon, collapsed }) {
 export function Sidebar({ className, collapsed = false, onToggle }) {
   const { user } = useAuth()
   if (!user) return null
-  const items = NAV_ITEMS.filter((item) => item.roles.includes(user.role))
+  const items = NAV_ITEMS.filter((item) => !item.roles || item.roles.some((r) => hasRole(user, r)))
 
   return (
     <nav className={cn('flex h-full flex-col gap-1 p-3', collapsed && 'items-center px-2', className)}>

@@ -4,7 +4,7 @@
 // later (see src/api/*.js) doesn't change call sites.
 import * as seed from './seed'
 
-const STORAGE_KEY = 'lms-mock-db-v17'
+const STORAGE_KEY = 'lms-mock-db-v18'
 
 const collections = [
   'users', 'companies', 'contacts', 'leadTypes', 'taskSteps', 'checklistTemplateItems', 'taskStepFields',

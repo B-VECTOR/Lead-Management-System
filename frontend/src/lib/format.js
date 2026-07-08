@@ -37,3 +37,10 @@ export function initials(name) {
   if (!name) return '?'
   return name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase()
 }
+
+// Roles are many-to-many with an always-present implicit 'Employee' — hide
+// that one in free-text display since it's not a meaningful distinguisher.
+export function displayRoles(user) {
+  const roles = (user?.roles || []).filter((r) => r !== 'Employee')
+  return roles.length ? roles.join(', ') : 'Employee'
+}

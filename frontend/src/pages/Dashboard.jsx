@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { ProgressRing } from '@/components/shared/ProgressRing'
 import { LeadStatusBadge } from '@/components/shared/StatusBadge'
 import { useAuth } from '@/context/AuthContext'
+import { hasRole } from '@/api/scope'
 import { useDashboardSummary } from '@/hooks/useDashboard'
 import { useCompanies } from '@/hooks/useCompanies'
 import { formatDate, isOverdue } from '@/lib/format'
@@ -35,18 +36,19 @@ export default function Dashboard() {
   if (isLoading || !data) return <div className="text-sm text-muted-foreground">Loading dashboard…</div>
 
   const statusMax = Math.max(1, ...data.countByStatus.map((s) => s.count))
+  const isLeadAdmin = hasRole(user, 'Lead Admin')
+  const isLeadManager = hasRole(user, 'Lead Manager')
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {user.role === 'Representative' ? 'My work' : 'Dashboard'}
+          {isLeadManager || isLeadAdmin ? 'Dashboard' : 'My work'}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {user.role === 'Admin' && 'Your leads and their follow-ups.'}
-          {user.role === 'Manager' && 'Your leads and team follow-ups.'}
-          {user.role === 'Representative' && 'Everything currently assigned to you.'}
-          {user.role === 'BD Admin' && 'Lead health across the whole company — view only.'}
+          {isLeadAdmin && 'Lead health across the whole company — view only.'}
+          {!isLeadAdmin && isLeadManager && 'Your leads and team follow-ups.'}
+          {!isLeadAdmin && !isLeadManager && 'Everything currently assigned to you.'}
         </p>
       </div>
 
@@ -93,7 +95,7 @@ export default function Dashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">{user.role === 'Representative' ? 'My leads' : 'Active leads in scope'}</CardTitle>
+          <CardTitle className="text-base">{isLeadManager || isLeadAdmin ? 'Active leads in scope' : 'My leads'}</CardTitle>
         </CardHeader>
         <CardContent>
           {data.activeLeads.length === 0 && <p className="text-sm text-muted-foreground">No active leads right now.</p>}

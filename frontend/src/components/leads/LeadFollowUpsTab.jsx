@@ -13,7 +13,7 @@ import { FollowupUpdateDialog } from './FollowupUpdateDialog'
 import { useFollowups, useCreateFollowup } from '@/hooks/useFollowups'
 import { useUsers } from '@/hooks/useUsers'
 import { useAuth } from '@/context/AuthContext'
-import { PERMISSIONS } from '@/api/scope'
+import { PERMISSIONS, hasRole } from '@/api/scope'
 import { formatDate, formatRelativeDue, isOverdue } from '@/lib/format'
 
 // The lead's own follow-ups — same functionality as the cross-lead Follow ups
@@ -31,7 +31,8 @@ export function LeadFollowUpsTab({ leadId }) {
   const [activeFollowup, setActiveFollowup] = useState(null)
 
   const userById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users])
-  const assignableUsers = useMemo(() => (user.role === 'Representative' ? [user] : users.filter((u) => u.role !== 'Admin' && u.role !== 'BD Admin')), [users, user])
+  const isExecutionOnly = !hasRole(user, 'Lead Manager') && !hasRole(user, 'Lead Admin')
+  const assignableUsers = useMemo(() => (isExecutionOnly ? [user] : users.filter((u) => !hasRole(u, 'Lead Admin'))), [users, user, isExecutionOnly])
 
   const sorted = [...followups].sort((a, b) => Number(a.done) - Number(b.done) || new Date(a.due_date) - new Date(b.due_date))
 

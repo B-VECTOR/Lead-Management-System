@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/context/AuthContext'
 import { useUsers } from '@/hooks/useUsers'
+import { displayRoles } from '@/lib/format'
 
 export default function Login() {
   const { login } = useAuth()
@@ -67,7 +68,7 @@ export default function Login() {
                   className="rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
                 >
                   <span className="font-medium">{u.name}</span>
-                  <span className="text-muted-foreground"> — {u.role} · {u.email}</span>
+                  <span className="text-muted-foreground"> — {displayRoles(u)} · {u.email}</span>
                 </button>
               ))}
             </div>

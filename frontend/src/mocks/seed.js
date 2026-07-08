@@ -11,16 +11,81 @@ const daysFromNow = (n) => new Date(now.getTime() + n * 86400000).toISOString()
 // a freshly-uploaded file would.
 const demoFileUrl = (text) => `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`
 
-export const ROLES = ['Admin', 'Manager', 'Representative', 'BD Admin']
+// Roles are many-to-many (§2 rework) — every user always implicitly holds
+// IMPLICIT_ROLE ('Employee') in addition to whatever's in their own `roles`
+// array; it's never rendered as a selectable checkbox in the Users UI.
+export const SELECTABLE_ROLES = ['User Management', 'Lead Admin', 'Lead Manager', 'Marketing', 'Resource Manager', 'Finance']
+export const IMPLICIT_ROLE = 'Employee'
+export const ALL_ROLES = [...SELECTABLE_ROLES, IMPLICIT_ROLE]
 
+// Belt hierarchy shown on both `belt` and `acting_belt_level` fields.
+export const BELT_LEVELS = ['Potential Black', 'Black', 'White', 'Brown', 'Red', 'Potential Brown', 'Potential White', 'Potential Red', 'NA']
+
+// NOTE: `password` is stored in plain text here purely as a mock stand-in —
+// same caveat as api/auth.js's login(), which doesn't check it yet either.
+// Swap for real hashed-password handling once the Django+SimpleJWT backend
+// (specs.md §17) lands.
 export const users = [
-  { id: 'u-meera', name: 'Meera Shah', email: 'meera.shah@company.com', role: 'Admin', manager_id: null, active: true },
-  { id: 'u-rohan', name: 'Rohan Mehta', email: 'rohan.mehta@company.com', role: 'Admin', manager_id: null, active: true },
-  { id: 'u-devika', name: 'Devika Rao', email: 'devika.rao@company.com', role: 'BD Admin', manager_id: null, active: true },
-  { id: 'u-priya', name: 'Priya Nair', email: 'priya.nair@company.com', role: 'Manager', manager_id: null, active: true },
-  { id: 'u-arjun', name: 'Arjun Verma', email: 'arjun.verma@company.com', role: 'Manager', manager_id: null, active: true },
-  { id: 'u-satyashri', name: 'Satyashri Mohanti', email: 'satyashri.mohanti@company.com', role: 'Representative', manager_id: 'u-priya', active: true },
-  { id: 'u-shailesh', name: 'Shailesh Ranjan', email: 'shailesh.ranjan@company.com', role: 'Representative', manager_id: 'u-arjun', active: true },
+  {
+    id: 'u-meera', name: 'Meera Shah', email: 'meera.shah@company.com', password: 'password123',
+    roles: ['Lead Manager', 'User Management', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1001', mobile_no: '9820011001', acting_belt_level: 'Black', belt: 'Black',
+    domain: 'Operations', date_of_joining: '2019-04-01',
+  },
+  {
+    id: 'u-rohan', name: 'Rohan Mehta', email: 'rohan.mehta@company.com', password: 'password123',
+    roles: ['Lead Manager', 'User Management', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1002', mobile_no: '9820011002', acting_belt_level: 'Black', belt: 'Black',
+    domain: 'Projects', date_of_joining: '2018-11-12',
+  },
+  {
+    id: 'u-devika', name: 'Devika Rao', email: 'devika.rao@company.com', password: 'password123',
+    roles: ['Lead Admin', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1003', mobile_no: '9820011003', acting_belt_level: 'Black', belt: 'Black',
+    domain: 'Distribution', date_of_joining: '2020-01-15',
+  },
+  {
+    id: 'u-priya', name: 'Priya Nair', email: 'priya.nair@company.com', password: 'password123',
+    roles: ['Lead Manager', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1004', mobile_no: '9820011004', acting_belt_level: 'Red', belt: 'Red',
+    domain: 'Operations', date_of_joining: '2020-06-01',
+  },
+  {
+    id: 'u-arjun', name: 'Arjun Verma', email: 'arjun.verma@company.com', password: 'password123',
+    roles: ['Lead Manager', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1005', mobile_no: '9820011005', acting_belt_level: 'Red', belt: 'Red',
+    domain: 'Projects', date_of_joining: '2021-02-18',
+  },
+  {
+    id: 'u-satyashri', name: 'Satyashri Mohanti', email: 'satyashri.mohanti@company.com', password: 'password123',
+    roles: ['Employee'], manager_id: 'u-priya', active: true,
+    employee_id: 'EMP-1006', mobile_no: '9820011006', acting_belt_level: 'Brown', belt: 'Brown',
+    domain: 'Operations', date_of_joining: '2022-08-22',
+  },
+  {
+    id: 'u-shailesh', name: 'Shailesh Ranjan', email: 'shailesh.ranjan@company.com', password: 'password123',
+    roles: ['Employee'], manager_id: 'u-arjun', active: true,
+    employee_id: 'EMP-1007', mobile_no: '9820011007', acting_belt_level: 'Potential Brown', belt: 'White',
+    domain: 'Projects', date_of_joining: '2023-03-06',
+  },
+  {
+    id: 'u-nisha', name: 'Nisha Kulkarni', email: 'nisha.kulkarni@company.com', password: 'password123',
+    roles: ['Marketing', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1008', mobile_no: '9820011008', acting_belt_level: 'White', belt: 'White',
+    domain: 'B2B Sales', date_of_joining: '2023-09-11',
+  },
+  {
+    id: 'u-farhan', name: 'Farhan Sheikh', email: 'farhan.sheikh@company.com', password: 'password123',
+    roles: ['Resource Manager', 'Employee'], manager_id: null, active: true,
+    employee_id: 'EMP-1009', mobile_no: '9820011009', acting_belt_level: 'Red', belt: 'Red',
+    domain: 'Supply Chain', date_of_joining: '2021-07-19',
+  },
+  {
+    id: 'u-kavya', name: 'Kavya Iyer', email: 'kavya.iyer@company.com', password: 'password123',
+    roles: ['Finance', 'Employee'], manager_id: null, active: false,
+    employee_id: 'EMP-1010', mobile_no: '9820011010', acting_belt_level: 'NA', belt: 'NA',
+    domain: 'Operations', date_of_joining: '2022-01-05',
+  },
 ]
 
 export const companies = [

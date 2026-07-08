@@ -16,7 +16,7 @@ import { useLeads } from '@/hooks/useLeads'
 import { useCompanies } from '@/hooks/useCompanies'
 import { useUsers } from '@/hooks/useUsers'
 import { useAuth } from '@/context/AuthContext'
-import { PERMISSIONS } from '@/api/scope'
+import { PERMISSIONS, hasRole } from '@/api/scope'
 import { formatDate, formatRelativeDue, isOverdue } from '@/lib/format'
 
 // Ad-hoc action items, distinct from a lead's template checklist (§9.3) —
@@ -37,7 +37,8 @@ export default function FollowUpsList() {
   const leadById = useMemo(() => Object.fromEntries(leads.map((l) => [l.id, l])), [leads])
   const companyById = useMemo(() => Object.fromEntries(companies.map((c) => [c.id, c])), [companies])
   const userById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users])
-  const assignableUsers = useMemo(() => (user.role === 'Representative' ? [user] : users.filter((u) => u.role !== 'Admin' && u.role !== 'BD Admin')), [users, user])
+  const isExecutionOnly = !hasRole(user, 'Lead Manager') && !hasRole(user, 'Lead Admin')
+  const assignableUsers = useMemo(() => (isExecutionOnly ? [user] : users.filter((u) => !hasRole(u, 'Lead Admin'))), [users, user, isExecutionOnly])
 
   const sorted = [...followups].sort((a, b) => Number(a.done) - Number(b.done) || new Date(a.due_date) - new Date(b.due_date))
 

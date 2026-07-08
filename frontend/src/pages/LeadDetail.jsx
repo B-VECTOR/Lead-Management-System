@@ -23,7 +23,7 @@ import { useActivitiesForLead } from '@/hooks/useActivities'
 import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hooks/useAttachments'
 import { useUsers } from '@/hooks/useUsers'
 import { useAuth } from '@/context/AuthContext'
-import { PERMISSIONS } from '@/api/scope'
+import { PERMISSIONS, hasRole } from '@/api/scope'
 import { LEAD_STATUSES } from '@/mocks/seed'
 import { formatDate, formatDateTime } from '@/lib/format'
 import { leadProgress } from '@/api/checklist'
@@ -57,8 +57,8 @@ export default function LeadDetail() {
   const deleteAttachment = useDeleteAttachment('lead', id)
 
   const userById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users])
-  const managers = useMemo(() => users.filter((u) => u.role === 'Manager' || u.role === 'Admin'), [users])
-  const reps = useMemo(() => users.filter((u) => u.role === 'Representative'), [users])
+  const managers = useMemo(() => users.filter((u) => hasRole(u, 'Lead Manager')), [users])
+  const reps = useMemo(() => users.filter((u) => !hasRole(u, 'Lead Manager') && !hasRole(u, 'Lead Admin')), [users])
   const leadTypeName = useMemo(() => leadTypes.find((t) => t.id === lead?.lead_type_id)?.name, [leadTypes, lead])
 
   const [fileTitle, setFileTitle] = useState('')

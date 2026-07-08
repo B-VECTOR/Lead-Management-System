@@ -49,41 +49,46 @@ This is being built as a general-purpose internal platform, not just a lead trac
 
 ## 2. Users, roles, belts & permissions
 
-The company uses an internal **belt hierarchy** (low → high): **White → Brown → Red → Black**. Only the top belts (**Red, Black**) use this app. `belt` is stored as a **display attribute** on each user; functional access is governed by the three **roles** below.
+> **[CHANGED — §21.23]** Roles are now **many-to-many** (a user can hold several at once) instead of a single string, and a full User Management module (create/list/view/edit/deactivate, set/reset password) was added. See §21.23 for the mapping from the old single-role model.
 
-| Role | Typical belt | Responsibility |
-|---|---|---|
-| **Admin** | Black | A higher-authority lead owner — same shape as Manager below, just a different seniority tier; *owner-scoped*, not global (§21.21) |
-| **Manager** | Red/Black | Owns leads; leads a team of reps; creates/edits the leads it owns (§21.21 restores this) |
-| **Representative** (consultant) | Red | Executes assigned work — updates checklists, uploads files, completes tasks |
-| **BD Admin** | Black | Global, strictly **read-only** oversight role (§21.21) — sees every lead across the company but cannot create, edit, assign, update checklists, or manage follow-ups on any of them |
+Each user carries a `roles[]` array drawn from **User Management, Lead Admin, Lead Manager, Marketing, Resource Manager, Finance**, plus an implicit **Employee** role every user always holds (never shown as a selectable checkbox — it's granted automatically on creation).
 
-Reps belong to a manager (`manager_id`). Both Admins and Managers own the leads they create (`owner_id` = creator, always — there is no owner picker, §21.21). Reps are assigned leads by their lead's owner, either at creation or afterward.
+The company also uses an internal **belt hierarchy**: **White → Brown → Red → Black**, plus **Potential** variants of each (**Potential White/Brown/Red/Black**) and **NA**. Two independent belt fields are stored per user — `belt` and `acting_belt_level` (current) — both **display attributes**; functional access is governed entirely by `roles[]`.
+
+| Role | Responsibility |
+|---|---|
+| **User Management** | Manages users — create, edit roles, deactivate, reset passwords. |
+| **Lead Admin** | Global, strictly **read-only** oversight — sees every lead across the company and pulls reports, but cannot create, edit, assign, update checklists, or manage follow-ups. |
+| **Lead Manager** | Owns leads; creates and assigns them; leads a team. |
+| **Marketing** | Can create a lead (fills in details) but cannot assign it — a Lead Manager must be picked as owner at creation. |
+| **Resource Manager** | Allocates manpower/resources to a lead's Resources step so its workflow can proceed; the same resource can be allocated across multiple leads concurrently, and reassigned later based on budget. *(Allocation UI/flow is future work — see §9.4/§21.22's Resources tab for the current lightweight request-only version.)* |
+| **Finance** | Tracks financials. *(Scope to be detailed in a later pass.)* |
+| **Employee** *(implicit, always held)* | Executes assigned work — updates checklists, uploads files, completes tasks. The base role everyone has, on top of anything above. |
+
+Reps (Employee-only users) belong to a manager (`manager_id`). Lead Managers own the leads they create (`owner_id` = creator, always — there is no owner picker for them); Marketing users hand ownership to a chosen Lead Manager at creation. Reps are assigned leads by their lead's owner, either at creation or afterward.
 
 ### 2.1 Permissions matrix (confirmed)
 
-> **[CHANGED — §21.21]** Admin is no longer a global role for lead visibility/mutation — it's owner-scoped exactly like Manager (each only sees/edits leads it created). The **BD Admin** row is new: global visibility, but every mutation column is ❌.
-
-| Action | Admin | Manager | Representative | BD Admin |
+| Action | Lead Manager | Marketing | Employee-only | Lead Admin |
 |---|:--:|:--:|:--:|:--:|
-| See dashboard | ✅ own leads | ✅ own leads | ✅ own leads | ✅ global (read-only) |
-| Create lead / company | ✅ (becomes owner) | ✅ (becomes owner) | ❌ | ❌ |
-| View leads | **own only** | **own only** | **only leads assigned to them** | **all, view-only** |
-| Edit lead details | ✅ own leads | ✅ own leads | ❌ | ❌ |
-| Reassign lead owner (manager) | ✅ own leads | ✅ own leads | ❌ | ❌ |
-| Assign / reassign a lead's representative | ✅ (own leads) | ✅ (own leads) | ❌ | ❌ |
-| Add / configure checklist items on own leads | ✅ | ✅ | ❌ | ❌ |
-| Update checklist items / notes / upload files | ✅ (own leads) | ✅ (own leads) | ✅ (assigned) | ❌ |
-| Create / update follow-ups (formerly additional tasks) | ✅ | ✅ | ✅ (own) | ❌ |
+| See dashboard | ✅ own leads | ✅ own leads | ✅ assigned leads | ✅ global (read-only) |
+| Create lead / company | ✅ (becomes owner) | ✅ (picks a Lead Manager as owner) | ❌ | ❌ |
+| View leads | **own only** | **own only** (until owner picked) | **only leads assigned to them** | **all, view-only** |
+| Edit lead details | ✅ own leads | ❌ | ❌ | ❌ |
+| Reassign lead owner (Lead Manager) | ✅ own leads | ❌ | ❌ | ❌ |
+| Assign / reassign a lead's representative | ✅ (own leads) | ❌ | ❌ | ❌ |
+| Add / configure checklist items on own leads | ✅ | ❌ | ❌ | ❌ |
+| Update checklist items / notes / upload files | ✅ (own leads) | ❌ | ✅ (assigned) | ❌ |
+| Create / update follow-ups | ✅ | ✅ (own) | ✅ (own) | ❌ |
 | See first/last follow-up comment preview on the leads table | ❌ | ❌ | ❌ | ✅ (only role that sees this column) |
-| Delete an attachment | ✅ own leads | ✅ own leads | ❌ | ❌ |
-| Delete / archive lead | ✅ own leads | ✅ own leads | ❌ | ❌ |
-| Configure lead types & checklist **templates** (global) | ✅ | ❌ | ❌ | ❌ *(no admin UI yet — §21.9)* |
-| Manage users | ✅ | ❌ | ❌ | ❌ *(no admin UI yet — §21.9)* |
+| Delete an attachment | ✅ own leads | ❌ | ❌ | ❌ |
+| Delete / archive lead | ✅ own leads | ❌ | ❌ | ❌ |
+| Configure lead types & checklist **templates** (global) | ❌ | ❌ | ❌ | ❌ *(User Management only)* |
+| Manage users | ❌ | ❌ | ❌ | ❌ *(User Management only)* |
 
 **Priority defaults to Medium** when unset (any role that can create a lead). *(Changed from Low — see §21.16.)*
 
-**Note on lead create/edit (§21.21, supersedes §21.20):** §21.20 had made `createLead`/`editLead` Admin-only. This is **reversed**: both Admin and Manager can create a lead, and each becomes its owner (`owner_id` = creator — there's no owner picker on the form anymore). Editing, status changes, archiving, reassigning the owner, deleting an attachment, assigning/reassigning the rep, and configuring checklist items are all scoped to **the lead's owner** (`lead.owner_id === user.id`, checked in `frontend/src/api/scope.js`), regardless of whether that owner is an Admin or a Manager — the two roles are now symmetric in scope, differing only in seniority/typical belt, not in permissions. `configureTemplatesGlobal` and `manageUsers` remain Admin-only global-config actions, unrelated to lead ownership.
+**Note on lead create/edit (§21.23, supersedes §21.21):** `createLead` is `Lead Manager`-or-`Marketing`; a `Lead Manager` always becomes the owner it creates, while `Marketing` must pick a `Lead Manager` as owner (the form's owner picker, previously shown only to Admin, now shows for anyone without the `Lead Manager` role). Editing, status changes, archiving, reassigning the owner, deleting an attachment, assigning/reassigning the rep, and configuring checklist items are all scoped to **the lead's owner** (`lead.owner_id === user.id` AND `hasRole(user, 'Lead Manager')`, checked in `frontend/src/api/scope.js`). `configureTemplatesGlobal` and `manageUsers` are `User Management`-only global-config actions, unrelated to lead ownership.
 
 **Note on the assign-rep permission:** the *same* `assignTasks` permission (Admin, or the owning Manager) that lets someone reassign a rep also lets them make the **first** assignment on a lead that was created without one — see §5.2 and §21.15. No separate permission was needed for "assign later."
 
@@ -447,7 +452,10 @@ Uploads attach at **two levels**: **Lead** and **Checklist item**.
 ## 14. Data model (relational)
 
 ```
-users(id, name, email, role[Admin|Manager|Representative], belt[white|brown|red|black],
+users(id, name, email, employee_id, mobile_no, domain, date_of_joining,
+      roles[]→[User Management|Lead Admin|Lead Manager|Marketing|Resource Manager|Finance|Employee] (many-to-many; Employee always implicitly included),
+      belt[Potential Black|Black|White|Brown|Red|Potential Brown|Potential White|Potential Red|NA],
+      acting_belt_level (same enum as belt),
       manager_id→users, password_hash, active, created_at)
 
 companies(id, name, industry, domain, website, size, location, created_by→users, created_at)
@@ -749,5 +757,18 @@ A large pass reflecting the real BD process shape, plus a new lightweight resour
 - **Small unrelated fixes bundled into the same commit:** `FollowupUpdateDialog` footer buttons reordered ("Close follow-up" now left-aligned, "Save comment" primary/right); closed follow-up titles in `LeadFollowUpsTab`/`FollowUpsList` no longer render with strikethrough (muted color + "Closed" badge only).
 - Seed data: `createLead()` (`api/leads.js`) now copies the new branch/visibility/column metadata onto working-instance rows at creation time; a step with zero checklist items can no longer trivially read as "Completed" (closed a seed-data edge case). Mock DB version bumped `lms-mock-db-v15` → **`lms-mock-db-v17`** (forces reseed).
 
+### 21.23 Many-to-many roles + full User Management module (§2, §14, §15)
+
+Replaced the single `role` string with a `roles[]` array and shipped create/list/view/edit/deactivate,
+set/reset-password, and richer profile fields:
+
+- **New role set:** `User Management, Lead Admin, Lead Manager, Marketing, Resource Manager, Finance`, plus an implicit `Employee` every user always holds and which is never a selectable checkbox (auto-appended on creation, `api/auth.js`'s `createUser`). `hasRole(user, role)` (new, `api/scope.js`) replaces every old `user.role === '...'` check.
+- **Old → new role mapping** (exact capability-preserving relabel, no net permission change for existing seed users): `Admin` → `Lead Manager` + `User Management`; `Manager` → `Lead Manager`; `Representative` → *(none, just implicit `Employee`)*; `BD Admin` → `Lead Admin`.
+- **New user profile fields:** `employee_id, mobile_no, acting_belt_level, belt, domain, date_of_joining`. `belt`/`acting_belt_level` share a 9-value enum: `Potential Black, Black, White, Brown, Red, Potential Brown, Potential White, Potential Red, NA`.
+- **New screens** (`pages/UsersList.jsx`, `UserForm.jsx`, `UserDetail.jsx`, `components/users/ResetPasswordDialog.jsx`), gated by `PERMISSIONS.manageUsers` (now `hasRole(user, 'User Management')` — the exact pre-existing hook point). Routes: `/users`, `/users/new`, `/users/:id`, `/users/:id/edit`.
+- **Password handling remains fully mocked** — `password` is stored as plain text in the mock DB purely as a stand-in for the future hashed-password + DRF SimpleJWT flow (§17); login still doesn't check it.
+- Marketing creating a lead now goes through the same owner-picker UX that Admin used to get (`LeadForm.jsx`'s `needsOwnerPicker`, generalized from the old `isAdmin` flag).
+- Mock DB version bumped `lms-mock-db-v17` → **`lms-mock-db-v18`** (roles/fields shape change forces reseed).
+
 ---
-*End of draft v0.6. Supply the real Mining/Extension workflows (§7.4), decide who/how a resource request gets fulfilled (§9.4), and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*
+*End of draft v0.7. Supply the real Mining/Extension workflows (§7.4), decide who/how a resource request gets fulfilled (§9.4) and how Resource Manager allocation actually works (§2), detail the Finance role's scope, and answer the remaining §19 items to close out phase 1 of the spec; see §21 for current build status.*

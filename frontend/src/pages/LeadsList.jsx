@@ -15,7 +15,7 @@ import { useCompanies } from '@/hooks/useCompanies'
 import { useUsers } from '@/hooks/useUsers'
 import { useLeadTypes } from '@/hooks/useLeadTypes'
 import { useAuth } from '@/context/AuthContext'
-import { PERMISSIONS } from '@/api/scope'
+import { PERMISSIONS, hasRole } from '@/api/scope'
 import { LEAD_STATUSES } from '@/mocks/seed'
 import { leadProgress, getLeadStageInfo } from '@/api/checklist'
 import { getLeadCommentPreview } from '@/api/followups'
@@ -59,7 +59,7 @@ export default function LeadsList() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Leads</h1>
           <p className="text-sm text-muted-foreground">
-            {user.role === 'Representative' ? 'Leads assigned to you.' : user.role === 'Manager' ? 'Leads you own.' : 'All leads across the company.'}
+            {hasRole(user, 'Lead Admin') ? 'All leads across the company.' : hasRole(user, 'Lead Manager') ? 'Leads you own.' : 'Leads assigned to you.'}
           </p>
         </div>
         {PERMISSIONS.createLead(user) && (

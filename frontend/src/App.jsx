@@ -11,6 +11,8 @@ import LeadForm from '@/pages/LeadForm'
 import Notifications from '@/pages/Notifications'
 import Resources from '@/pages/Resources'
 import Finance from '@/pages/Finance'
+import UsersList from '@/pages/UsersList'
+import UserForm from '@/pages/UserForm'
 import NotFound from '@/pages/NotFound'
 
 export default function App() {
@@ -32,6 +34,11 @@ export default function App() {
 
         <Route path="/resources" element={<Resources />} />
         <Route path="/finance" element={<Finance />} />
+
+        <Route path="/users" element={<UsersList />} />
+        <Route path="/users/new" element={<UserForm />} />
+        <Route path="/users/:id/edit" element={<UserForm />} />
+
         <Route path="/notifications" element={<Notifications />} />
       </Route>
 

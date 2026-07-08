@@ -2,6 +2,7 @@ import { FlaskConical } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/context/AuthContext'
 import { useUsers } from '@/hooks/useUsers'
+import { displayRoles } from '@/lib/format'
 
 // Dev-only: lets you jump between the seeded Admin/Manager/Representative
 // accounts to exercise role-based scoping (§2.1) before real login exists.
@@ -19,7 +20,7 @@ export function RoleSwitcher() {
         <SelectContent>
           {users.map((u) => (
             <SelectItem key={u.id} value={u.email}>
-              {u.name} · {u.role}
+              {u.name} · {displayRoles(u)}
             </SelectItem>
           ))}
         </SelectContent>

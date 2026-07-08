@@ -8,7 +8,7 @@ import { Sidebar } from './Sidebar'
 import { NotificationBell } from './NotificationBell'
 import { RoleSwitcher } from './RoleSwitcher'
 import { useAuth } from '@/context/AuthContext'
-import { initials } from '@/lib/format'
+import { initials, displayRoles } from '@/lib/format'
 
 export function Topbar() {
   const { user, logout } = useAuth()
@@ -45,7 +45,7 @@ export function Topbar() {
           <DropdownMenuLabel>
             <div className="flex flex-col gap-1">
               <span>{user?.name}</span>
-              <span className="text-xs font-normal text-muted-foreground">{user?.role}</span>
+              <span className="text-xs font-normal text-muted-foreground">{displayRoles(user)}</span>
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
