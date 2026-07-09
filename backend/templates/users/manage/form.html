@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+    <h1>{{ title }}</h1>
+    <form method="post">
+        {% csrf_token %}
+        {% for field in form %}
+            <p>
+                {{ field.label_tag }}
+                {% if field.name == "groups" %}
+                    <select name="{{ field.html_name }}" id="{{ field.auto_id }}" multiple size="7">
+                        {% for choice_value, choice_label in field.field.choices %}
+                            <option value="{{ choice_value }}"
+                                {% if choice_value in field.value %}selected{% endif %}>
+                                {{ choice_label }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                    <small>Hold Ctrl / Cmd to select multiple groups.</small>
+                {% else %}
+                    {{ field }}
+                {% endif %}
+                {% if field.errors %}
+                    <span style="color:red">{{ field.errors }}</span>
+                {% endif %}
+            </p>
+        {% endfor %}
+        <button type="submit">Save</button>
+    </form>
+    <p><a href="{% url 'authentication:manage-list' %}">Back to user list</a></p>
+{% endblock %}

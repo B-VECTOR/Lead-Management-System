@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -8,13 +8,11 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useUser, useCreateUser, useUpdateUser, useResetPassword } from '@/hooks/useUsers'
+import { useGroups, useBelts } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { SELECTABLE_ROLES, BELT_LEVELS, DOMAINS } from '@/mocks/seed'
-
-// User Management is a single-holder role — it's only ever changed by editing
-// the person who already has it, never picked when creating someone new.
-const CREATABLE_ROLES = SELECTABLE_ROLES.filter((r) => r !== 'User Management')
+import { DOMAINS } from '@/mocks/seed'
+import { groupLabel, IMPLICIT_GROUP_NAME } from '@/lib/roles'
 
 const emptyForm = {
   name: '', employee_id: '', email: '', mobile_no: '', date_of_joining: '',
@@ -33,6 +31,17 @@ export default function UserForm() {
   const createUser = useCreateUser()
   const updateUser = useUpdateUser()
   const resetPassword = useResetPassword()
+  const { data: groups = [] } = useGroups()
+  const { data: belts = [] } = useBelts()
+
+  const selectableRoles = useMemo(
+    () => groups.filter((g) => g.name !== IMPLICIT_GROUP_NAME).map((g) => groupLabel(g.name)),
+    [groups],
+  )
+  const beltNames = useMemo(() => belts.map((b) => b.name), [belts])
+  // User Management is a single-holder role — it's only ever changed by editing
+  // the person who already has it, never picked when creating someone new.
+  const creatableRoles = useMemo(() => selectableRoles.filter((r) => r !== 'User Management'), [selectableRoles])
 
   const [form, setForm] = useState(emptyForm)
 
@@ -88,7 +97,7 @@ export default function UserForm() {
   }
 
   const saving = createUser.isPending || updateUser.isPending || resetPassword.isPending
-  const availableRoles = isEdit ? SELECTABLE_ROLES : CREATABLE_ROLES
+  const availableRoles = isEdit ? selectableRoles : creatableRoles
 
   const basicFieldsFilled = form.name.trim() && form.employee_id.trim() && form.email.trim()
     && form.mobile_no.trim() && form.date_of_joining && form.domain
@@ -145,7 +154,7 @@ export default function UserForm() {
             <Select value={form.acting_belt_level} onValueChange={(v) => v && set('acting_belt_level', v)}>
               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {BELT_LEVELS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                {beltNames.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -154,7 +163,7 @@ export default function UserForm() {
             <Select value={form.belt} onValueChange={(v) => v && set('belt', v)}>
               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {BELT_LEVELS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                {beltNames.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

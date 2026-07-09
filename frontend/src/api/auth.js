@@ -1,77 +1,197 @@
-// Mock auth + user management. Mirrors POST /api/auth/login (§15) — password
-// isn't checked yet since there's no real backend; swap this file's body for
-// axios calls later. User CRUD below mirrors the future /api/users/* DRF
-// endpoints (§15, to be added) — `password` is stored as plain text purely as
-// a mock stand-in for real hashed-password handling.
+// Auth + user management, wired to the real Django REST backend (specs.md
+// §15/§17): login, logout, token refresh, and the user CRUD API
+// (`/api/users/`, with roles/belts resolved via `GET /api/groups/` and
+// `GET /api/belts/`) are all live. Only the forgot-password flow and the
+// logged-in self-service password change (no backend endpoint exists yet)
+// remain mocked against the localStorage DB — flagged below.
+import client, { setTokens, clearSession, getRefreshToken } from './client'
+import { getBelts, getGroups } from './lookups'
 import { getAll, getById, insert, update, genId } from '../mocks/db'
-import { IMPLICIT_ROLE } from '../mocks/seed'
+import { groupLabel, IMPLICIT_GROUP_NAME } from '../lib/roles'
 
-export async function login(email) {
-  const users = await getAll('users')
-  const user = users.find((u) => u.email.toLowerCase() === String(email).toLowerCase())
-  if (!user) throw new Error('No user found with that email.')
-  if (!user.active) throw new Error('This user account is inactive.')
-  return user
+// Belts and groups are seeded reference data, effectively static for the
+// session, so both lookups are memoized.
+let beltsPromise = null
+function loadBelts() {
+  beltsPromise ||= getBelts()
+  return beltsPromise
+}
+
+let groupsPromise = null
+function loadGroups() {
+  groupsPromise ||= getGroups()
+  return groupsPromise
+}
+
+async function beltIdToName(id) {
+  const belts = await loadBelts()
+  return belts.find((b) => b.id === id)?.name || 'NA'
+}
+
+async function beltNameToId(name) {
+  if (!name || name === 'NA') return null
+  const belts = await loadBelts()
+  return belts.find((b) => b.name === name)?.id ?? null
+}
+
+async function groupIdsToLabels(ids) {
+  const groups = await loadGroups()
+  const byId = new Map(groups.map((g) => [g.id, g.name]))
+  return (ids || []).map((id) => byId.get(id)).filter(Boolean).map(groupLabel)
+}
+
+// Resolves role-label strings (as used in the Users UI) back to Group PKs,
+// and always includes the implicit Employee group — it's granted to every
+// user but never shown as a selectable checkbox (see lib/roles.js).
+async function roleLabelsToGroupIds(labels) {
+  const groups = await loadGroups()
+  const byLabel = new Map(groups.map((g) => [groupLabel(g.name), g.id]))
+  const employeeId = groups.find((g) => g.name === IMPLICIT_GROUP_NAME)?.id
+  const ids = (labels || []).map((label) => byLabel.get(label)).filter((id) => id != null)
+  return [...new Set(employeeId != null ? [...ids, employeeId] : ids)]
+}
+
+// DRF returns validation errors as { field: [messages] }; surface the first
+// one instead of axios's generic "Request failed with status code 400".
+function throwApiError(err) {
+  const data = err.response?.data
+  if (data && typeof data === 'object') {
+    const firstVal = data[Object.keys(data)[0]]
+    const message = Array.isArray(firstVal) ? firstVal[0] : firstVal
+    if (message) throw new Error(String(message))
+  }
+  throw new Error('Something went wrong. Please try again.')
+}
+
+// --- Backend <-> frontend user shape adapter --------------------------------
+// The DRF UserSerializer returns { id, email, name, employee_id, mobile_no,
+// belt (pk|null), acting_belt_level (pk|null), domain, date_of_joining,
+// is_active, groups: [pk] }. The login response is a subset with the same
+// shape. Map both to the shape the rest of the app expects.
+async function fromApiUser(u) {
+  const [belt, acting_belt_level, roles] = await Promise.all([
+    beltIdToName(u.belt),
+    beltIdToName(u.acting_belt_level),
+    groupIdsToLabels(u.groups),
+  ])
+  return {
+    id: u.id,
+    name: u.name || u.email,
+    email: u.email,
+    roles,
+    active: u.is_active ?? true,
+    employee_id: u.employee_id || '',
+    mobile_no: u.mobile_no || '',
+    belt,
+    acting_belt_level,
+    domain: u.domain || '',
+    date_of_joining: u.date_of_joining || null,
+    manager_id: null,
+  }
+}
+
+// Converts the Users UI's form shape (role labels, belt names) into the
+// backend's expected PKs.
+async function toApiPayload(data) {
+  const [belt, acting_belt_level, groups] = await Promise.all([
+    beltNameToId(data.belt),
+    beltNameToId(data.acting_belt_level),
+    roleLabelsToGroupIds(data.roles),
+  ])
+  return {
+    name: data.name,
+    email: data.email,
+    employee_id: data.employee_id || '',
+    mobile_no: data.mobile_no || '',
+    domain: data.domain || '',
+    date_of_joining: data.date_of_joining || null,
+    belt,
+    acting_belt_level,
+    groups,
+  }
+}
+
+// --- Live backend calls -----------------------------------------------------
+
+export async function login(email, password) {
+  try {
+    const { data } = await client.post('/api/auth/login/', { email, password })
+    setTokens({ access: data.access, refresh: data.refresh })
+    return fromApiUser(data.user)
+  } catch (err) {
+    // DRF returns { detail: "No active account found with the given credentials" }.
+    throw new Error(err.response?.data?.detail || 'Login failed. Check your email and password.')
+  }
+}
+
+export async function logout() {
+  const refresh = getRefreshToken()
+  try {
+    if (refresh) await client.post('/api/auth/logout/', { refresh })
+  } catch {
+    // Blacklisting is best-effort; clear the local session regardless.
+  }
+  clearSession()
 }
 
 export async function getUsers() {
-  return getAll('users')
+  const { data } = await client.get('/api/users/')
+  const results = Array.isArray(data) ? data : data.results || []
+  return Promise.all(results.map(fromApiUser))
 }
 
 export async function getUser(id) {
-  return getById('users', id)
-}
-
-export async function createUser(data) {
-  const users = await getAll('users')
-  if (users.some((u) => u.email.toLowerCase() === String(data.email).toLowerCase())) {
-    throw new Error('A user with that email already exists.')
-  }
-  return insert('users', {
-    id: genId('u'),
-    name: data.name,
-    email: data.email,
-    password: data.password,
-    employee_id: data.employee_id || '',
-    mobile_no: data.mobile_no || '',
-    acting_belt_level: data.acting_belt_level || 'NA',
-    belt: data.belt || 'NA',
-    domain: data.domain || '',
-    date_of_joining: data.date_of_joining || null,
-    roles: [...new Set([...(data.roles || []), IMPLICIT_ROLE])],
-    manager_id: data.manager_id || null,
-    active: true,
-  })
-}
-
-export async function updateUser(id, patch) {
-  if (patch.email) {
-    const users = await getAll('users')
-    if (users.some((u) => u.id !== id && u.email.toLowerCase() === String(patch.email).toLowerCase())) {
-      throw new Error('A user with that email already exists.')
-    }
-  }
-  return update('users', id, patch)
+  const { data } = await client.get(`/api/users/${id}/`)
+  return fromApiUser(data)
 }
 
 export async function resetPassword(id, newPassword) {
-  return update('users', id, { password: newPassword })
+  // Password is the one write field that maps cleanly to the frozen API
+  // (no group/belt PK resolution needed).
+  try {
+    const { data } = await client.patch(`/api/users/${id}/`, { password: newPassword })
+    return fromApiUser(data)
+  } catch (err) {
+    throwApiError(err)
+  }
 }
 
-// Logged-in self-service password change (account settings) — distinct from
-// resetPassword() above, which is the admin-driven "set someone else's
-// password" flow and doesn't check the old one.
+export async function createUser(data) {
+  try {
+    const payload = await toApiPayload(data)
+    const { data: created } = await client.post('/api/users/', { ...payload, password: data.password })
+    return fromApiUser(created)
+  } catch (err) {
+    throwApiError(err)
+  }
+}
+
+export async function updateUser(id, patch) {
+  try {
+    const payload = await toApiPayload(patch)
+    if ('active' in patch) payload.is_active = patch.active
+    const { data } = await client.patch(`/api/users/${id}/`, payload)
+    return fromApiUser(data)
+  } catch (err) {
+    throwApiError(err)
+  }
+}
+
+// Logged-in self-service password change (Account settings). Operates on
+// the authenticated user (via the JWT), so userId is unused — kept in the
+// signature to match useChangeOwnPassword's call shape.
 export async function changeOwnPassword(userId, currentPassword, newPassword) {
-  const current = await getById('users', userId)
-  if (!current || current.password !== currentPassword) throw new Error('Current password is incorrect.')
-  return update('users', userId, { password: newPassword })
+  try {
+    await client.post('/api/auth/change-password/', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+  } catch (err) {
+    throwApiError(err)
+  }
 }
 
-// --- Forgot-password flow (mocked — no real email/backend yet) -------------
-// A real backend would email the link and never reveal whether the address
-// exists; since this demo has no mail server, the link itself is shown
-// on-screen instead (see pages/ForgotPassword.jsx), same transparency as the
-// Login page's "any password works" demo-accounts list.
+// --- Forgot-password flow (mocked — no backend endpoint yet) ----------------
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000
 
 export async function requestPasswordReset(email) {

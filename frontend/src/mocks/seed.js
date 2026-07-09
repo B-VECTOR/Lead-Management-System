@@ -11,15 +11,11 @@ const daysFromNow = (n) => new Date(now.getTime() + n * 86400000).toISOString()
 // a freshly-uploaded file would.
 const demoFileUrl = (text) => `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`
 
-// Roles are many-to-many (§2 rework) — every user always implicitly holds
-// IMPLICIT_ROLE ('Employee') in addition to whatever's in their own `roles`
-// array; it's never rendered as a selectable checkbox in the Users UI.
-export const SELECTABLE_ROLES = ['User Management', 'Lead Admin', 'Lead Manager', 'Marketing', 'Resource Manager', 'Finance']
-export const IMPLICIT_ROLE = 'Employee'
-export const ALL_ROLES = [...SELECTABLE_ROLES, IMPLICIT_ROLE]
-
-// Belt hierarchy shown on both `belt` and `acting_belt_level` fields.
-export const BELT_LEVELS = ['Potential Black', 'Black', 'White', 'Brown', 'Red', 'Potential Brown', 'Potential White', 'Potential Red', 'NA']
+// Roles (Groups) and belts are no longer hardcoded here — they're fetched
+// from the database via GET /api/groups/ and GET /api/belts/ (see
+// src/hooks/useLookups.js and src/lib/roles.js for the label mapping).
+// Demo users below still use the roles/belts as literal data values, which is
+// unaffected — only the *option lists* shown in dropdowns moved to the API.
 
 // NOTE: `password` is stored in plain text here purely as a mock stand-in —
 // same caveat as api/auth.js's login(), which doesn't check it yet either.

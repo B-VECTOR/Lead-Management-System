@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Manage users{% endblock %}
+
+{% block content %}
+    <h1>Manage users</h1>
+
+    <p>
+        {% if perms.users.add_user %}
+            <a href="{% url 'authentication:manage-create' %}">Create user</a> |
+        {% endif %}
+        {% if show_deleted %}
+            <a href="{% url 'authentication:manage-list' %}">Hide deleted users</a>
+        {% else %}
+            <a href="{% url 'authentication:manage-list' %}?show_deleted=1">Show deleted users</a>
+        {% endif %}
+    </p>
+
+    <table border="1" cellpadding="4">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Name</th>
+                <th>Employee ID</th>
+                <th>Belt</th>
+                <th>Domain</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+                <tr>
+                    <td>{{ u.email }}</td>
+                    <td>{{ u.get_full_name }}</td>
+                    <td>{{ u.employee_id }}</td>
+                    <td>{{ u.belt|default:"—" }}</td>
+                    <td>{{ u.domain|default:"—" }}</td>
+                    <td>
+                        {% if u.is_deleted %}Deleted
+                        {% elif not u.is_active %}Inactive
+                        {% else %}Active
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if u.is_deleted %}
+                            {% if perms.users.change_user %}
+                                <form action="{% url 'authentication:manage-restore' u.pk %}" method="post" style="display:inline">
+                                    {% csrf_token %}
+                                    <button type="submit">Restore</button>
+                                </form>
+                            {% endif %}
+                        {% else %}
+                            {% if perms.users.change_user %}
+                                <a href="{% url 'authentication:manage-update' u.pk %}">Edit</a>
+                            {% endif %}
+                            {% if perms.users.delete_user %}
+                                <form action="{% url 'authentication:manage-delete' u.pk %}" method="post" style="display:inline"
+                                      onsubmit="return confirm('Delete {{ u.email }}?');">
+                                    {% csrf_token %}
+                                    <button type="submit">Delete</button>
+                                </form>
+                            {% endif %}
+                        {% endif %}
+                    </td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="7">No users found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

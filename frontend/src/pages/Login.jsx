@@ -5,12 +5,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/context/AuthContext'
-import { useUsers } from '@/hooks/useUsers'
-import { displayRoles } from '@/lib/format'
 
 export default function Login() {
   const { login } = useAuth()
-  const { data: users = [] } = useUsers()
   const navigate = useNavigate()
   const location = useLocation()
   const [email, setEmail] = useState('')
@@ -25,7 +22,7 @@ export default function Login() {
     setError('')
     setSubmitting(true)
     try {
-      await login(email)
+      await login(email, password)
       navigate(from, { replace: true })
     } catch (err) {
       setError(err.message)
@@ -63,20 +60,10 @@ export default function Login() {
           </form>
 
           <div className="mt-6 border-t pt-4">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">Demo accounts (any password) — mocked, no backend yet</p>
-            <div className="flex flex-col gap-1">
-              {users.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  onClick={() => setEmail(u.email)}
-                  className="rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-                >
-                  <span className="font-medium">{u.name}</span>
-                  <span className="text-muted-foreground"> — {displayRoles(u)} · {u.email}</span>
-                </button>
-              ))}
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Sign in with a backend account. For local dev, the seeded admin is{' '}
+              <span className="font-medium">admin@nomail.com</span>.
+            </p>
           </div>
         </CardContent>
       </Card>

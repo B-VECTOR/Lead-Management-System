@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Profile{% endblock %}
+
+{% block content %}
+    <h1>Profile</h1>
+    <dl>
+        <dt>Name</dt>
+        <dd>{{ user.get_full_name|default:"—" }}</dd>
+        <dt>Email</dt>
+        <dd>{{ user.email }}</dd>
+        <dt>Employee ID</dt>
+        <dd>{{ user.employee_id|default:"—" }}</dd>
+        <dt>Mobile No</dt>
+        <dd>{{ user.mobile_no|default:"—" }}</dd>
+        <dt>Acting Belt Level</dt>
+        <dd>{{ user.acting_belt_level|default:"—" }}</dd>
+        <dt>Belt</dt>
+        <dd>{{ user.belt|default:"—" }}</dd>
+        <dt>Domain</dt>
+        <dd>{{ user.domain|default:"—" }}</dd>
+        <dt>Date of Joining</dt>
+        <dd>{{ user.date_of_joining|default:"—" }}</dd>
+    </dl>
+{% endblock %}

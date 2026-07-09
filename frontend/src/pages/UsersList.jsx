@@ -9,9 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { RoleBadge, BeltBadge } from '@/components/shared/StatusBadge'
 import { useUsers } from '@/hooks/useUsers'
+import { useGroups, useBelts } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { SELECTABLE_ROLES, BELT_LEVELS } from '@/mocks/seed'
+import { groupLabel, IMPLICIT_GROUP_NAME } from '@/lib/roles'
 
 export default function UsersList() {
   const { user } = useAuth()
@@ -19,6 +20,13 @@ export default function UsersList() {
   const canManage = PERMISSIONS.manageUsers(user)
 
   const { data: users = [], isLoading } = useUsers()
+  const { data: groups = [] } = useGroups()
+  const { data: belts = [] } = useBelts()
+  const selectableRoles = useMemo(
+    () => groups.filter((g) => g.name !== IMPLICIT_GROUP_NAME).map((g) => groupLabel(g.name)),
+    [groups],
+  )
+  const beltNames = useMemo(() => belts.map((b) => b.name), [belts])
 
   const [q, setQ] = useState('')
   const [role, setRole] = useState('all')
@@ -63,14 +71,14 @@ export default function UsersList() {
             <SelectTrigger className="w-48"><SelectValue placeholder="Role" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All roles</SelectItem>
-              {SELECTABLE_ROLES.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+              {selectableRoles.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={belt} onValueChange={setBelt}>
             <SelectTrigger className="w-40"><SelectValue placeholder="Belt" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All belts</SelectItem>
-              {BELT_LEVELS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+              {beltNames.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={status} onValueChange={setStatus}>
