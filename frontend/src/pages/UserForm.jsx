@@ -94,7 +94,7 @@ export default function UserForm() {
     && form.mobile_no.trim() && form.date_of_joining && form.domain
 
   const newPasswordOk = isEdit
-    ? !form.password || (form.password.length >= 6 && form.password === form.confirmPassword)
+    ? !form.password || form.password.length >= 6
     : form.password.length >= 6 && form.password === form.confirmPassword
 
   const canSubmit = isEdit
@@ -124,7 +124,7 @@ export default function UserForm() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Email *</Label>
-            <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="you@company.com" disabled={isEdit} />
+            <Input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="you@company.com" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Mobile no. *</Label>
@@ -202,18 +202,10 @@ export default function UserForm() {
                 </SelectContent>
               </Select>
             </div>
-            <div />
             <div className="flex flex-col gap-1.5">
               <Label>New password</Label>
               <Input type="password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="Leave blank to keep unchanged" />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Confirm new password</Label>
-              <Input type="password" value={form.confirmPassword} onChange={(e) => set('confirmPassword', e.target.value)} disabled={!form.password} />
               {form.password && form.password.length < 6 && <p className="text-xs text-destructive">Must be at least 6 characters.</p>}
-              {form.password && form.confirmPassword && form.password !== form.confirmPassword && (
-                <p className="text-xs text-destructive">Passwords don't match.</p>
-              )}
             </div>
           </CardContent>
         </Card>

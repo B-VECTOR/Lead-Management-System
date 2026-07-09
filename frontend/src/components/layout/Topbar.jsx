@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Menu, LogOut } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Menu, LogOut, UserCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -12,6 +13,7 @@ import { initials, displayRoles } from '@/lib/format'
 
 export function Topbar() {
   const { user, logout } = useAuth()
+  const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
@@ -48,6 +50,10 @@ export function Topbar() {
               <span className="text-xs font-normal text-muted-foreground">{displayRoles(user)}</span>
             </div>
           </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => navigate('/account')}>
+            <UserCircle className="size-4" /> Account settings
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={logout}>
             <LogOut className="size-4" /> Log out

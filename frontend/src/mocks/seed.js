@@ -585,6 +585,8 @@ export const notifications = [
 // for now a request just records what's needed and by when.
 export const RESOURCE_REQUEST_TYPES = ['2Hr Study', 'SnT']
 
+export const passwordResetTokens = []
+
 export const resourceRequests = [
   { id: 'rr-1', lead_id: 'l-1', type: '2Hr Study', due_date: daysFromNow(6), status: 'Requested', requested_by: 'u-priya', created_at: daysAgo(1) },
 ]
