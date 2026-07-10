@@ -6,7 +6,7 @@ export function useDashboardSummary() {
   const { user } = useAuth()
   return useQuery({
     queryKey: ['dashboard', user?.id],
-    queryFn: () => getDashboardSummary(user),
+    queryFn: () => getDashboardSummary(),
     enabled: !!user,
   })
 }

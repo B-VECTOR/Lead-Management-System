@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users2, Bell, Boxes, Wallet, UserCog, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { LayoutDashboard, Users2, Bell, Boxes, Wallet, UserCog, PauseCircle, ListChecks, ListTodo, FileCheck2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { hasRole } from '@/api/scope'
@@ -16,7 +16,11 @@ import { Logo } from './Logo'
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/leads', label: 'Leads', icon: Users2 },
-  { to: '/resources', label: 'Resources', icon: Boxes },
+  { to: '/other-tasks', label: 'Other Tasks', icon: ListTodo },
+  { to: '/held-leads', label: 'Held Leads', icon: PauseCircle },
+  { to: '/held-tasks', label: 'Held Tasks', icon: ListChecks },
+  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Resource Manager'] },
+  { to: '/project-closure', label: 'Project Closure', icon: FileCheck2, roles: ['Resource Manager'] },
   { to: '/finance', label: 'Finance', icon: Wallet },
   { to: '/users', label: 'Users', icon: UserCog, roles: ['User Management'] },
   { to: '/notifications', label: 'Notifications', icon: Bell },

@@ -47,7 +47,8 @@ export function useChangeOwnPassword() {
   })
 }
 
-// Forgot-password flow (mocked, no real email — see api/auth.js).
+// Forgot-password flow (live backend — see api/auth.js). No email backend in
+// this build, so the reset link is returned in DEBUG for dev convenience.
 export function useRequestPasswordReset() {
   return useMutation({
     mutationFn: (email) => requestPasswordReset(email),

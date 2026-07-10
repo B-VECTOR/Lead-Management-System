@@ -3,7 +3,16 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.translation import gettext_lazy as _
 
 from .forms import UserChangeForm, UserCreationForm
-from .models import Belt, User
+from .models import Belt, PasswordResetToken, User
+
+
+@admin.register(PasswordResetToken)
+class PasswordResetTokenAdmin(admin.ModelAdmin):
+    list_display = ("token", "user", "used", "created_at", "is_valid")
+    list_filter = ("used", "created_at")
+    search_fields = ("user__username", "user__email")
+    raw_id_fields = ("user",)
+    readonly_fields = ("token", "created_at")
 
 
 @admin.register(Belt)
@@ -21,6 +30,7 @@ class UserAdmin(BaseUserAdmin):
     model = User
 
     list_display = (
+        "username",
         "email",
         "name",
         "employee_id",
@@ -38,8 +48,8 @@ class UserAdmin(BaseUserAdmin):
         "belt",
         "groups",
     )
-    search_fields = ("email", "name", "employee_id", "mobile_no")
-    ordering = ("email",)
+    search_fields = ("username", "email", "name", "employee_id", "mobile_no")
+    ordering = ("username",)
 
     def get_queryset(self, request):
         # The default manager hides soft-deleted users; the admin should
@@ -65,7 +75,7 @@ class UserAdmin(BaseUserAdmin):
     )
 
     fieldsets = (
-        (None, {"fields": ("email", "password")}),
+        (None, {"fields": ("username", "email", "password")}),
         _personal_info,
         _employment,
         (
@@ -88,7 +98,7 @@ class UserAdmin(BaseUserAdmin):
             None,
             {
                 "classes": ("wide",),
-                "fields": ("email", "password1", "password2"),
+                "fields": ("username", "email", "password1", "password2"),
             },
         ),
         _personal_info,

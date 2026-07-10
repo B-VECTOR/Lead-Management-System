@@ -37,7 +37,7 @@ class UserCreationForm(BaseUserCreationForm):
 
     class Meta(BaseUserCreationForm.Meta):
         model = User
-        fields = ("email",) + PROFILE_FIELDS + ("groups",)
+        fields = ("username", "email") + PROFILE_FIELDS + ("groups",)
         widgets = PROFILE_WIDGETS
 
 
@@ -46,7 +46,7 @@ class UserChangeForm(BaseUserChangeForm):
 
     class Meta(BaseUserChangeForm.Meta):
         model = User
-        fields = ("email",) + PROFILE_FIELDS + ("groups",)
+        fields = ("username", "email") + PROFILE_FIELDS + ("groups",)
         widgets = PROFILE_WIDGETS
 
     def __init__(self, *args, **kwargs):
@@ -75,5 +75,5 @@ class ManagedUserUpdateForm(forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ("email", "is_active") + PROFILE_FIELDS + ("groups",)
+        fields = ("username", "email", "is_active") + PROFILE_FIELDS + ("groups",)
         widgets = PROFILE_WIDGETS

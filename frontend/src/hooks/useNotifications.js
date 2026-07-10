@@ -6,7 +6,7 @@ export function useNotifications() {
   const { user } = useAuth()
   return useQuery({
     queryKey: ['notifications', user?.id],
-    queryFn: () => notificationsApi.listNotifications(user.id),
+    queryFn: () => notificationsApi.listNotifications(),
     enabled: !!user,
     refetchInterval: 15_000,
   })
@@ -22,9 +22,8 @@ export function useMarkNotificationRead() {
 
 export function useMarkAllNotificationsRead() {
   const qc = useQueryClient()
-  const { user } = useAuth()
   return useMutation({
-    mutationFn: () => notificationsApi.markAllRead(user.id),
+    mutationFn: () => notificationsApi.markAllRead(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
   })
 }

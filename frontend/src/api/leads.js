@@ -1,185 +1,148 @@
-import { getAll, getById, insert, update, genId, peek } from '../mocks/db'
-import { visibleLeadIds } from './scope'
-import { logActivity } from './activities'
-import { notify } from './notifications'
-import { createFollowup } from './followups'
+// Leads, wired to the real Django REST backend (Phase 3).
+//
+// The backend now owns leads (`/api/leads/`), enforces the PRD §6 / Tech Req
+// §12 permission matrix server-side, and scopes the list per role — so this
+// module no longer filters against the localStorage mock (the old
+// `visibleLeadIds` mock reads are gone). The deeper workflow screens (tasks,
+// resources, follow-ups, activity, files) are still mock-backed until their
+// phases; they simply read empty for backend-created leads.
+//
+// Per the Phase-3 decision there is no Company entity: the company is a plain
+// `company_name` text field on the lead.
+import client from './client'
+import { getAssignableUsers } from './lookups'
 
-function nextLeadCode(existing) {
-  const year = new Date().getFullYear()
-  const nums = existing
-    .map((l) => l.code.match(/LD-(\d{4})-(\d{4})/))
-    .filter(Boolean)
-    .map((m) => Number(m[2]))
-  const next = (nums.length ? Math.max(...nums) : 0) + 1
-  return `LD-${year}-${String(next).padStart(4, '0')}`
+// DRF returns validation errors as { field: [messages] }; surface the first
+// one instead of axios's generic "Request failed with status code 400".
+function throwApiError(err) {
+  const data = err.response?.data
+  if (data && typeof data === 'object') {
+    const firstVal = data[Object.keys(data)[0]]
+    const message = Array.isArray(firstVal) ? firstVal[0] : firstVal
+    if (message) throw new Error(String(message))
+  }
+  throw new Error('Something went wrong. Please try again.')
 }
 
-function companyName(companyId) {
-  return peek('companies').find((c) => c.id === companyId)?.name || 'Unknown company'
+// Backend lead → the shape the frontend screens consume. `name` is kept as an
+// alias of `project_name` so existing list/detail code reads naturally.
+function fromApiLead(l) {
+  return {
+    id: l.id,
+    name: l.project_name,
+    project_name: l.project_name,
+    company_name: l.company_name,
+    country: l.country,
+    country_name: l.country_name,
+    industry: l.industry,
+    industry_name: l.industry_name,
+    domain: l.domain,
+    domain_name: l.domain_name,
+    division: l.division || '',
+    scope: l.scope || '',
+    assigned_to: l.assigned_to ?? null,
+    assigned_to_name: l.assigned_to_name || null,
+    lead_type: l.lead_type,
+    status: l.status,
+    project_id: l.project_id || '',
+    project_id_base: l.project_id_base || '',
+    extension: l.extension || '00',
+    created_by: l.created_by,
+    created_by_name: l.created_by_name || null,
+    created_at: l.created_at,
+    updated_at: l.updated_at,
+  }
 }
 
-function normalizeConversionReminder(value) {
-  return value === 'mining' || value === 'extension' ? value : null
+// Form shape → backend payload. Only maps lead fields the backend accepts;
+// `assigned_to`/`status` are included only when the form supplied them (so a
+// Marketing form never sends an owner, and edits send just what changed).
+function toApiPayload(data) {
+  const payload = {}
+  const passthrough = [
+    'country', 'company_name', 'project_name', 'industry', 'domain',
+    'division', 'scope', 'lead_type',
+  ]
+  for (const key of passthrough) {
+    if (key in data) payload[key] = data[key]
+  }
+  if ('assigned_to' in data) payload.assigned_to = data.assigned_to || null
+  if ('status' in data) payload.status = data.status
+  return payload
 }
 
-function addMonths(isoDate, months) {
-  const d = new Date(isoDate)
-  d.setMonth(d.getMonth() + months)
-  return d.toISOString()
+// Fetches every page of the (paginated) list endpoint.
+async function fetchAllLeads() {
+  const rows = []
+  let url = '/api/leads/'
+  while (url) {
+    const { data } = await client.get(url)
+    if (Array.isArray(data)) return data
+    rows.push(...(data.results || []))
+    url = data.next
+  }
+  return rows
 }
 
-// BD leads can carry a one-shot reminder to revisit converting them into a
-// Mining or Extension engagement (§ future-phase note) — 6 months after the
-// start date for Mining, or 2 months before the target date for Extension.
-// Surfaced as a regular follow-up so it shows up in the existing Additional
-// Task list rather than needing a new notification pipeline.
-async function scheduleConversionReminder(lead, currentUser) {
-  const isMining = lead.conversion_reminder === 'mining'
-  const sourceDate = isMining ? lead.start_date : lead.target_date
-  if (!sourceDate) return
-  const due_date = addMonths(sourceDate, isMining ? 6 : -2)
-  const title = isMining ? `Consider converting ${lead.code} to Mining` : `Consider converting ${lead.code} to Extension`
-  await createFollowup({ lead_id: lead.id, title, due_date, assigned_to: lead.assigned_to || lead.owner_id }, currentUser)
-}
-
-// filters: { status, lead_type_id, owner_id, q }
-export async function listLeads(currentUser, filters = {}) {
-  const all = await getAll('leads')
-  const ids = visibleLeadIds(currentUser)
-  let rows = ids === null ? all : all.filter((l) => ids.has(l.id))
-  rows = rows.filter((l) => !l.archived)
+// filters: { status, lead_type, q }. Visibility is enforced by the backend;
+// these are client-side conveniences over the already-scoped result set.
+export async function listLeads(_currentUser, filters = {}) {
+  let rows = (await fetchAllLeads()).map(fromApiLead)
   if (filters.status) rows = rows.filter((l) => l.status === filters.status)
-  if (filters.lead_type_id) rows = rows.filter((l) => l.lead_type_id === filters.lead_type_id)
-  if (filters.owner_id) rows = rows.filter((l) => l.owner_id === filters.owner_id)
+  if (filters.lead_type) rows = rows.filter((l) => l.lead_type === filters.lead_type)
   if (filters.q) {
     const q = filters.q.toLowerCase()
-    rows = rows.filter((l) => l.code.toLowerCase().includes(q) || (l.name || '').toLowerCase().includes(q) || companyName(l.company_id).toLowerCase().includes(q) || l.industry.toLowerCase().includes(q))
+    rows = rows.filter(
+      (l) =>
+        (l.project_name || '').toLowerCase().includes(q) ||
+        (l.company_name || '').toLowerCase().includes(q) ||
+        (l.industry_name || '').toLowerCase().includes(q),
+    )
   }
-  return rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  return rows
 }
 
 export async function getLead(id) {
-  return getById('leads', id)
+  const { data } = await client.get(`/api/leads/${id}/`)
+  return fromApiLead(data)
 }
 
-// §7.1 template instantiation: a lead always ships with exactly one execution
-// track. Creating the lead immediately copies its type's task-steps + checklist
-// items into lead_tasks / lead_checklist_items as an editable working instance.
-export async function createLead(data, currentUser) {
-  const existing = peek('leads')
-  const row = {
-    id: genId('l'),
-    code: nextLeadCode(existing),
-    name: data.name,
-    company_id: data.company_id,
-    lead_type_id: data.lead_type_id,
-    industry: data.industry,
-    domain: data.domain || '',
-    division: data.division || '',
-    scope: data.scope || '',
-    conversion_reminder: normalizeConversionReminder(data.conversion_reminder),
-    status: 'In Progress',
-    priority: data.priority || 'Medium',
-    owner_id: data.owner_id || currentUser.id,
-    source_detail: data.source_detail || '',
-    tags: data.tags || [],
-    description: data.description || '',
-    internal_notes: data.internal_notes || '',
-    assigned_to: data.assigned_to || null,
-    start_date: data.start_date || null,
-    target_date: data.target_date || null,
-    created_by: currentUser.id,
-    created_at: new Date().toISOString(),
-    last_activity_at: new Date().toISOString(),
-    next_follow_up: null,
-    archived: false,
+export async function createLead(data) {
+  try {
+    const { data: created } = await client.post('/api/leads/', toApiPayload(data))
+    return fromApiLead(created)
+  } catch (err) {
+    throwApiError(err)
   }
-  const created = await insert('leads', row)
+}
 
-  const taskSteps = peek('taskSteps').filter((s) => s.lead_type_id === row.lead_type_id).sort((a, b) => a.order - b.order)
-  const templateItems = peek('checklistTemplateItems')
-  const templateFields = peek('taskStepFields')
-  for (const step of taskSteps) {
-    const task = await insert('leadTasks', {
-      id: genId('lt'), lead_id: created.id, source_task_step_id: step.id,
-      name: step.name, order: step.order, status: 'Not started',
-      branch_field_id: step.branch_field_id || null,
-      branch_map: step.branch_map ? { ...step.branch_map } : null,
-    })
-    const items = templateItems.filter((i) => i.task_step_id === step.id).sort((a, b) => a.order - b.order)
-    for (const tmpl of items) {
-      await insert('leadChecklistItems', {
-        id: genId('lci'), lead_task_id: task.id, label: tmpl.label, order: tmpl.order,
-        state: 'open', requires_file: tmpl.requires_file, notes: '', done_by: null, done_at: null,
-      })
-    }
-    const fields = templateFields.filter((f) => f.task_step_id === step.id).sort((a, b) => a.order - b.order)
-    for (const tmpl of fields) {
-      // A repeatable group's "empty" state is a fixed number of blank rows
-      // (so the table renders with its default row count), not an empty string.
-      const initialValue = tmpl.field_type === 'repeatable_group'
-        ? JSON.stringify(Array.from({ length: tmpl.default_rows || 0 }, () => Object.fromEntries((tmpl.columns || []).map((c) => [c.key, '']))))
-        : ''
-      await insert('leadTaskFields', {
-        id: genId('ltf'), lead_task_id: task.id, field_name: tmpl.field_name,
-        field_type: tmpl.field_type || 'text', field_value: initialValue, order: tmpl.order,
-        source_field_id: tmpl.id,
-        visible_if_field_id: tmpl.visible_if_field_id || null,
-        visible_if_value: tmpl.visible_if_value || null,
-        columns: tmpl.columns || null,
-      })
-    }
+export async function updateLead(id, patch) {
+  try {
+    const { data } = await client.patch(`/api/leads/${id}/`, toApiPayload(patch))
+    return fromApiLead(data)
+  } catch (err) {
+    throwApiError(err)
   }
+}
 
-  await logActivity({ lead_id: created.id, type: 'Note', summary: 'Lead created', created_by: currentUser.id })
-  if (row.owner_id !== currentUser.id) {
-    await notify({ user_id: row.owner_id, type: 'lead_assigned', message: `Lead ${row.code} (${companyName(row.company_id)}) assigned to you`, link: `/leads/${created.id}` })
+export async function updateLeadStatus(id, status) {
+  try {
+    const { data } = await client.patch(`/api/leads/${id}/`, { status })
+    return fromApiLead(data)
+  } catch (err) {
+    throwApiError(err)
   }
-  if (row.assigned_to && row.assigned_to !== currentUser.id) {
-    await notify({ user_id: row.assigned_to, type: 'assignment', message: `You were assigned to lead ${row.code} (${companyName(row.company_id)})`, link: `/leads/${created.id}` })
+}
+
+// Assign/reassign the owner (assigned_to). Lead Admin uses this to assign an
+// unassigned Marketing lead; a Lead Manager to reassign one of their own.
+export async function assignLeadOwner(id, ownerId) {
+  try {
+    const { data } = await client.patch(`/api/leads/${id}/`, { assigned_to: ownerId || null })
+    return fromApiLead(data)
+  } catch (err) {
+    throwApiError(err)
   }
-  if (row.conversion_reminder) {
-    await scheduleConversionReminder(created, currentUser)
-  }
-  return created
 }
 
-export async function updateLead(id, patch, currentUser) {
-  const before = await getById('leads', id)
-  const nextPatch = { ...patch, conversion_reminder: normalizeConversionReminder(patch.conversion_reminder), assigned_to: patch.assigned_to || null }
-  const updated = await update('leads', id, { ...nextPatch, last_activity_at: new Date().toISOString() })
-  await logActivity({ lead_id: id, type: 'Note', summary: 'Lead details updated', created_by: currentUser.id })
-  if (nextPatch.conversion_reminder && nextPatch.conversion_reminder !== before.conversion_reminder) {
-    await scheduleConversionReminder(updated, currentUser)
-  }
-  return updated
-}
-
-export async function updateLeadStatus(id, status, currentUser) {
-  const before = await getById('leads', id)
-  const updated = await update('leads', id, { status, last_activity_at: new Date().toISOString() })
-  await logActivity({ lead_id: id, type: 'StatusChange', summary: `Status changed: ${before.status} → ${status}`, created_by: currentUser.id })
-  return updated
-}
-
-export async function assignLeadOwner(id, ownerId, currentUser) {
-  const lead = await getById('leads', id)
-  const updated = await update('leads', id, { owner_id: ownerId })
-  await logActivity({ lead_id: id, type: 'Assignment', summary: 'Lead owner reassigned', created_by: currentUser.id })
-  await notify({ user_id: ownerId, type: 'lead_assigned', message: `Lead ${lead.code} (${companyName(lead.company_id)}) assigned to you`, link: `/leads/${id}` })
-  return updated
-}
-
-export async function assignLeadRep(id, assignedTo, currentUser) {
-  const lead = await getById('leads', id)
-  const updated = await update('leads', id, { assigned_to: assignedTo })
-  await logActivity({ lead_id: id, type: 'Assignment', summary: 'Lead reassigned to a different representative', created_by: currentUser.id })
-  await notify({ user_id: assignedTo, type: 'assignment', message: `You were assigned to lead ${lead.code} (${companyName(lead.company_id)})`, link: `/leads/${id}` })
-  return updated
-}
-
-export async function archiveLead(id, currentUser) {
-  const updated = await update('leads', id, { archived: true })
-  await logActivity({ lead_id: id, type: 'Note', summary: 'Lead archived', created_by: currentUser.id })
-  return updated
-}
+export { getAssignableUsers }

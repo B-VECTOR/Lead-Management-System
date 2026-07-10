@@ -11,6 +11,9 @@ from .views import (
     ManageUserListView,
     ManageUserRestoreView,
     ManageUserUpdateView,
+    MeView,
+    PasswordResetRequestView,
+    PasswordResetTokenView,
     RefreshView,
     SignUpView,
     UserDetailView,
@@ -26,6 +29,18 @@ urlpatterns = [
     path("api/auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("api/auth/refresh/", RefreshView.as_view(), name="auth-refresh"),
     path("api/auth/change-password/", ChangeOwnPasswordView.as_view(), name="auth-change-password"),
+    path("api/auth/me/", MeView.as_view(), name="auth-me"),
+    # Forgot-password flow (Phase 8 — replaces the mocked frontend flow)
+    path(
+        "api/auth/password-reset/",
+        PasswordResetRequestView.as_view(),
+        name="auth-password-reset",
+    ),
+    path(
+        "api/auth/password-reset/<uuid:token>/",
+        PasswordResetTokenView.as_view(),
+        name="auth-password-reset-token",
+    ),
     # Web pages
     path("users/signup/", SignUpView.as_view(), name="signup"),
     path("users/profile/", profile, name="profile"),

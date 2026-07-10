@@ -1,16 +1,13 @@
-// Auth + user management, wired to the real Django REST backend (specs.md
-// §15/§17): login, logout, token refresh, and the user CRUD API
-// (`/api/users/`, with roles/belts resolved via `GET /api/groups/` and
-// `GET /api/belts/`) are all live. Only the forgot-password flow and the
-// logged-in self-service password change (no backend endpoint exists yet)
-// remain mocked against the localStorage DB — flagged below.
+// Auth + user management, fully wired to the real Django REST backend: login,
+// logout, token refresh, `/me`, the self-service password change, the
+// forgot-password flow (Phase 8), and the user CRUD API (`/api/users/`, with
+// roles/belts resolved via `GET /api/groups/` and `GET /api/belts/`).
 import client, { setTokens, clearSession, getRefreshToken } from './client'
-import { getBelts, getGroups } from './lookups'
-import { getAll, getById, insert, update, genId } from '../mocks/db'
+import { getBelts, getGroups, getAreas } from './lookups'
 import { groupLabel, IMPLICIT_GROUP_NAME } from '../lib/roles'
 
-// Belts and groups are seeded reference data, effectively static for the
-// session, so both lookups are memoized.
+// Belts, groups, and areas are seeded reference data, effectively static for
+// the session, so the lookups are memoized.
 let beltsPromise = null
 function loadBelts() {
   beltsPromise ||= getBelts()
@@ -23,6 +20,12 @@ function loadGroups() {
   return groupsPromise
 }
 
+let areasPromise = null
+function loadAreas() {
+  areasPromise ||= getAreas()
+  return areasPromise
+}
+
 async function beltIdToName(id) {
   const belts = await loadBelts()
   return belts.find((b) => b.id === id)?.name || 'NA'
@@ -32,6 +35,20 @@ async function beltNameToId(name) {
   if (!name || name === 'NA') return null
   const belts = await loadBelts()
   return belts.find((b) => b.name === name)?.id ?? null
+}
+
+// Domain is a FK → areas; the UI works in area names (like belts), so map
+// pk <-> name at the API boundary.
+async function areaIdToName(id) {
+  if (id == null) return ''
+  const areas = await loadAreas()
+  return areas.find((a) => a.id === id)?.name || ''
+}
+
+async function areaNameToId(name) {
+  if (!name) return null
+  const areas = await loadAreas()
+  return areas.find((a) => a.name === name)?.id ?? null
 }
 
 async function groupIdsToLabels(ids) {
@@ -69,22 +86,24 @@ function throwApiError(err) {
 // is_active, groups: [pk] }. The login response is a subset with the same
 // shape. Map both to the shape the rest of the app expects.
 async function fromApiUser(u) {
-  const [belt, acting_belt_level, roles] = await Promise.all([
+  const [belt, acting_belt_level, roles, domain] = await Promise.all([
     beltIdToName(u.belt),
     beltIdToName(u.acting_belt_level),
     groupIdsToLabels(u.groups),
+    areaIdToName(u.domain),
   ])
   return {
     id: u.id,
-    name: u.name || u.email,
+    username: u.username || '',
+    name: u.name || u.username || u.email,
     email: u.email,
     roles,
     active: u.is_active ?? true,
-    employee_id: u.employee_id || '',
-    mobile_no: u.mobile_no || '',
+    employee_id: u.employee_id ?? '',
+    mobile_no: u.mobile_no ?? '',
     belt,
     acting_belt_level,
-    domain: u.domain || '',
+    domain,
     date_of_joining: u.date_of_joining || null,
     manager_id: null,
   }
@@ -93,17 +112,19 @@ async function fromApiUser(u) {
 // Converts the Users UI's form shape (role labels, belt names) into the
 // backend's expected PKs.
 async function toApiPayload(data) {
-  const [belt, acting_belt_level, groups] = await Promise.all([
+  const [belt, acting_belt_level, groups, domain] = await Promise.all([
     beltNameToId(data.belt),
     beltNameToId(data.acting_belt_level),
     roleLabelsToGroupIds(data.roles),
+    areaNameToId(data.domain),
   ])
   return {
+    username: data.username,
     name: data.name,
     email: data.email,
     employee_id: data.employee_id || '',
     mobile_no: data.mobile_no || '',
-    domain: data.domain || '',
+    domain,
     date_of_joining: data.date_of_joining || null,
     belt,
     acting_belt_level,
@@ -113,14 +134,14 @@ async function toApiPayload(data) {
 
 // --- Live backend calls -----------------------------------------------------
 
-export async function login(email, password) {
+export async function login(username, password) {
   try {
-    const { data } = await client.post('/api/auth/login/', { email, password })
+    const { data } = await client.post('/api/auth/login/', { username, password })
     setTokens({ access: data.access, refresh: data.refresh })
     return fromApiUser(data.user)
   } catch (err) {
     // DRF returns { detail: "No active account found with the given credentials" }.
-    throw new Error(err.response?.data?.detail || 'Login failed. Check your email and password.')
+    throw new Error(err.response?.data?.detail || 'Login failed. Check your username and password.')
   }
 }
 
@@ -191,31 +212,38 @@ export async function changeOwnPassword(userId, currentPassword, newPassword) {
   }
 }
 
-// --- Forgot-password flow (mocked — no backend endpoint yet) ----------------
-const RESET_TOKEN_TTL_MS = 30 * 60 * 1000
-
-export async function requestPasswordReset(email) {
-  const users = await getAll('users')
-  const user = users.find((u) => u.email.toLowerCase() === String(email).toLowerCase())
-  if (!user) throw new Error('No account found with that email.')
-  return insert('passwordResetTokens', {
-    id: genId('prt'), user_id: user.id, created_at: new Date().toISOString(), used: false,
-  })
+// Return the authenticated user's own profile (verifies identity after reload
+// against the token rather than trusting the localStorage copy).
+export async function getMe() {
+  const { data } = await client.get('/api/auth/me/')
+  return fromApiUser(data)
 }
 
-function isTokenValid(record) {
-  return !!record && !record.used && Date.now() - new Date(record.created_at).getTime() <= RESET_TOKEN_TTL_MS
+// --- Forgot-password flow (live backend, Phase 8) ---------------------------
+// There is no email backend in this build, so the request endpoint returns the
+// reset link directly in DEBUG (see backend PasswordResetRequestView); the
+// ForgotPassword screen surfaces it. The response is always generic so the
+// endpoint never reveals whether an email is registered.
+
+export async function requestPasswordReset(email) {
+  const { data } = await client.post('/api/auth/password-reset/', { email })
+  // `token` is present only in DEBUG (dev convenience); undefined otherwise.
+  return data
 }
 
 export async function verifyResetToken(token) {
-  const record = await getById('passwordResetTokens', token)
-  if (!isTokenValid(record)) return null
-  return getById('users', record.user_id)
+  try {
+    const { data } = await client.get(`/api/auth/password-reset/${token}/`)
+    return data.valid ? { email: data.email } : null
+  } catch {
+    return null
+  }
 }
 
 export async function resetPasswordWithToken(token, newPassword) {
-  const record = await getById('passwordResetTokens', token)
-  if (!isTokenValid(record)) throw new Error('This reset link is invalid or has expired.')
-  await update('users', record.user_id, { password: newPassword })
-  await update('passwordResetTokens', token, { used: true })
+  try {
+    await client.post(`/api/auth/password-reset/${token}/`, { new_password: newPassword })
+  } catch (err) {
+    throwApiError(err)
+  }
 }

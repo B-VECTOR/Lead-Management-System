@@ -1,8 +1,7 @@
-// Shared axios instance for the real Django REST backend (specs.md §17).
+// Shared axios instance for the real Django REST backend.
 //
-// Everything except auth + user management still runs against the localStorage
-// mock DB (see src/mocks/db.js); this client is used only by the functions in
-// src/api/auth.js that have been wired to the live API so far.
+// Every screen now runs against the live API (the localStorage mock DB was
+// retired in Phase 8). This client is used by all of src/api/*.
 //
 // It attaches the JWT access token to every request and, on a 401,
 // transparently refreshes the token once (SimpleJWT rotates refresh tokens, so

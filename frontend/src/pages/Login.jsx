@@ -10,7 +10,7 @@ export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -22,7 +22,7 @@ export default function Login() {
     setError('')
     setSubmitting(true)
     try {
-      await login(email, password)
+      await login(username, password)
       navigate(from, { replace: true })
     } catch (err) {
       setError(err.message)
@@ -41,8 +41,8 @@ export default function Login() {
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+              <Label htmlFor="username">Username</Label>
+              <Input id="username" type="text" autoComplete="username" placeholder="your.username" value={username} onChange={(e) => setUsername(e.target.value)} required />
             </div>
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
@@ -61,8 +61,8 @@ export default function Login() {
 
           <div className="mt-6 border-t pt-4">
             <p className="text-xs text-muted-foreground">
-              Sign in with a backend account. For local dev, the seeded admin is{' '}
-              <span className="font-medium">admin@nomail.com</span>.
+              Sign in with a backend account. For local dev, the seeded admin username is{' '}
+              <span className="font-medium">admin</span>.
             </p>
           </div>
         </CardContent>

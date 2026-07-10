@@ -1,24 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Plus } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useLeadTaskFields, useUpdateLeadTaskFieldValue } from '@/hooks/useChecklist'
+import { useSaveTaskDraft } from '@/hooks/useTasks'
 
-function safeParseRows(value) {
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
+// Renders a task's dynamic extra fields from the backend `field_schema`
+// (Tech Req §4.6). Field types: text / number / date / boolean (Yes/No) /
+// rowgroup (repeatable rows). A field carrying `required_when` is shown only
+// once its controller field holds the required value (e.g. Task 5's fee /
+// manpower fields appear once "Is Solution Blueprint required?" = Yes).
+// "Save" is the workflow's Save-as-Draft — it persists values without closing.
+
+function inputTypeFor(type) {
+  return type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'
 }
 
-function FieldInput({ field, value, disabled, onChange }) {
-  if (field.field_type === 'boolean') {
+function ScalarInput({ field, value, disabled, onChange }) {
+  if (field.type === 'boolean') {
     return (
       <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
         <SelectTrigger className="w-full"><SelectValue placeholder="Select…" /></SelectTrigger>
@@ -29,20 +31,27 @@ function FieldInput({ field, value, disabled, onChange }) {
       </Select>
     )
   }
-  const inputType = field.field_type === 'date' ? 'date' : field.field_type === 'number' ? 'number' : 'text'
-  return <Input type={inputType} value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+  return (
+    <Input
+      type={inputTypeFor(field.type)}
+      min={field.type === 'number' ? 0 : undefined}
+      value={value ?? ''}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
 }
 
-// A repeatable block of rows sharing a fixed set of columns (e.g. "Key
-// stakeholders mapped": Name | Role; "Invoices raised": Invoice Number |
-// Value | Date) — starts with the template's default row count, "Add row"
-// grows it. Supplementary data: never blocks a step from completing.
-function RepeatableGroupInput({ columns, rows, disabled, onChange }) {
+function RowGroupInput({ field, rows, disabled, onChange }) {
+  const columns = field.columns || []
   function updateCell(rowIdx, key, val) {
     onChange(rows.map((r, i) => (i === rowIdx ? { ...r, [key]: val } : r)))
   }
   function addRow() {
     onChange([...rows, Object.fromEntries(columns.map((c) => [c.key, '']))])
+  }
+  function removeRow(idx) {
+    onChange(rows.filter((_, i) => i !== idx))
   }
   return (
     <div className="flex flex-col gap-2 sm:col-span-2">
@@ -51,18 +60,20 @@ function RepeatableGroupInput({ columns, rows, disabled, onChange }) {
           <thead>
             <tr className="border-b bg-muted/50">
               {columns.map((c) => <th key={c.key} className="p-2 text-left font-medium">{c.label}</th>)}
+              {!disabled && <th className="w-10 p-2" />}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={columns.length} className="p-2 text-center text-xs text-muted-foreground">No rows yet.</td></tr>
+              <tr><td colSpan={columns.length + 1} className="p-2 text-center text-xs text-muted-foreground">No rows yet.</td></tr>
             )}
             {rows.map((row, i) => (
               <tr key={i} className="border-b last:border-0">
                 {columns.map((c) => (
                   <td key={c.key} className="p-1.5">
                     <Input
-                      type={c.type === 'date' ? 'date' : c.type === 'number' ? 'number' : 'text'}
+                      type={inputTypeFor(c.type)}
+                      min={c.type === 'number' ? 0 : undefined}
                       value={row[c.key] ?? ''}
                       disabled={disabled}
                       onChange={(e) => updateCell(i, c.key, e.target.value)}
@@ -70,6 +81,13 @@ function RepeatableGroupInput({ columns, rows, disabled, onChange }) {
                     />
                   </td>
                 ))}
+                {!disabled && (
+                  <td className="p-1.5 text-right">
+                    <Button type="button" size="icon-sm" variant="ghost" onClick={() => removeRow(i)} title="Remove row">
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -84,55 +102,66 @@ function RepeatableGroupInput({ columns, rows, disabled, onChange }) {
   )
 }
 
-function isFieldVisible(field, fields, values) {
-  if (!field.visible_if_field_id) return true
-  const controller = fields.find((f) => f.source_field_id === field.visible_if_field_id)
-  if (!controller) return true
-  return values[controller.id] === field.visible_if_value
+function isVisible(field, values) {
+  const cond = field.required_when
+  if (!cond) return true
+  return values[cond.field] === cond.equals
 }
 
-// Fixed input fields for the active step — a constant shape defined on the
-// step's template (§7.1), not a checklist. Always shown for the step
-// regardless of checklist progress; just data entry (e.g. contract value).
-// Some fields only appear once another field in the same step has a
-// specific value (visible_if_field_id/visible_if_value, § BD flow rework —
-// e.g. fee/manpower fields only show once "Is Solution Blueprint Required?"
-// is Yes); that reveal reacts live to unsaved edits, not just the last-saved
-// value. Values are edited locally and only written back on "Save" — no
-// silent autosave, so it's clear when the data has actually been submitted.
-export function TaskStepFields({ taskId, leadId, canUpdate }) {
-  const { data: fields = [] } = useLeadTaskFields(taskId)
-  const updateValue = useUpdateLeadTaskFieldValue(taskId, leadId)
-  const [values, setValues] = useState({})
+function isRequired(field, values) {
+  if (field.required) return true
+  const cond = field.required_when
+  return !!cond && values[cond.field] === cond.equals
+}
 
-  const fieldsKey = useMemo(() => fields.map((f) => `${f.id}:${f.field_value}`).join('|'), [fields])
-
-  useEffect(() => {
-    setValues(Object.fromEntries(fields.map((f) => [f.id, f.field_type === 'repeatable_group' ? safeParseRows(f.field_value) : f.field_value])))
-    // Re-sync whenever the server-side values for this step actually change
-    // (switching steps, or right after a successful save) — not on every
-    // unrelated re-render, so it never clobbers an in-progress edit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId, fieldsKey])
-
-  if (fields.length === 0) return null
-
-  const visibleFields = fields.filter((f) => isFieldVisible(f, fields, values))
-
-  function valueChanged(f) {
-    return f.field_type === 'repeatable_group'
-      ? JSON.stringify(values[f.id] ?? []) !== f.field_value
-      : values[f.id] !== f.field_value
+// Seed local edit state from the task's saved values, defaulting row-groups to
+// their template's min_rows of empty rows so the table isn't blank.
+function initialValues(schema, saved) {
+  const out = {}
+  for (const f of schema) {
+    if (f.type === 'rowgroup') {
+      const rows = Array.isArray(saved?.[f.key]) ? saved[f.key] : []
+      const minRows = f.min_rows || 0
+      const cols = f.columns || []
+      const padded = [...rows]
+      while (padded.length < minRows) padded.push(Object.fromEntries(cols.map((c) => [c.key, ''])))
+      out[f.key] = padded
+    } else {
+      out[f.key] = saved?.[f.key] ?? ''
+    }
   }
-  const isDirty = visibleFields.some(valueChanged)
+  return out
+}
+
+export function TaskStepFields({ task, leadId, canEdit }) {
+  const schema = task.field_schema || []
+  const saveDraft = useSaveTaskDraft(leadId)
+  const [values, setValues] = useState(() => initialValues(schema, task.extra_fields))
+
+  // Re-seed whenever we switch to a different task or its saved values change.
+  const savedKey = useMemo(() => `${task.id}:${JSON.stringify(task.extra_fields)}`, [task.id, task.extra_fields])
+  useEffect(() => {
+    setValues(initialValues(schema, task.extra_fields))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedKey])
+
+  if (schema.length === 0) return null
+
+  const visibleFields = schema.filter((f) => isVisible(f, values))
 
   async function handleSave() {
-    const changed = visibleFields.filter(valueChanged)
-    if (changed.length === 0) return
-    await Promise.all(changed.map((f) => updateValue.mutateAsync({
-      fieldId: f.id,
-      value: f.field_type === 'repeatable_group' ? JSON.stringify(values[f.id] ?? []) : values[f.id],
-    })))
+    // Send only currently-visible fields; drop empty row-group rows.
+    const payload = {}
+    for (const f of visibleFields) {
+      if (f.type === 'rowgroup') {
+        const cols = f.columns || []
+        const rows = (values[f.key] || []).filter((r) => cols.some((c) => String(r[c.key] ?? '').trim() !== ''))
+        payload[f.key] = rows
+      } else if (values[f.key] !== '' && values[f.key] != null) {
+        payload[f.key] = values[f.key]
+      }
+    }
+    await saveDraft.mutateAsync({ taskId: task.id, extraFields: payload })
     toast.success('Details saved')
   }
 
@@ -143,30 +172,33 @@ export function TaskStepFields({ taskId, leadId, canUpdate }) {
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {visibleFields.map((f) => (
-          <div key={f.id} className={`flex flex-col gap-1.5 ${f.field_type === 'repeatable_group' ? 'sm:col-span-2' : ''}`}>
-            <Label className="text-xs">{f.field_name}</Label>
-            {f.field_type === 'repeatable_group' ? (
-              <RepeatableGroupInput
-                columns={f.columns || []}
-                rows={values[f.id] || []}
-                disabled={!canUpdate}
-                onChange={(rows) => setValues((v) => ({ ...v, [f.id]: rows }))}
+          <div key={f.key} className={`flex flex-col gap-1.5 ${f.type === 'rowgroup' ? 'sm:col-span-2' : ''}`}>
+            <Label className="text-xs">
+              {f.label}
+              {isRequired(f, values) && <span className="ml-0.5 text-red-500">*</span>}
+            </Label>
+            {f.type === 'rowgroup' ? (
+              <RowGroupInput
+                field={f}
+                rows={values[f.key] || []}
+                disabled={!canEdit}
+                onChange={(rows) => setValues((v) => ({ ...v, [f.key]: rows }))}
               />
             ) : (
-              <FieldInput
+              <ScalarInput
                 field={f}
-                value={values[f.id]}
-                disabled={!canUpdate}
-                onChange={(val) => setValues((v) => ({ ...v, [f.id]: val }))}
+                value={values[f.key]}
+                disabled={!canEdit}
+                onChange={(val) => setValues((v) => ({ ...v, [f.key]: val }))}
               />
             )}
           </div>
         ))}
       </CardContent>
-      {canUpdate && (
+      {canEdit && (
         <CardFooter className="justify-end">
-          <Button size="sm" onClick={handleSave} disabled={!isDirty || updateValue.isPending}>
-            {updateValue.isPending ? 'Saving…' : 'Save'}
+          <Button size="sm" variant="outline" onClick={handleSave} disabled={saveDraft.isPending}>
+            {saveDraft.isPending ? 'Saving…' : 'Save as Draft'}
           </Button>
         </CardFooter>
       )}

@@ -41,6 +41,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id",
+            "username",
             "email",
             "password",
             "name",
@@ -109,10 +110,31 @@ class ChangeOwnPasswordSerializer(serializers.Serializer):
         return user
 
 
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Set a new password given a valid reset token (Phase 8).
+
+    The token itself is resolved in the view; this only validates and applies
+    the new password against the resolved user (Django's password validators).
+    """
+
+    new_password = serializers.CharField(write_only=True)
+
+    def validate_new_password(self, value):
+        validate_password(value, user=self.context["user"])
+        return value
+
+    def save(self):
+        user = self.context["user"]
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user
+
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
+        token["username"] = user.username
         token["email"] = user.email
         return token
 
@@ -120,6 +142,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data = super().validate(attrs)
         data["user"] = {
             "id": self.user.id,
+            "username": self.user.username,
             "email": self.user.email,
             "name": self.user.name,
             "groups": list(self.user.groups.values_list("id", flat=True)),

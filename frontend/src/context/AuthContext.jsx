@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { login as apiLogin, logout as apiLogout } from '@/api/auth'
+import { login as apiLogin, logout as apiLogout, getMe } from '@/api/auth'
 import { getAccessToken, USER_STORAGE_KEY } from '@/api/client'
 
 const AuthContext = createContext(null)
@@ -8,24 +8,39 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  // Rehydrate from localStorage. There's no /me endpoint, so we trust the stored
-  // user object as long as an access token is present; the axios client will
-  // refresh (or force a logout) on the first request if that token is stale.
+  // Rehydrate from localStorage for an instant first paint, then confirm the
+  // session against the backend `/me` endpoint (Phase 8). If the token is
+  // stale the axios client refreshes it or forces a logout; if `/me` still
+  // fails we clear the stored user rather than trust a stale copy.
   useEffect(() => {
     const token = getAccessToken()
+    if (!token) {
+      setLoading(false)
+      return
+    }
     const saved = localStorage.getItem(USER_STORAGE_KEY)
-    if (token && saved) {
+    if (saved) {
       try {
         setUser(JSON.parse(saved))
       } catch {
         localStorage.removeItem(USER_STORAGE_KEY)
       }
     }
-    setLoading(false)
+    getMe()
+      .then((fresh) => {
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(fresh))
+        setUser(fresh)
+      })
+      .catch(() => {
+        // A hard 401 (not recoverable by refresh) — drop the stored identity.
+        localStorage.removeItem(USER_STORAGE_KEY)
+        setUser(null)
+      })
+      .finally(() => setLoading(false))
   }, [])
 
-  const login = useCallback(async (email, password) => {
-    const u = await apiLogin(email, password)
+  const login = useCallback(async (username, password) => {
+    const u = await apiLogin(username, password)
     localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(u))
     setUser(u)
     return u
@@ -36,15 +51,7 @@ export function AuthProvider({ children }) {
     setUser(null)
   }, [])
 
-  // Dev-only helper retained for the RoleSwitcher UI. Password-less switching
-  // can't work against real JWT auth, so it's a no-op now (and the switcher's
-  // user list is empty against the live backend). Kept so RoleSwitcher doesn't
-  // break; remove once role-scoped test accounts exist on the backend.
-  const switchUser = useCallback(async () => {
-    console.warn('switchUser is disabled: real auth requires signing in with a password.')
-  }, [])
-
-  const value = useMemo(() => ({ user, loading, login, logout, switchUser }), [user, loading, login, logout, switchUser])
+  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

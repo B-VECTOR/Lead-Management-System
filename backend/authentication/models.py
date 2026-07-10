@@ -1,6 +1,10 @@
+import uuid
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
-from django.core.validators import RegexValidator
 from django.db import models
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from .managers import UserManager
@@ -29,21 +33,17 @@ class Belt(models.Model):
         return self.name
 
 
-mobile_validator = RegexValidator(
-    regex=r"^\+?[0-9][0-9 \-]{6,19}$",
-    message=_("Enter a valid mobile number (7–20 digits, an optional leading +)."),
-)
-
-
 class User(AbstractUser):
-    """Custom user model that authenticates with an email instead of a username.
+    """Custom user model.
+
+    Authenticates by ``username`` (PRD §5.1 / Tech Req §4.1), with ``email``
+    kept as a required field. ``username`` is inherited unchanged from
+    ``AbstractUser`` (unique, required, 150 chars, standard validators).
 
     All fields are mandatory (not null / not blank) except ``belt``,
     ``acting_belt_level``, and ``domain``, which are optional.
     """
 
-    # Drop the username field inherited from AbstractUser.
-    username = None
     email = models.EmailField(_("email address"), unique=True)
 
     # Single display-name field, replacing AbstractUser's first_name/last_name.
@@ -51,10 +51,12 @@ class User(AbstractUser):
     last_name = None
     name = models.CharField(_("name"), max_length=300)
 
-    employee_id = models.CharField(_("employee ID"), max_length=20, unique=True)
-    mobile_no = models.CharField(
-        _("mobile number"), max_length=20, validators=[mobile_validator]
-    )
+    # Tech Req §4.1: numeric, ≥ 0. PositiveIntegerField / PositiveBigIntegerField
+    # both carry a MinValueValidator(0) by default; mobile numbers need the
+    # 64-bit range (a 10-digit number overflows a 32-bit int). Per Decision #7,
+    # this means no leading "+" or formatting can be stored.
+    employee_id = models.PositiveIntegerField(_("employee ID"), unique=True)
+    mobile_no = models.PositiveBigIntegerField(_("mobile number"))
     belt = models.ForeignKey(
         Belt,
         on_delete=models.SET_NULL,
@@ -71,16 +73,26 @@ class User(AbstractUser):
         related_name="acting_users",
         verbose_name=_("acting belt level"),
     )
-    domain = models.CharField(_("domain"), max_length=100, blank=True)
+    domain = models.ForeignKey(
+        "reference.Area",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="users",
+        verbose_name=_("domain"),
+        help_text=_("Competency domain — shares the `areas` table (Tech Req §4.1)."),
+    )
     date_of_joining = models.DateField(_("date of joining"))
 
     # Soft delete: kept separate from `is_active`, which can be used to
     # temporarily suspend an account without marking it as deleted.
     is_deleted = models.BooleanField(_("deleted"), default=False)
 
-    USERNAME_FIELD = "email"
-    # Prompted for by `createsuperuser` (email + password are always required).
+    USERNAME_FIELD = "username"
+    # Prompted for by `createsuperuser` (username + password are always
+    # required and so are excluded here).
     REQUIRED_FIELDS = [
+        "email",
         "name",
         "employee_id",
         "mobile_no",
@@ -118,3 +130,38 @@ class User(AbstractUser):
         self.is_deleted = False
         self.is_active = True
         self.save(update_fields=["is_deleted", "is_active"])
+
+
+class PasswordResetToken(models.Model):
+    """A single-use, time-limited token backing the forgot-password flow
+    (Phase 8 — replaces the frontend's mocked reset).
+
+    A row is created when a user requests a reset; the ``token`` UUID is the
+    public handle placed in the reset link. It is valid until ``used`` or the
+    30-minute TTL elapses. There is no email backend in this build, so the API
+    returns the reset link directly in DEBUG (documented in the view).
+    """
+
+    TTL = timedelta(minutes=30)
+
+    token = models.UUIDField(_("token"), default=uuid.uuid4, unique=True, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_tokens",
+        verbose_name=_("user"),
+    )
+    used = models.BooleanField(_("used"), default=False)
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("password reset token")
+        verbose_name_plural = _("password reset tokens")
+
+    def __str__(self):
+        return f"reset[{self.user_id}] {self.token}"
+
+    @property
+    def is_valid(self):
+        return not self.used and timezone.now() - self.created_at <= self.TTL

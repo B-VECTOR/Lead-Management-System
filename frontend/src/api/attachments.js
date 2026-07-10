@@ -1,31 +1,26 @@
-import { getAll, insert, remove, genId } from '../mocks/db'
+// Lead attachments, wired to the real Django REST backend (Phase 8).
+//
+// Files are stored as real bytes behind a served MEDIA url (multipart upload),
+// replacing the old localStorage data-URL mock. Attachments are lead-scoped;
+// the `entityType` argument is always 'lead' and kept only so the existing
+// hook/call sites read unchanged. The 5 MB cap is enforced server-side too.
+import client from './client'
 
-export async function listAttachments(entityType, entityId) {
-  const rows = await getAll('attachments')
-  return rows.filter((a) => a.entity_type === entityType && a.entity_id === entityId)
+export async function listAttachments(_entityType, leadId) {
+  const { data } = await client.get(`/api/leads/${leadId}/attachments/`)
+  return Array.isArray(data) ? data : data.results || []
 }
 
-function readFileAsDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
+export async function uploadAttachment({ entity_id, file, title }) {
+  const form = new FormData()
+  form.append('file', file)
+  if (title) form.append('title', title)
+  const { data } = await client.post(`/api/leads/${entity_id}/attachments/`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   })
-}
-
-// The real backend (§15) stores real bytes behind a served URL from a
-// multipart POST. The mock layer has no server to hand files to, so it reads
-// the file into a data URL and persists that as `url` — real enough that
-// view/download links actually work against locally-uploaded files.
-export async function uploadAttachment({ entity_type, entity_id, file, title, uploaded_by }) {
-  const url = await readFileAsDataURL(file)
-  return insert('attachments', {
-    id: genId('att'), entity_type, entity_id, filename: file.name, title: title || null,
-    url, uploaded_by, uploaded_at: new Date().toISOString(),
-  })
+  return data
 }
 
 export async function deleteAttachment(id) {
-  return remove('attachments', id)
+  await client.delete(`/api/attachments/${id}/`)
 }

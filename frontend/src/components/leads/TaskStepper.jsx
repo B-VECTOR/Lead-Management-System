@@ -1,22 +1,19 @@
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-// Horizontal step indicator for the lead's task/steps (§7.1). Clicking a step
-// switches which one's checklist is shown below — only the active step's
-// items render at a time instead of stacking every step's checklist. Every
-// step is always viewable/clickable; whether it can be *edited* is a
-// separate, interaction-level gate handled by LeadTaskTab.
+// Horizontal step indicator for the lead's workflow tasks (Phase 4). Clicking
+// a step switches which task's checklist/fields show below. Backend statuses:
+// closed = completed, open = in progress, pending/hold = not yet worked.
 export function TaskStepper({ tasks, activeId, onSelect }) {
   return (
     <div className="flex items-center overflow-x-auto pb-1">
       {tasks.map((task, i) => {
         const isActive = task.id === activeId
-        const isCompleted = task.status === 'Completed'
-        const isStarted = task.status === 'In progress'
-        const isSkipped = !!task.skipped
+        const isCompleted = task.status === 'closed'
+        const isStarted = task.status === 'open'
 
         return (
-          <div key={task.id} className={cn('flex items-center', isSkipped && 'opacity-50')}>
+          <div key={task.id} className="flex items-center">
             <button
               type="button"
               onClick={() => onSelect(task.id)}
@@ -31,10 +28,10 @@ export function TaskStepper({ tasks, activeId, onSelect }) {
                   isActive && !isCompleted && 'ring-2 ring-offset-2 ring-primary/40'
                 )}
               >
-                {isCompleted ? <Check className="size-4" /> : i + 1}
+                {isCompleted ? <Check className="size-4" /> : task.task_no}
               </span>
               <span className={cn('max-w-24 truncate text-xs font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
-                {task.name}
+                {task.task_name}
               </span>
             </button>
             {i < tasks.length - 1 && (

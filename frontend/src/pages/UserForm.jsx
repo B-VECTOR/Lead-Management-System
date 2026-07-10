@@ -8,14 +8,13 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useUser, useCreateUser, useUpdateUser, useResetPassword } from '@/hooks/useUsers'
-import { useGroups, useBelts } from '@/hooks/useLookups'
+import { useGroups, useBelts, useAreas } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { DOMAINS } from '@/mocks/seed'
 import { groupLabel, IMPLICIT_GROUP_NAME } from '@/lib/roles'
 
 const emptyForm = {
-  name: '', employee_id: '', email: '', mobile_no: '', date_of_joining: '',
+  username: '', name: '', employee_id: '', email: '', mobile_no: '', date_of_joining: '',
   acting_belt_level: 'NA', belt: 'NA', domain: '', roles: [],
   password: '', confirmPassword: '', active: true,
 }
@@ -33,12 +32,14 @@ export default function UserForm() {
   const resetPassword = useResetPassword()
   const { data: groups = [] } = useGroups()
   const { data: belts = [] } = useBelts()
+  const { data: areas = [] } = useAreas()
 
   const selectableRoles = useMemo(
     () => groups.filter((g) => g.name !== IMPLICIT_GROUP_NAME).map((g) => groupLabel(g.name)),
     [groups],
   )
   const beltNames = useMemo(() => belts.map((b) => b.name), [belts])
+  const areaNames = useMemo(() => areas.map((a) => a.name), [areas])
   // User Management is a single-holder role — it's only ever changed by editing
   // the person who already has it, never picked when creating someone new.
   const creatableRoles = useMemo(() => selectableRoles.filter((r) => r !== 'User Management'), [selectableRoles])
@@ -52,6 +53,7 @@ export default function UserForm() {
   useEffect(() => {
     if (isEdit && existingUser) {
       setForm({
+        username: existingUser.username || '',
         name: existingUser.name || '', employee_id: existingUser.employee_id || '',
         email: existingUser.email || '', mobile_no: existingUser.mobile_no || '',
         date_of_joining: existingUser.date_of_joining ? existingUser.date_of_joining.slice(0, 10) : '',
@@ -76,7 +78,8 @@ export default function UserForm() {
   async function handleSubmit(e) {
     e.preventDefault()
     const payload = {
-      name: form.name, employee_id: form.employee_id, email: form.email, mobile_no: form.mobile_no,
+      username: form.username, name: form.name, employee_id: form.employee_id,
+      email: form.email, mobile_no: form.mobile_no,
       date_of_joining: form.date_of_joining || null, acting_belt_level: form.acting_belt_level,
       belt: form.belt, domain: form.domain, roles: form.roles,
     }
@@ -99,8 +102,8 @@ export default function UserForm() {
   const saving = createUser.isPending || updateUser.isPending || resetPassword.isPending
   const availableRoles = isEdit ? selectableRoles : creatableRoles
 
-  const basicFieldsFilled = form.name.trim() && form.employee_id.trim() && form.email.trim()
-    && form.mobile_no.trim() && form.date_of_joining && form.domain
+  const basicFieldsFilled = form.username.trim() && form.name.trim() && String(form.employee_id).trim()
+    && form.email.trim() && String(form.mobile_no).trim() && form.date_of_joining && form.domain
 
   const newPasswordOk = isEdit
     ? !form.password || form.password.length >= 6
@@ -124,12 +127,16 @@ export default function UserForm() {
         <CardHeader><CardTitle className="text-base">Basic info</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
+            <Label>Username *</Label>
+            <Input value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="e.g. priya.nair" autoComplete="off" />
+          </div>
+          <div className="flex flex-col gap-1.5">
             <Label>Name *</Label>
             <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Priya Nair" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Employee ID *</Label>
-            <Input value={form.employee_id} onChange={(e) => set('employee_id', e.target.value)} placeholder="e.g. EMP-1011" />
+            <Input type="number" min="0" value={form.employee_id} onChange={(e) => set('employee_id', e.target.value)} placeholder="e.g. 1011" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Email *</Label>
@@ -137,7 +144,7 @@ export default function UserForm() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Mobile no. *</Label>
-            <Input value={form.mobile_no} onChange={(e) => set('mobile_no', e.target.value)} placeholder="e.g. 9820011011" />
+            <Input type="number" min="0" value={form.mobile_no} onChange={(e) => set('mobile_no', e.target.value)} placeholder="e.g. 9820011011" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Date of joining *</Label>
@@ -172,7 +179,7 @@ export default function UserForm() {
             <Select value={form.domain} onValueChange={(v) => v && set('domain', v)}>
               <SelectTrigger className="w-full"><SelectValue placeholder="Select domain" /></SelectTrigger>
               <SelectContent>
-                {DOMAINS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                {areaNames.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

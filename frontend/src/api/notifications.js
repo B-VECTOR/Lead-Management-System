@@ -1,24 +1,22 @@
-import { getAll, insert, update, genId } from '../mocks/db'
+// In-app notifications, wired to the real Django REST backend (Phase 8).
+//
+// Notifications are generated server-side at the events the docs flag as
+// notification-worthy (task opened / reassigned, follow-up raised, owner
+// assignment). The frontend lists them, marks them read, and shows the unread
+// count in the bell.
+import client from './client'
 
-export async function listNotifications(userId) {
-  const rows = await getAll('notifications')
-  return rows.filter((n) => n.user_id === userId).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-}
-
-export async function unreadCount(userId) {
-  const rows = await listNotifications(userId)
-  return rows.filter((n) => !n.read).length
-}
-
-export async function notify({ user_id, type, message, link }) {
-  return insert('notifications', { id: genId('n'), user_id, type, message, link, read: false, created_at: new Date().toISOString() })
+export async function listNotifications() {
+  const { data } = await client.get('/api/notifications/')
+  return Array.isArray(data) ? data : data.results || []
 }
 
 export async function markRead(id) {
-  return update('notifications', id, { read: true })
+  const { data } = await client.post(`/api/notifications/${id}/read/`)
+  return data
 }
 
-export async function markAllRead(userId) {
-  const rows = await listNotifications(userId)
-  await Promise.all(rows.filter((n) => !n.read).map((n) => update('notifications', n.id, { read: true })))
+export async function markAllRead() {
+  const { data } = await client.post('/api/notifications/mark-all-read/')
+  return data
 }

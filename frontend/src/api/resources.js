@@ -1,25 +1,101 @@
-import { getAll, insert, genId } from '../mocks/db'
-import { visibleLeadIds } from './scope'
+// Resource allocation + Project closure, wired to the real Django REST backend
+// (Phase 6 — Tech Req §4.7–4.8, §7, §9; PRD §5.7, §5.12, §5.15).
+//
+// These screens are owned by the Resource Manager role; the backend gates every
+// endpoint with ResourceManagerPermission. The list helpers swallow a 403 into
+// an empty array so the same modules can back the read-only Resources tab on a
+// lead detail for non-RM users without surfacing an error.
+import client from './client'
 
-// Routing a request to whoever fulfills it (a new role/person) isn't built
-// yet — for now this just records what was asked for, by whom, and by when.
-export async function listResourceRequests(currentUser, filters = {}) {
-  const rows = await getAll('resourceRequests')
-  const leadIds = visibleLeadIds(currentUser)
-  let visible = rows.filter((r) => leadIds === null || leadIds.has(r.lead_id))
-  if (filters.leadId) visible = visible.filter((r) => r.lead_id === filters.leadId)
-  return visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+function firstMessage(data) {
+  if (data == null) return null
+  if (typeof data === 'string') return data
+  if (Array.isArray(data)) return firstMessage(data[0])
+  if (typeof data === 'object') {
+    for (const key of Object.keys(data)) {
+      const msg = firstMessage(data[key])
+      if (msg) return msg
+    }
+  }
+  return null
 }
 
-export async function createResourceRequest(data, currentUser) {
-  const row = {
-    id: genId('rr'),
-    lead_id: data.lead_id,
-    type: data.type,
-    due_date: data.due_date,
-    status: 'Requested',
-    requested_by: currentUser.id,
-    created_at: new Date().toISOString(),
+function throwApiError(err) {
+  const msg = firstMessage(err.response?.data)
+  throw new Error(msg || 'Something went wrong. Please try again.')
+}
+
+function rows(data) {
+  return Array.isArray(data) ? data : data.results || []
+}
+
+// --- Resource allocation ----------------------------------------------------
+
+export async function listResourceAllocations({ leadId, status } = {}) {
+  const params = {}
+  if (leadId) params.lead = leadId
+  if (status) params.status = status
+  try {
+    const { data } = await client.get('/api/resource-allocations/', { params })
+    return rows(data)
+  } catch (err) {
+    if (err.response?.status === 403) return []
+    throw err
   }
-  return insert('resourceRequests', row)
+}
+
+export async function getResourceAllocation(id) {
+  const { data } = await client.get(`/api/resource-allocations/${id}/`)
+  return data
+}
+
+export async function updateResourceAllocation(id, patch) {
+  try {
+    const { data } = await client.patch(`/api/resource-allocations/${id}/`, patch)
+    return data
+  } catch (err) {
+    throwApiError(err)
+  }
+}
+
+export async function submitResourceAllocation(id) {
+  try {
+    const { data } = await client.post(`/api/resource-allocations/${id}/submit/`)
+    return data
+  } catch (err) {
+    throwApiError(err)
+  }
+}
+
+export async function listAllocationUsers() {
+  try {
+    const { data } = await client.get('/api/allocation-users/')
+    return rows(data)
+  } catch (err) {
+    if (err.response?.status === 403) return []
+    throw err
+  }
+}
+
+// --- Project closure --------------------------------------------------------
+
+export async function listProjectClosure({ leadId } = {}) {
+  const params = {}
+  if (leadId) params.lead = leadId
+  try {
+    const { data } = await client.get('/api/project-closure/', { params })
+    return rows(data)
+  } catch (err) {
+    if (err.response?.status === 403) return []
+    throw err
+  }
+}
+
+export async function shortCloseProject(id) {
+  try {
+    const { data } = await client.post(`/api/project-closure/${id}/short-close/`)
+    return data
+  } catch (err) {
+    throwApiError(err)
+  }
 }

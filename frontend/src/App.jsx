@@ -6,13 +6,15 @@ import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
 import Account from '@/pages/Account'
 import Dashboard from '@/pages/Dashboard'
-import LeadsLayout from '@/pages/LeadsLayout'
 import LeadsList from '@/pages/LeadsList'
-import FollowUpsList from '@/pages/FollowUpsList'
+import OtherTasks from '@/pages/OtherTasks'
 import LeadDetail from '@/pages/LeadDetail'
 import LeadForm from '@/pages/LeadForm'
 import Notifications from '@/pages/Notifications'
+import HeldLeads from '@/pages/HeldLeads'
+import HeldTasks from '@/pages/HeldTasks'
 import Resources from '@/pages/Resources'
+import ProjectClosure from '@/pages/ProjectClosure'
 import Finance from '@/pages/Finance'
 import UsersList from '@/pages/UsersList'
 import UserForm from '@/pages/UserForm'
@@ -30,15 +32,18 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/account" element={<Account />} />
 
-        <Route path="/leads" element={<LeadsLayout />}>
-          <Route index element={<LeadsList />} />
-          <Route path="follow-ups" element={<FollowUpsList />} />
-        </Route>
+        <Route path="/leads" element={<LeadsList />} />
         <Route path="/leads/new" element={<LeadForm />} />
         <Route path="/leads/:id" element={<LeadDetail />} />
         <Route path="/leads/:id/edit" element={<LeadForm />} />
 
+        <Route path="/other-tasks" element={<OtherTasks />} />
+
+        <Route path="/held-leads" element={<HeldLeads />} />
+        <Route path="/held-tasks" element={<HeldTasks />} />
+
         <Route path="/resources" element={<Resources />} />
+        <Route path="/project-closure" element={<ProjectClosure />} />
         <Route path="/finance" element={<Finance />} />
 
         <Route path="/users" element={<UsersList />} />

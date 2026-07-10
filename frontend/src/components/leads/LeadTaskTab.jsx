@@ -1,119 +1,213 @@
 import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
+import { CheckCircle2, PauseCircle, PlayCircle, UserCog } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { TaskStatusBadge } from '@/components/shared/StatusBadge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { TaskStateBadge } from '@/components/shared/StatusBadge'
 import { ChecklistItemRow } from './ChecklistItemRow'
 import { TaskStepFields } from './TaskStepFields'
 import { TaskStepper } from './TaskStepper'
 import { TaskStepperVertical } from './TaskStepperVertical'
-import { useLeadTasks, useLeadChecklist } from '@/hooks/useChecklist'
-import { useUsers } from '@/hooks/useUsers'
+import { useLeadTasks, useCompleteTask, useReassignTask } from '@/hooks/useTasks'
+import { useHoldTask, useUnholdTask } from '@/hooks/useHolds'
+import { useAssignableUsers } from '@/hooks/useLookups'
 
-// The lead's single execution track — task/steps + checklist instantiated
-// from its lead type template (§7). Only the active step's checklist renders
-// at a time (instead of stacking every step's items) so long checklists
-// don't turn the page into one long scroll. Every step is freely viewable in
-// any order, but *interacting* with a step (checking items, editing its
-// Additional details fields) is only allowed once every earlier step is
-// fully Completed — items and, now, that step's fields too (§8.3). Within
-// the active step, items themselves must still be worked in order.
-// Layout: a vertical step rail sits to the left of the checklist on wider
-// screens; on narrow screens that rail collapses into a horizontal strip
-// above the checklist so the page never needs horizontal scrolling.
-export function LeadTaskTab({ leadId, canUpdate }) {
-  const { data: tasks = [] } = useLeadTasks(leadId)
-  const { data: items = [] } = useLeadChecklist(leadId)
-  const { data: users = [] } = useUsers()
+// The lead's BD workflow track (Phase 4) — the 17-task sequence instantiated
+// by the backend engine. Tasks are listed in the order they opened (loops and
+// extension cycles append later instances). Only the active task's checklist +
+// fields render at a time. Editing is gated by the backend's per-task
+// `can_edit` (assignee + open only, Tech Req §6). A task closes via Save &
+// Complete, which opens the next task(s) per the workflow routing.
+function ReassignDialog({ task, leadId, owners }) {
+  const [open, setOpen] = useState(false)
+  const [userId, setUserId] = useState('')
+  const reassign = useReassignTask(leadId)
+
+  async function handleSave() {
+    try {
+      await reassign.mutateAsync({ taskId: task.id, userId: Number(userId) })
+      toast.success('Task reassigned')
+      setOpen(false)
+    } catch (err) {
+      toast.error(err.message)
+    }
+  }
+
+  return (
+    <>
+      <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}>
+        <UserCog className="size-4" /> Reassign
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Reassign task</DialogTitle></DialogHeader>
+          <p className="-mt-2 text-sm text-muted-foreground">{task.task_name}</p>
+          <Select value={userId} onValueChange={setUserId}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="Select a user…" /></SelectTrigger>
+            <SelectContent>
+              {owners.map((u) => (
+                <SelectItem key={u.id} value={String(u.id)}>{u.name || u.username}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={handleSave} disabled={!userId || reassign.isPending}>
+              {reassign.isPending ? 'Saving…' : 'Reassign'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+// Task-level hold/unhold (Phase 5). A held task is non-editable until resumed;
+// `can_hold` from the backend gates who may act (assignee / lead owner / admin).
+function TaskHoldButton({ task, leadId }) {
+  const hold = useHoldTask()
+  const unhold = useUnholdTask()
+  const isHeld = task.status === 'hold'
+
+  function handleClick() {
+    const action = isHeld ? unhold : hold
+    action.mutate(
+      { taskId: task.id, leadId },
+      {
+        onSuccess: () => toast.success(isHeld ? 'Task resumed' : 'Task put on hold'),
+        onError: (err) => toast.error(err.message),
+      },
+    )
+  }
+
+  return (
+    <Button type="button" size="sm" variant="outline" onClick={handleClick} disabled={hold.isPending || unhold.isPending}>
+      {isHeld ? <><PlayCircle className="size-4" /> Unhold</> : <><PauseCircle className="size-4" /> Hold</>}
+    </Button>
+  )
+}
+
+export function LeadTaskTab({ leadId }) {
+  const { data: tasks = [], isLoading } = useLeadTasks(leadId)
+  const { data: owners = [] } = useAssignableUsers(true)
+  const completeTask = useCompleteTask(leadId)
   const [activeId, setActiveId] = useState(null)
 
-  const userById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users])
-
-  // A branch can route around some steps entirely (§ BD flow rework — e.g.
-  // "Is Solution Blueprint Required?" No skips straight to Project Proposal
-  // Submission, server-flagged as task.skipped). The active/current step is
-  // the first not-yet-completed step *on the resolved path*; skipped steps
-  // never gate anything and are never themselves the active step.
-  const firstIncompleteIndex = useMemo(() => {
-    const onPath = tasks.filter((t) => !t.skipped)
-    const firstIncomplete = onPath.find((t) => t.status !== 'Completed') || onPath[onPath.length - 1]
-    const idx = firstIncomplete ? tasks.findIndex((t) => t.id === firstIncomplete.id) : -1
-    return idx === -1 ? tasks.length - 1 : idx
+  // Default to the first still-open task (the one that needs work), else the
+  // last task in the list.
+  const defaultActive = useMemo(() => {
+    const firstOpen = tasks.find((t) => t.status === 'open')
+    return (firstOpen || tasks[tasks.length - 1])?.id ?? null
   }, [tasks])
 
   useEffect(() => {
-    if (activeId || tasks.length === 0) return
-    setActiveId(tasks[firstIncompleteIndex]?.id)
-  }, [tasks, activeId, firstIncompleteIndex])
+    if (activeId && tasks.some((t) => t.id === activeId)) return
+    setActiveId(defaultActive)
+  }, [tasks, activeId, defaultActive])
 
   const itemCounts = useMemo(() => {
     const map = {}
-    for (const task of tasks) {
-      const taskItems = items.filter((i) => i.lead_task_id === task.id)
-      map[task.id] = { done: taskItems.filter((i) => i.state === 'done' || i.state === 'na').length, total: taskItems.length }
+    for (const t of tasks) {
+      const items = t.checklist_items || []
+      map[t.id] = { done: items.filter((i) => i.status === 'complete').length, total: items.length }
     }
     return map
-  }, [tasks, items])
+  }, [tasks])
 
-  function handleSelectStep(taskId) {
-    setActiveId(taskId)
-  }
-
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading tasks…</p>
   if (tasks.length === 0) {
-    return <p className="text-sm text-muted-foreground">No task template instantiated for this lead yet.</p>
+    return (
+      <p className="text-sm text-muted-foreground">
+        No workflow tasks yet. Task 1 opens once the lead is assigned an owner.
+      </p>
+    )
   }
 
-  const activeTask = tasks.find((t) => t.id === activeId) || tasks[firstIncompleteIndex]
-  const activeTaskIndex = tasks.findIndex((t) => t.id === activeTask.id)
-  const stepEditable = !activeTask.skipped && activeTaskIndex <= firstIncompleteIndex
-  const activeCanUpdate = canUpdate && stepEditable
-  const activeItems = items.filter((i) => i.lead_task_id === activeTask.id).sort((a, b) => a.order - b.order)
-  const firstIncompleteItemIndex = activeItems.findIndex((i) => i.state !== 'done' && i.state !== 'na')
+  const activeTask = tasks.find((t) => t.id === activeId) || tasks[tasks.length - 1]
+  const canEdit = !!activeTask.can_edit
+  const items = activeTask.checklist_items || []
+  const allComplete = items.length > 0 && items.every((i) => i.status === 'complete')
+
+  async function handleComplete() {
+    try {
+      const res = await completeTask.mutateAsync({ taskId: activeTask.id })
+      const opened = res?.opened_tasks || []
+      toast.success(opened.length ? `Task completed — opened: ${opened.map((t) => t.task_name).join(', ')}` : 'Task completed')
+      if (opened.length) setActiveId(opened[0].id)
+    } catch (err) {
+      toast.error(err.message)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start">
       <Card className="md:hidden">
         <CardContent className="p-4">
-          <TaskStepper tasks={tasks} activeId={activeTask.id} onSelect={handleSelectStep} />
+          <TaskStepper tasks={tasks} activeId={activeTask.id} onSelect={setActiveId} />
         </CardContent>
       </Card>
 
-      <Card className="hidden shrink-0 md:sticky md:top-4 md:block md:w-60">
-        <CardContent className="p-2">
-          <TaskStepperVertical tasks={tasks} activeId={activeTask.id} onSelect={handleSelectStep} itemCounts={itemCounts} />
+      <Card className="hidden shrink-0 md:sticky md:top-4 md:block md:w-64">
+        <CardContent className="max-h-[70vh] overflow-y-auto p-2">
+          <TaskStepperVertical tasks={tasks} activeId={activeTask.id} onSelect={setActiveId} itemCounts={itemCounts} />
         </CardContent>
       </Card>
 
       <div className="flex min-w-0 flex-1 flex-col gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">{activeTask.name}</CardTitle>
-              {activeTask.skipped
-                ? <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">Skipped</span>
-                : <TaskStatusBadge status={activeTask.status} />}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">
+                <span className="text-muted-foreground">Task {activeTask.task_no}.</span> {activeTask.task_name}
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                <TaskStateBadge status={activeTask.status} />
+                {activeTask.can_hold && (activeTask.status === 'open' || activeTask.status === 'hold') && (
+                  <TaskHoldButton task={activeTask} leadId={leadId} />
+                )}
+                {activeTask.status === 'open' && owners.length > 0 && (
+                  <ReassignDialog task={activeTask} leadId={leadId} owners={owners} />
+                )}
+              </div>
             </div>
-            {activeTask.skipped && (
-              <p className="text-xs text-muted-foreground">Skipped — an earlier answer routed this lead around this step.</p>
-            )}
-            {!activeTask.skipped && !stepEditable && (
-              <p className="text-xs text-muted-foreground">View only — complete every earlier step (including its Additional details) to edit here.</p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              {activeTask.assigned_to_name
+                ? `Assigned to ${activeTask.assigned_to_name}`
+                : 'Not assigned — assignment handled during resource allocation (Phase 6).'}
+              {!canEdit && activeTask.status === 'open' && ' · View only (you are not the assignee).'}
+            </p>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {activeItems.length === 0 && <p className="text-sm text-muted-foreground">No checklist items for this step.</p>}
-            {activeItems.map((item, i) => (
-              <ChecklistItemRow
-                key={item.id}
-                item={item}
-                canUpdate={activeCanUpdate}
-                leadId={leadId}
-                userById={userById}
-                locked={firstIncompleteItemIndex !== -1 && i > firstIncompleteItemIndex}
-              />
+            {activeTask.is_allocation_task && (
+              <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
+                Resource-allocation step — the Resource Manager fills the allocation
+                form here (built in Phase 6). It carries no checklist.
+              </p>
+            )}
+            {items.length === 0 && !activeTask.is_allocation_task && (
+              <p className="text-sm text-muted-foreground">No checklist items for this task.</p>
+            )}
+            {items.map((item) => (
+              <ChecklistItemRow key={item.id} item={item} canEdit={canEdit} leadId={leadId} />
             ))}
           </CardContent>
         </Card>
 
-        <TaskStepFields taskId={activeTask.id} leadId={leadId} canUpdate={activeCanUpdate} />
+        <TaskStepFields task={activeTask} leadId={leadId} canEdit={canEdit} />
+
+        {canEdit && (
+          <div className="flex items-center justify-end gap-2">
+            {!allComplete && items.length > 0 && (
+              <span className="text-xs text-muted-foreground">Complete every checklist item to close this task.</span>
+            )}
+            <Button onClick={handleComplete} disabled={completeTask.isPending || (items.length > 0 && !allComplete)}>
+              <CheckCircle2 className="size-4" />
+              {completeTask.isPending ? 'Completing…' : 'Save & Complete'}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.contrib.auth.models import Group
@@ -18,13 +19,14 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .forms import ManagedUserUpdateForm, UserCreationForm
-from .models import Belt, User
+from .models import Belt, PasswordResetToken, User
 from .permissions import UserManagementPermission
 from .serializers import (
     BeltSerializer,
     ChangeOwnPasswordSerializer,
     CustomTokenObtainPairSerializer,
     GroupSerializer,
+    PasswordResetConfirmSerializer,
     UserSerializer,
 )
 
@@ -88,6 +90,77 @@ class ChangeOwnPasswordView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MeView(APIView):
+    """Return the authenticated user's own profile (Phase 8, optional `/me`).
+
+    Lets the frontend confirm identity after a reload against the token, rather
+    than trusting the localStorage copy. Same shape as the user CRUD serializer.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(UserSerializer(request.user).data)
+
+
+class PasswordResetRequestView(APIView):
+    """Start the forgot-password flow: issue a reset token for an email
+    (Phase 8 — replaces the frontend's mocked flow).
+
+    Always responds 200 so the endpoint does not reveal whether an email is
+    registered. Since there is no email backend in this build, the reset link
+    is returned in the response body **only in DEBUG** so the flow is usable in
+    development (documented deviation — a real deployment would email it).
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip()
+        payload = {"detail": "If that email has an account, a reset link has been sent."}
+        user = User.objects.filter(email__iexact=email).first() if email else None
+        if user is not None:
+            token = PasswordResetToken.objects.create(user=user)
+            if settings.DEBUG:
+                payload["token"] = str(token.token)
+                payload["reset_url"] = f"/reset-password/{token.token}"
+        return Response(payload)
+
+
+class PasswordResetTokenView(APIView):
+    """Verify a reset token (GET) or set a new password with it (POST)."""
+
+    permission_classes = [AllowAny]
+
+    def _get_valid_token(self, token):
+        record = PasswordResetToken.objects.filter(token=token).select_related("user").first()
+        if record is None or not record.is_valid:
+            return None
+        return record
+
+    def get(self, request, token):
+        record = self._get_valid_token(token)
+        if record is None:
+            return Response({"valid": False}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"valid": True, "email": record.user.email})
+
+    def post(self, request, token):
+        record = self._get_valid_token(token)
+        if record is None:
+            return Response(
+                {"detail": "This reset link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = PasswordResetConfirmSerializer(
+            data=request.data, context={"user": record.user}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        record.used = True
+        record.save(update_fields=["used"])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

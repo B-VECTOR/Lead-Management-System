@@ -47,6 +47,8 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     # Local apps
     "authentication",
+    "reference",
+    "leads",
 ]
 
 MIDDLEWARE = [
@@ -131,6 +133,11 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Uploaded files (lead attachments — Decision #4 / Phase 8). Served by Django in
+# DEBUG; behind a real web server / object store in production.
+MEDIA_URL = "media/"
+MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

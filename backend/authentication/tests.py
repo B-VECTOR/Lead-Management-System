@@ -1,10 +1,12 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Belt
+from reference.models import Area
+
+from .models import Belt, PasswordResetToken
 
 User = get_user_model()
 
@@ -12,35 +14,46 @@ User = get_user_model()
 class UserManagerTests(TestCase):
     def setUp(self):
         self.belt = Belt.objects.create(name="Green", order=1)
+        self.area = Area.objects.create(name="Manufacturing", code="MFG")
         # All model fields are required, so callers must supply them.
         self.required = dict(
+            email="user@example.com",
             name="Ada Lovelace",
-            employee_id="EMP-001",
-            mobile_no="+91 9876543210",
+            employee_id=1,
+            mobile_no=9876543210,
             belt=self.belt,
             acting_belt_level=self.belt,
-            domain="Manufacturing",
+            domain=self.area,
             date_of_joining="2024-01-15",
         )
 
     def test_create_user(self):
         user = User.objects.create_user(
-            email="user@example.com", password="pass1234", **self.required
+            username="ada", password="pass1234", **self.required
         )
+        self.assertEqual(user.username, "ada")
         self.assertEqual(user.email, "user@example.com")
         self.assertTrue(user.is_active)
         self.assertFalse(user.is_staff)
         self.assertFalse(user.is_superuser)
-        # The custom model has no username field.
-        self.assertIsNone(user.username)
+
+    def test_create_user_requires_username(self):
+        with self.assertRaises(ValueError):
+            User.objects.create_user(
+                username="", password="pass1234", **self.required
+            )
 
     def test_create_user_requires_email(self):
+        required = {**self.required}
+        del required["email"]
         with self.assertRaises(ValueError):
-            User.objects.create_user(email="", password="pass1234", **self.required)
+            User.objects.create_user(
+                username="ada", email="", password="pass1234", **required
+            )
 
     def test_create_superuser(self):
         admin = User.objects.create_superuser(
-            email="admin@example.com", password="pass1234", **self.required
+            username="admin", password="pass1234", **self.required
         )
         self.assertTrue(admin.is_staff)
         self.assertTrue(admin.is_superuser)
@@ -48,7 +61,7 @@ class UserManagerTests(TestCase):
     def test_create_superuser_must_have_is_staff(self):
         with self.assertRaises(ValueError):
             User.objects.create_superuser(
-                email="admin@example.com",
+                username="admin",
                 password="pass1234",
                 is_staff=False,
                 **self.required,
@@ -58,38 +71,43 @@ class UserManagerTests(TestCase):
 class UserRequiredFieldTests(TestCase):
     def setUp(self):
         self.belt = Belt.objects.create(name="Green", order=1)
+        self.area = Area.objects.create(name="Manufacturing", code="MFG")
 
     def test_belt_and_domain_are_optional(self):
         # belt / acting_belt_level / domain may be left unset.
         user = User.objects.create_user(
+            username="ada",
             email="member@example.com",
             password="pass1234",
             name="Ada Lovelace",
-            employee_id="EMP-002",
-            mobile_no="9876543210",
+            employee_id=2,
+            mobile_no=9876543210,
             date_of_joining="2024-01-15",
         )
         self.assertIsNone(user.belt)
         self.assertIsNone(user.acting_belt_level)
-        self.assertEqual(user.domain, "")
+        self.assertIsNone(user.domain)
 
     def test_all_fields_populated(self):
         user = User.objects.create_user(
+            username="ada",
             email="member@example.com",
             password="pass1234",
             name="Ada Lovelace",
-            employee_id="EMP-003",
-            mobile_no="+91 9876543210",
+            employee_id=3,
+            mobile_no=9876543210,
             belt=self.belt,
             acting_belt_level=self.belt,
-            domain="Manufacturing",
+            domain=self.area,
             date_of_joining="2024-01-15",
         )
         self.assertEqual(user.get_full_name(), "Ada Lovelace")
-        self.assertEqual(user.employee_id, "EMP-003")
+        self.assertEqual(user.employee_id, 3)
         self.assertEqual(user.belt, self.belt)
+        self.assertEqual(user.domain, self.area)
         self.assertEqual(self.belt.users.count(), 1)
         self.assertEqual(self.belt.acting_users.count(), 1)
+        self.assertEqual(self.area.users.count(), 1)
 
 
 class UserCrudApiTests(APITestCase):
@@ -97,25 +115,29 @@ class UserCrudApiTests(APITestCase):
 
     def setUp(self):
         self.belt = Belt.objects.create(name="Green", order=1)
+        self.area = Area.objects.create(name="Manufacturing", code="MFG")
+        self.other_area = Area.objects.create(name="Quality", code="QA")
         self.payload = {
+            "username": "ada",
             "email": "member@example.com",
             "password": "Tr0ub4dor&3xyz",
             "name": "Ada Lovelace",
-            "employee_id": "EMP-001",
-            "mobile_no": "+91 9876543210",
+            "employee_id": 1001,
+            "mobile_no": 9876543210,
             "belt": self.belt.pk,
-            "domain": "Manufacturing",
+            "domain": self.area.pk,
             "date_of_joining": "2024-01-15",
         }
 
         # A "user management" operator: authenticated + granted the model
         # permissions a User Managers group would hold, but not a superuser.
         self.manager = User.objects.create_user(
+            username="manager",
             email="manager@example.com",
             password="pass1234",
             name="Manager User",
-            employee_id="EMP-MGR",
-            mobile_no="+91 9876500000",
+            employee_id=9001,
+            mobile_no=9876500000,
             date_of_joining="2023-01-01",
         )
         self.manager.user_permissions.add(
@@ -132,11 +154,12 @@ class UserCrudApiTests(APITestCase):
 
         # An authenticated user with no user-management permissions.
         self.plain_user = User.objects.create_user(
+            username="plain",
             email="plain@example.com",
             password="pass1234",
             name="Plain User",
-            employee_id="EMP-PLN",
-            mobile_no="+91 9876511111",
+            employee_id=9002,
+            mobile_no=9876511111,
             date_of_joining="2023-01-01",
         )
 
@@ -158,27 +181,29 @@ class UserCrudApiTests(APITestCase):
         response = self.client.post("/api/users/", self.payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         user_id = response.data["id"]
+        self.assertEqual(response.data["username"], "ada")
         self.assertNotIn("password", response.data)
         created = User.objects.get(pk=user_id)
         self.assertTrue(created.check_password(self.payload["password"]))
+        self.assertEqual(created.employee_id, 1001)
 
         # List
         response = self.client.get("/api/users/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        emails = [item["email"] for item in response.data["results"]]
-        self.assertIn("member@example.com", emails)
+        usernames = [item["username"] for item in response.data["results"]]
+        self.assertIn("ada", usernames)
 
         # Retrieve
         response = self.client.get(f"/api/users/{user_id}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["email"], "member@example.com")
 
-        # Update
+        # Update (domain is now an FK — send the Area pk)
         response = self.client.patch(
-            f"/api/users/{user_id}/", {"domain": "Quality"}, format="json"
+            f"/api/users/{user_id}/", {"domain": self.other_area.pk}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["domain"], "Quality")
+        self.assertEqual(response.data["domain"], self.other_area.pk)
 
         # Delete (soft delete: hidden from the default manager, row kept)
         response = self.client.delete(f"/api/users/{user_id}/")
@@ -195,6 +220,20 @@ class UserCrudApiTests(APITestCase):
         response = self.client.post("/api/users/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("password", response.data)
+
+    def test_create_rejects_duplicate_username(self):
+        self.client.force_authenticate(self.manager)
+        payload = {**self.payload, "username": self.manager.username}
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("username", response.data)
+
+    def test_create_rejects_negative_employee_id(self):
+        self.client.force_authenticate(self.manager)
+        payload = {**self.payload, "employee_id": -5}
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("employee_id", response.data)
 
     def test_response_never_exposes_password(self):
         self.client.force_authenticate(self.manager)
@@ -227,16 +266,75 @@ class UserCrudApiTests(APITestCase):
         self.assertFalse(self.plain_user.is_active)
 
 
+class AuthTokenTests(APITestCase):
+    """Login now authenticates by username, not email (Phase 2)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ada",
+            email="member@example.com",
+            password="OldPass123!",
+            name="Member User",
+            employee_id=1,
+            mobile_no=9876543210,
+            date_of_joining="2024-01-15",
+        )
+
+    def test_login_with_username_succeeds(self):
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": "ada", "password": "OldPass123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+        self.assertEqual(response.data["user"]["username"], "ada")
+        self.assertEqual(response.data["user"]["email"], "member@example.com")
+
+    def test_login_with_email_fails(self):
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": "member@example.com", "password": "OldPass123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_refresh_and_logout(self):
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "ada", "password": "OldPass123!"},
+            format="json",
+        )
+        refresh = login.data["refresh"]
+
+        refreshed = self.client.post(
+            "/api/auth/refresh/", {"refresh": refresh}, format="json"
+        )
+        self.assertEqual(refreshed.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refreshed.data)
+
+        # Refresh-token rotation blacklists the old token, so log out with the
+        # rotated one (fall back to the original if rotation is off).
+        current_refresh = refreshed.data.get("refresh", refresh)
+        self.client.force_authenticate(self.user)
+        logout = self.client.post(
+            "/api/auth/logout/", {"refresh": current_refresh}, format="json"
+        )
+        self.assertEqual(logout.status_code, status.HTTP_205_RESET_CONTENT)
+
+
 class ChangeOwnPasswordApiTests(APITestCase):
     """Exercise the self-service `/api/auth/change-password/` endpoint."""
 
     def setUp(self):
         self.user = User.objects.create_user(
+            username="ada",
             email="member@example.com",
             password="OldPass123!",
             name="Member User",
-            employee_id="EMP-001",
-            mobile_no="+91 9876543210",
+            employee_id=1,
+            mobile_no=9876543210,
             date_of_joining="2024-01-15",
         )
 
@@ -289,13 +387,15 @@ class UserManagementPageTests(TestCase):
 
     def setUp(self):
         self.belt = Belt.objects.create(name="Green", order=1)
+        self.area = Area.objects.create(name="Quality", code="QA")
 
         self.manager = User.objects.create_user(
+            username="manager",
             email="manager@example.com",
             password="Tr0ub4dor&3mgr",
             name="Manager User",
-            employee_id="EMP-MGR",
-            mobile_no="+91 9876500000",
+            employee_id=9001,
+            mobile_no=9876500000,
             date_of_joining="2023-01-01",
         )
         self.manager.user_permissions.add(
@@ -311,20 +411,22 @@ class UserManagementPageTests(TestCase):
         )
 
         self.plain_user = User.objects.create_user(
+            username="plain",
             email="plain@example.com",
             password="Tr0ub4dor&3usr",
             name="Plain User",
-            employee_id="EMP-PLN",
-            mobile_no="+91 9876511111",
+            employee_id=9002,
+            mobile_no=9876511111,
             date_of_joining="2023-01-01",
         )
 
         self.target = User.objects.create_user(
+            username="target",
             email="target@example.com",
             password="Tr0ub4dor&3tgt",
             name="Target User",
-            employee_id="EMP-TGT",
-            mobile_no="+91 9876522222",
+            employee_id=9003,
+            mobile_no=9876522222,
             belt=self.belt,
             date_of_joining="2023-06-01",
         )
@@ -350,36 +452,38 @@ class UserManagementPageTests(TestCase):
         response = self.client.post(
             "/users/manage/create/",
             {
+                "username": "newuser",
                 "email": "newuser@example.com",
                 "password1": "Tr0ub4dor&3new",
                 "password2": "Tr0ub4dor&3new",
                 "name": "New User",
-                "employee_id": "EMP-NEW",
-                "mobile_no": "+91 9876533333",
+                "employee_id": 9004,
+                "mobile_no": 9876533333,
                 "domain": "",
                 "date_of_joining": "2024-01-01",
             },
         )
         self.assertRedirects(response, "/users/manage/")
-        self.assertTrue(User.objects.filter(email="newuser@example.com").exists())
+        self.assertTrue(User.objects.filter(username="newuser").exists())
 
     def test_manager_can_update_user(self):
         self.client.force_login(self.manager)
         response = self.client.post(
             f"/users/manage/{self.target.pk}/edit/",
             {
+                "username": self.target.username,
                 "email": self.target.email,
                 "name": self.target.name,
                 "employee_id": self.target.employee_id,
                 "mobile_no": self.target.mobile_no,
-                "domain": "Quality",
+                "domain": self.area.pk,
                 "date_of_joining": "2023-06-01",
                 "is_active": "on",
             },
         )
         self.assertRedirects(response, "/users/manage/")
         self.target.refresh_from_db()
-        self.assertEqual(self.target.domain, "Quality")
+        self.assertEqual(self.target.domain, self.area)
 
     def test_manager_can_soft_delete_and_restore_user(self):
         self.client.force_login(self.manager)
@@ -398,11 +502,9 @@ class UserManagementPageTests(TestCase):
         response = self.client.get("/users/manage/?show_deleted=1")
         self.assertContains(response, "target@example.com")
 
-        # A soft-deleted user cannot log in.
+        # A soft-deleted user cannot log in (login is by username).
         self.assertFalse(
-            self.client.login(
-                username="target@example.com", password="Tr0ub4dor&3tgt"
-            )
+            self.client.login(username="target", password="Tr0ub4dor&3tgt")
         )
 
         # Restore
@@ -431,6 +533,7 @@ class UserManagementPageTests(TestCase):
         response = self.client.post(
             f"/users/manage/{self.manager.pk}/edit/",
             {
+                "username": self.manager.username,
                 "email": self.manager.email,
                 "name": self.manager.name,
                 "employee_id": self.manager.employee_id,
@@ -444,3 +547,85 @@ class UserManagementPageTests(TestCase):
         self.assertContains(response, "You cannot deactivate your own account.")
         self.manager.refresh_from_db()
         self.assertTrue(self.manager.is_active)
+
+
+class MeEndpointTests(APITestCase):
+    """`/api/auth/me/` returns the authenticated user's own profile (Phase 8)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ada", email="ada@example.com", password="OldPass123!",
+            name="Ada L", employee_id=1, mobile_no=9876543210,
+            date_of_joining="2024-01-15",
+        )
+
+    def test_anonymous_rejected(self):
+        res = self.client.get("/api/auth/me/")
+        self.assertIn(res.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+    def test_returns_own_profile(self):
+        self.client.force_authenticate(self.user)
+        res = self.client.get("/api/auth/me/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["username"], "ada")
+        self.assertEqual(res.data["email"], "ada@example.com")
+
+
+class PasswordResetFlowTests(APITestCase):
+    """Forgot-password: request → verify → confirm (Phase 8)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ada", email="ada@example.com", password="OldPass123!",
+            name="Ada L", employee_id=1, mobile_no=9876543210,
+            date_of_joining="2024-01-15",
+        )
+
+    def test_request_creates_token_and_is_generic(self):
+        res = self.client.post(
+            "/api/auth/password-reset/", {"email": "ada@example.com"}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(PasswordResetToken.objects.filter(user=self.user).exists())
+
+    def test_unknown_email_still_200_no_token(self):
+        res = self.client.post(
+            "/api/auth/password-reset/", {"email": "nobody@example.com"}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(PasswordResetToken.objects.count(), 0)
+
+    def test_verify_and_confirm(self):
+        token = PasswordResetToken.objects.create(user=self.user)
+        verify = self.client.get(f"/api/auth/password-reset/{token.token}/")
+        self.assertEqual(verify.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify.data["valid"])
+        self.assertEqual(verify.data["email"], "ada@example.com")
+
+        confirm = self.client.post(
+            f"/api/auth/password-reset/{token.token}/",
+            {"new_password": "BrandNew789!"}, format="json",
+        )
+        self.assertEqual(confirm.status_code, status.HTTP_204_NO_CONTENT)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("BrandNew789!"))
+        token.refresh_from_db()
+        self.assertTrue(token.used)
+
+    def test_used_token_is_rejected(self):
+        token = PasswordResetToken.objects.create(user=self.user, used=True)
+        verify = self.client.get(f"/api/auth/password-reset/{token.token}/")
+        self.assertEqual(verify.status_code, status.HTTP_404_NOT_FOUND)
+        confirm = self.client.post(
+            f"/api/auth/password-reset/{token.token}/",
+            {"new_password": "BrandNew789!"}, format="json",
+        )
+        self.assertEqual(confirm.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @override_settings(DEBUG=True)
+    def test_debug_returns_reset_link(self):
+        res = self.client.post(
+            "/api/auth/password-reset/", {"email": "ada@example.com"}, format="json"
+        )
+        self.assertIn("reset_url", res.data)
+        self.assertIn("token", res.data)

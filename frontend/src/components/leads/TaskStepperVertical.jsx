@@ -1,18 +1,15 @@
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-// Vertical rail version of TaskStepper for wider screens — sits to the left
-// of the active step's checklist instead of spanning full width horizontally.
-// Every step is always viewable/clickable; whether it can be *edited* is a
-// separate, interaction-level gate handled by LeadTaskTab.
+// Vertical rail version of TaskStepper for wider screens (Phase 4). Backend
+// statuses: closed = completed, open = in progress, pending/hold = not worked.
 export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
   return (
     <div className="flex flex-col">
       {tasks.map((task, i) => {
         const isActive = task.id === activeId
-        const isCompleted = task.status === 'Completed'
-        const isStarted = task.status === 'In progress'
-        const isSkipped = !!task.skipped
+        const isCompleted = task.status === 'closed'
+        const isStarted = task.status === 'open'
         const counts = itemCounts?.[task.id]
 
         return (
@@ -22,8 +19,7 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
             onClick={() => onSelect(task.id)}
             className={cn(
               'flex items-stretch gap-3 rounded-md px-2 py-2 text-left transition-colors',
-              isActive ? 'bg-accent' : 'hover:bg-accent/50',
-              isSkipped && 'opacity-50'
+              isActive ? 'bg-accent' : 'hover:bg-accent/50'
             )}
           >
             <div className="flex flex-col items-center">
@@ -36,7 +32,7 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
                   isActive && !isCompleted && 'ring-2 ring-offset-2 ring-primary/40'
                 )}
               >
-                {isCompleted ? <Check className="size-3.5" /> : i + 1}
+                {isCompleted ? <Check className="size-3.5" /> : task.task_no}
               </span>
               {i < tasks.length - 1 && (
                 <div className={cn('my-1 w-0.5 flex-1', isCompleted ? 'bg-emerald-500' : 'bg-muted-foreground/20')} />
@@ -44,11 +40,9 @@ export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
             </div>
             <div className="min-w-0 flex-1 pb-3">
               <p className={cn('truncate text-sm font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
-                {task.name}
+                {task.task_name}
               </p>
-              {isSkipped ? (
-                <p className="text-xs text-muted-foreground">Skipped</p>
-              ) : counts && (
+              {counts && counts.total > 0 && (
                 <p className="text-xs text-muted-foreground">{counts.done}/{counts.total} done</p>
               )}
             </div>

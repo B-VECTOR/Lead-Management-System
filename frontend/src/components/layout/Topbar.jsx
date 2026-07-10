@@ -7,7 +7,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Sidebar } from './Sidebar'
 import { NotificationBell } from './NotificationBell'
-import { RoleSwitcher } from './RoleSwitcher'
 import { useAuth } from '@/context/AuthContext'
 import { initials, displayRoles } from '@/lib/format'
 
@@ -31,7 +30,6 @@ export function Topbar() {
 
       <div className="flex-1" />
 
-      <RoleSwitcher />
       <NotificationBell />
 
       <DropdownMenu>

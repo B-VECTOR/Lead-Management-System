@@ -21,7 +21,11 @@ export default function ForgotPassword() {
     }
   }
 
-  const token = requestReset.data
+  // The backend always responds generically; in DEBUG it also returns the reset
+  // link (no email backend in this build). `sent` gates the confirmation view;
+  // `resetPath` is present only when the dev link was returned.
+  const sent = requestReset.isSuccess
+  const resetPath = requestReset.data?.reset_url
 
   return (
     <div className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
@@ -31,7 +35,7 @@ export default function ForgotPassword() {
           <CardDescription>Enter your account email and we'll send you a reset link.</CardDescription>
         </CardHeader>
         <CardContent>
-          {!token ? (
+          {!sent ? (
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="email">Email</Label>
@@ -46,13 +50,15 @@ export default function ForgotPassword() {
           ) : (
             <div className="flex flex-col gap-3">
               <p className="text-sm">If that email has an account, a reset link has been sent.</p>
-              <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                <p className="mb-1 font-medium text-foreground">Mocked — no email server yet</p>
-                <p>There's no backend to actually send mail, so here's the link it would have contained:</p>
-                <Link to={`/reset-password/${token.id}`} className="mt-1 block truncate text-primary hover:underline">
-                  {window.location.origin}/reset-password/{token.id}
-                </Link>
-              </div>
+              {resetPath && (
+                <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                  <p className="mb-1 font-medium text-foreground">No email server in this build</p>
+                  <p>The backend returned the reset link directly (dev only):</p>
+                  <Link to={resetPath} className="mt-1 block truncate text-primary hover:underline">
+                    {window.location.origin}{resetPath}
+                  </Link>
+                </div>
+              )}
               <Link to="/login" className="text-center text-sm text-muted-foreground hover:underline">Back to sign in</Link>
             </div>
           )}
