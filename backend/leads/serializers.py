@@ -21,6 +21,8 @@ from .permissions import (
     MARKETING,
     can_edit_task,
     can_hold_task,
+    can_reassign_task,
+    exclude_user_management,
     user_role_names,
 )
 
@@ -48,7 +50,7 @@ class LeadSerializer(serializers.ModelSerializer):
     # Only active, non-deleted users may own a lead. ("BD users" is not further
     # defined in the docs; not over-restricted here — see PLAN Phase-3 note.)
     assigned_to = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(is_active=True),
+        queryset=exclude_user_management(User.objects.filter(is_active=True)),
         required=False,
         allow_null=True,
     )
@@ -58,6 +60,15 @@ class LeadSerializer(serializers.ModelSerializer):
     domain_name = serializers.CharField(source="domain.name", read_only=True)
     assigned_to_name = serializers.CharField(source="assigned_to.name", read_only=True, default=None)
     created_by_name = serializers.CharField(source="created_by.name", read_only=True)
+    # Checklist/task completion % for the leads table + detail progress card.
+    # Computed the same way the dashboard does (closed tasks / total tasks);
+    # read-only and additive — uses the prefetched ``tasks`` when available.
+    progress = serializers.SerializerMethodField()
+    # A human-readable Lead ID (Phase 9 — no such concept exists in the docs;
+    # confirmed with the user). Deliberately shaped unlike a Project ID
+    # ("IN-PHNPD26001-I00") so the two are never confused before a lead has
+    # actually generated one.
+    lead_display_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -77,6 +88,8 @@ class LeadSerializer(serializers.ModelSerializer):
             "assigned_to_name",
             "lead_type",
             "status",
+            "progress",
+            "lead_display_id",
             "project_id",
             "project_id_base",
             "extension",
@@ -87,6 +100,8 @@ class LeadSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "progress",
+            "lead_display_id",
             "project_id",
             "project_id_base",
             "extension",
@@ -94,6 +109,17 @@ class LeadSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_progress(self, obj):
+        tasks = obj.tasks.all()  # uses the prefetch cache when prefetched
+        total = len(tasks)
+        if total == 0:
+            return 0
+        closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
+        return round(closed / total * 100)
+
+    def get_lead_display_id(self, obj):
+        return f"LD-{obj.created_at.year}-{obj.id:05d}"
 
     def validate_status(self, value):
         if value in Lead.SYSTEM_ONLY_STATUSES:
@@ -190,6 +216,7 @@ class TaskSerializer(serializers.ModelSerializer):
     field_schema = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
     can_hold = serializers.SerializerMethodField()
+    can_reassign = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -209,6 +236,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "checklist_items",
             "can_edit",
             "can_hold",
+            "can_reassign",
             "opened_at",
             "closed_at",
             "elapsed_time",
@@ -253,13 +281,24 @@ class TaskSerializer(serializers.ModelSerializer):
             return False
         return can_hold_task(request.user, obj)
 
+    def get_can_reassign(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return False
+        return can_reassign_task(request.user, obj)
+
     def validate_extra_fields(self, value):
         if not isinstance(value, dict):
             raise serializers.ValidationError("Expected an object of field values.")
         tdef = self._task_def(self.instance) if self.instance else None
         if tdef is not None:
-            # Draft save: global rules only, no mandatory-field enforcement.
-            engine.validate_extra_fields(tdef, value, require_mandatory=False)
+            # Draft save: global rules only, no mandatory-field enforcement. The
+            # lead's creation date is the floor for the expected-start-date
+            # exemption (Phase 11).
+            lead_created = self.instance.lead.created_at.date() if self.instance else None
+            engine.validate_extra_fields(
+                tdef, value, require_mandatory=False, lead_created_date=lead_created
+            )
         return value
 
 
@@ -284,18 +323,40 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
     """A resource_allocation row — the Resource Manager's allocation form + list
     entry (Tech Req §4.7 / PRD §5.7).
 
-    The 12 resource FKs and ``remark`` are writable; ``type``/``status``/
-    ``man_power_required`` are system-managed. Read responses carry the lead
-    context (company/project, owner, upstream man-power) for the accordion, the
-    resolved resource names, and the ``is_over_allocated`` exceeded flag.
+    Single slots (Execution Red, Auditors, Project Members), the multi-select
+    Browns/Whites, and ``remark`` are writable; ``type``/``status``/man-power
+    figures are system-managed. Read responses carry the lead context
+    (company/project, owner, the Brown/White man-power split) for the accordion,
+    the resolved resource names, and the per-belt ``is_over_allocated`` flag.
     """
 
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
+    # Lead/project context for the Resource Manager's accordion (PRD §5.7) — the
+    # RM can't fetch the lead directly (it's role-scoped), so the detail they
+    # need to staff with clarity travels on the allocation row itself.
+    lead_display_id = serializers.SerializerMethodField()
+    lead_country = serializers.CharField(source="lead.country.name", read_only=True, default=None)
+    lead_industry = serializers.CharField(source="lead.industry.name", read_only=True, default=None)
+    lead_domain = serializers.CharField(source="lead.domain.name", read_only=True, default=None)
+    lead_division = serializers.CharField(source="lead.division", read_only=True, default="")
+    lead_scope = serializers.CharField(source="lead.scope", read_only=True, default="")
+    lead_type = serializers.CharField(source="lead.lead_type", read_only=True)
+    lead_status = serializers.CharField(source="lead.status", read_only=True)
+    lead_project_id = serializers.CharField(source="lead.project_id", read_only=True, default="")
     lead_manager = serializers.SerializerMethodField()
     resource_names = serializers.SerializerMethodField()
     allocated_count = serializers.IntegerField(read_only=True)
     is_over_allocated = serializers.BooleanField(read_only=True)
+    brown_count = serializers.IntegerField(read_only=True)
+    white_count = serializers.IntegerField(read_only=True)
+    # Browns/Whites are multi-select: a list of user ids in, a list out.
+    execution_browns = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=exclude_user_management(User.objects.all())
+    )
+    whites = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=exclude_user_management(User.objects.all())
+    )
 
     class Meta:
         model = ResourceAllocation
@@ -304,12 +365,25 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "lead",
             "lead_company_name",
             "lead_project_name",
+            "lead_display_id",
+            "lead_country",
+            "lead_industry",
+            "lead_domain",
+            "lead_division",
+            "lead_scope",
+            "lead_type",
+            "lead_status",
+            "lead_project_id",
             "lead_manager",
             "allocation_task",
             "type",
             "status",
             "man_power_required",
+            "man_power_brown",
+            "man_power_white",
             "allocated_count",
+            "brown_count",
+            "white_count",
             "is_over_allocated",
             "remark",
             "resource_names",
@@ -324,17 +398,25 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "type",
             "status",
             "man_power_required",
+            "man_power_brown",
+            "man_power_white",
             "created_at",
             "closed_at",
         ]
+
+    def get_lead_display_id(self, obj):
+        return f"LD-{obj.lead.created_at.year}-{obj.lead.id:05d}"
 
     def get_lead_manager(self, obj):
         return _user_label(obj.lead.assigned_to)
 
     def get_resource_names(self, obj):
-        return {
-            f: _user_label(getattr(obj, f)) for f in ResourceAllocation.RESOURCE_FIELDS
+        names = {
+            f: _user_label(getattr(obj, f)) for f in ResourceAllocation.SINGLE_RESOURCE_FIELDS
         }
+        for f in ResourceAllocation.MULTI_RESOURCE_FIELDS:
+            names[f] = [_user_label(u) for u in getattr(obj, f).all()]
+        return names
 
 
 class ProjectDetailsSerializer(serializers.ModelSerializer):
@@ -350,8 +432,8 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
     lead_manager = serializers.SerializerMethodField()
     execution_red = serializers.SerializerMethodField()
-    execution_brown = serializers.SerializerMethodField()
-    white = serializers.SerializerMethodField()
+    execution_browns = serializers.SerializerMethodField()
+    whites = serializers.SerializerMethodField()
     fixed_fee = serializers.SerializerMethodField()
     variable_fee = serializers.SerializerMethodField()
     fixed_fee_upto = serializers.SerializerMethodField()
@@ -372,8 +454,8 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
             "status",
             "is_current",
             "execution_red",
-            "execution_brown",
-            "white",
+            "execution_browns",
+            "whites",
             "fixed_fee",
             "variable_fee",
             "fixed_fee_upto",
@@ -391,11 +473,15 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
     def get_execution_red(self, obj):
         return self._alloc_user(obj, "execution_red")
 
-    def get_execution_brown(self, obj):
-        return self._alloc_user(obj, "execution_brown")
+    def _alloc_users(self, obj, field):
+        alloc = obj.resource_allocation
+        return [_user_label(u) for u in getattr(alloc, field).all()] if alloc else []
 
-    def get_white(self, obj):
-        return self._alloc_user(obj, "white")
+    def get_execution_browns(self, obj):
+        return self._alloc_users(obj, "execution_browns")
+
+    def get_whites(self, obj):
+        return self._alloc_users(obj, "whites")
 
     # Fee context — "latest captured value from the workflow" (§9.2). Fixed fee
     # is summed from Task 10/14's fixed_fee_blocks; variable fee is Task 10's
@@ -445,7 +531,7 @@ class FollowupSerializer(serializers.ModelSerializer):
     """
 
     assigned_to = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(is_active=True),
+        queryset=exclude_user_management(User.objects.filter(is_active=True)),
     )
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)

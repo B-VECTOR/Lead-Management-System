@@ -33,12 +33,14 @@ export default function LeadForm() {
   const createLead = useCreateLead()
   const updateLead = useUpdateLead()
 
-  // Only Lead Managers / Lead Admins may set an owner; Marketing's owner field
-  // is hidden (server forces "Not Assigned"). The assignable-users lookup is
-  // gated to those roles, so only fetch it when the picker will be shown.
+  // Only Lead Managers / Lead Admins may set who the lead is assigned to;
+  // Marketing's assigned-to field is hidden (server forces "Not Assigned").
+  // The assignable-users lookup is gated to those roles, so only fetch it when
+  // the picker will be shown. ("Owner" is the lead's creator, not this field —
+  // Phase 9.)
   const canAssignOwner = hasRole(user, 'Lead Manager') || hasRole(user, 'Lead Admin')
   const { data: owners = [] } = useAssignableUsers(canAssignOwner)
-  // A Lead Manager must pick an owner at creation; Marketing never sees the field.
+  // A Lead Manager must pick who it's assigned to at creation; Marketing never sees the field.
   const ownerRequired = hasRole(user, 'Lead Manager') && !isEdit
 
   const [form, setForm] = useState(emptyForm)
@@ -127,8 +129,8 @@ export default function LeadForm() {
         <h1 className="text-2xl font-semibold tracking-tight">{isEdit ? 'Edit lead' : 'New lead'}</h1>
         <p className="text-sm text-muted-foreground">
           {marketingNote
-            ? 'Marketing leads are created as "Not Assigned" — a Lead Admin assigns an owner to start the workflow.'
-            : 'Fill in the lead details below. The BD workflow starts once the lead has an owner.'}
+            ? 'Marketing leads are created as "Not Assigned" — a Lead Admin assigns it to someone to start the workflow.'
+            : 'Fill in the lead details below. The BD workflow starts once the lead is assigned to someone.'}
         </p>
       </div>
 
@@ -192,14 +194,18 @@ export default function LeadForm() {
 
           {canAssignOwner && (
             <div className="flex flex-col gap-1.5">
-              <Label>Assigned to (owner){ownerRequired ? ' *' : ''}</Label>
+              <Label>Assigned to{ownerRequired ? ' *' : ''}</Label>
               <Select value={form.assigned_to ? String(form.assigned_to) : ''} onValueChange={(v) => setIfPresent('assigned_to', Number(v))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select a BD owner" /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Select a person" /></SelectTrigger>
                 <SelectContent>
-                  {owners.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
+                  {owners.map((o) => (
+                    <SelectItem key={o.id} value={String(o.id)}>
+                      {o.name}{o.id === user?.id ? ' (self)' : ''}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">The BD person who owns this lead. Assigning an owner starts the workflow.</p>
+              <p className="text-xs text-muted-foreground">The person actively working this lead. Assigning it starts the workflow.</p>
             </div>
           )}
 

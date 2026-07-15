@@ -2,26 +2,25 @@ import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Users2, Bell, Boxes, Wallet, UserCog, PauseCircle, ListChecks, ListTodo, FileCheck2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
-import { hasRole } from '@/api/scope'
+import { hasRole, canSeeLeadModule, canSeeFollowUps, canSeeHeldQueues } from '@/api/scope'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Logo } from './Logo'
 
-// Phase 1 nav: Dashboard, Leads, Notifications only. Kanban/Companies/Follow-ups/
-// Reports/Settings are removed for now (§21 rework) — Companies and Follow-ups
-// functionality still exist, just accessed from inside a lead rather than as
-// their own nav destinations. Reports/Settings return in a later phase.
-// Items with no `roles` are visible to every signed-in user (everyone always
-// holds the implicit Employee role); `roles` gates an item to specific roles.
+// Nav is module-scoped. Items with neither `roles` nor `show` are visible to
+// every signed-in user (Dashboard, Notifications). `roles` gates an item to
+// specific roles; `show(user)` is a predicate for finer module gating. The
+// Lead-module items are hidden from pure back-office users (Resource Manager /
+// Finance / User Management) via `canSeeLeadModule`.
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/leads', label: 'Leads', icon: Users2 },
-  { to: '/other-tasks', label: 'Other Tasks', icon: ListTodo },
-  { to: '/held-leads', label: 'Held Leads', icon: PauseCircle },
-  { to: '/held-tasks', label: 'Held Tasks', icon: ListChecks },
+  { to: '/leads', label: 'Leads', icon: Users2, show: canSeeLeadModule },
+  { to: '/other-tasks', label: 'Follow up', icon: ListTodo, show: canSeeFollowUps },
+  { to: '/held-leads', label: 'Held Leads', icon: PauseCircle, show: canSeeHeldQueues },
+  { to: '/held-tasks', label: 'Held Tasks', icon: ListChecks, show: canSeeHeldQueues },
   { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Resource Manager'] },
   { to: '/project-closure', label: 'Project Closure', icon: FileCheck2, roles: ['Resource Manager'] },
-  { to: '/finance', label: 'Finance', icon: Wallet },
+  { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Finance'] },
   { to: '/users', label: 'Users', icon: UserCog, roles: ['User Management'] },
   { to: '/notifications', label: 'Notifications', icon: Bell },
 ]
@@ -57,7 +56,11 @@ function NavItem({ to, label, icon: Icon, collapsed }) {
 export function Sidebar({ className, collapsed = false, onToggle }) {
   const { user } = useAuth()
   if (!user) return null
-  const items = NAV_ITEMS.filter((item) => !item.roles || item.roles.some((r) => hasRole(user, r)))
+  const items = NAV_ITEMS.filter((item) => {
+    if (item.show && !item.show(user)) return false
+    if (item.roles && !item.roles.some((r) => hasRole(user, r))) return false
+    return true
+  })
 
   return (
     <nav className={cn('flex h-full flex-col gap-1 p-3', collapsed && 'items-center px-2', className)}>

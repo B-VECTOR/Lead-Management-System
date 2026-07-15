@@ -164,7 +164,21 @@ def _field_required(field, values):
     return False
 
 
-def _validate_scalar(field, value):
+# Field whose past-date floor is the lead's creation date rather than today
+# (Phase 11, per the user): the "expected start date of next stage" may be
+# back-dated as far as the lead was created — a stage can't start before the
+# lead existed, but earlier-than-today is allowed for it. Every other date field
+# keeps the global "no past dates" (before today) rule (Tech Req §3).
+LEAD_CREATED_FLOOR_FIELDS = {"expected_start_date"}
+
+
+def _date_floor(field, lead_created_date):
+    if field.get("key") in LEAD_CREATED_FLOOR_FIELDS and lead_created_date is not None:
+        return lead_created_date
+    return timezone.now().date()
+
+
+def _validate_scalar(field, value, *, lead_created_date=None):
     """Global-rule check for one scalar value; returns an error string or None."""
     if _is_empty(value):
         return None
@@ -181,7 +195,10 @@ def _validate_scalar(field, value):
             parsed = date.fromisoformat(str(value))
         except ValueError:
             return "Enter a valid date (YYYY-MM-DD)."
-        if parsed < timezone.now().date():
+        floor = _date_floor(field, lead_created_date)
+        if parsed < floor:
+            if floor < timezone.now().date():
+                return f"Date cannot be before the lead was created ({floor.isoformat()})."
             return "Past dates are not allowed."
     elif ftype == "boolean":
         if value not in ("Yes", "No"):
@@ -189,13 +206,15 @@ def _validate_scalar(field, value):
     return None
 
 
-def validate_extra_fields(tdef, values, *, require_mandatory):
+def validate_extra_fields(tdef, values, *, require_mandatory, lead_created_date=None):
     """Validate submitted field ``values`` against a task's schema.
 
     Always enforces the global numeric/date rules (§3) on any provided value.
     When ``require_mandatory`` is True (task closure) also enforces that every
-    required / conditionally-required field is filled. Raises DRF
-    ``ValidationError`` keyed by field so the API returns a 400 field map.
+    required / conditionally-required field is filled. ``lead_created_date`` (the
+    owning lead's creation date) is the floor for the per-field exemption in
+    :data:`LEAD_CREATED_FLOOR_FIELDS`. Raises DRF ``ValidationError`` keyed by
+    field so the API returns a 400 field map.
     """
     errors = {}
     for field in tdef.get("extra_fields", []):
@@ -209,7 +228,7 @@ def validate_extra_fields(tdef, values, *, require_mandatory):
         if require_mandatory and _field_required(field, values) and _is_empty(value):
             errors[key] = "This field is required to complete the task."
             continue
-        msg = _validate_scalar(field, value)
+        msg = _validate_scalar(field, value, lead_created_date=lead_created_date)
         if msg:
             errors[key] = msg
     if errors:
@@ -251,7 +270,12 @@ def assert_closable(task, tdef):
         raise serializers.ValidationError(
             "All checklist items must be complete before closing this task."
         )
-    validate_extra_fields(tdef, task.extra_fields or {}, require_mandatory=True)
+    validate_extra_fields(
+        tdef,
+        task.extra_fields or {},
+        require_mandatory=True,
+        lead_created_date=task.lead.created_at.date(),
+    )
 
 
 def _route_targets(tdef, values):

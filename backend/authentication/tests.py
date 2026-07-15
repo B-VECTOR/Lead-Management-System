@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Group, Permission
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -173,6 +173,28 @@ class UserCrudApiTests(APITestCase):
         self.client.force_authenticate(self.plain_user)
         response = self.client.get("/api/users/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_user_management_holders_hidden_from_listing(self):
+        # User Management is an exclusive role managed only via the Django admin;
+        # its holders never appear in the app's user listing or CRUD-by-id.
+        um_user = User.objects.create_user(
+            username="umadmin",
+            email="um@example.com",
+            password="pass1234",
+            name="UM Admin",
+            employee_id=9003,
+            mobile_no=9876522222,
+            date_of_joining="2023-01-01",
+        )
+        um_user.groups.add(Group.objects.get_or_create(name="user_management")[0])
+        self.client.force_authenticate(self.manager)
+
+        listing = self.client.get("/api/users/")
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertNotIn(um_user.id, {row["id"] for row in listing.data["results"]})
+
+        detail = self.client.get(f"/api/users/{um_user.id}/")
+        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_manager_can_create_list_retrieve_update_delete(self):
         self.client.force_authenticate(self.manager)

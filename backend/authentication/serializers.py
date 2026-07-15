@@ -1,5 +1,6 @@
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -60,6 +61,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_password(self, value):
         validate_password(value, user=self.instance)
+        return value
+
+    def validate_date_of_joining(self, value):
+        # Date of Joining is exempt from the global no-past-dates rule (it's
+        # historical), but a future joining date is not allowed.
+        if value and value > timezone.now().date():
+            raise serializers.ValidationError("Joining date can't be in the future.")
         return value
 
     def create(self, validated_data):

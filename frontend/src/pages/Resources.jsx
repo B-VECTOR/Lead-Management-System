@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, Pencil } from 'lucide-react'
+import { AlertTriangle, Check, Pencil, X } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -10,6 +11,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import {
   useResourceAllocations,
   useAllocationUsers,
@@ -17,12 +20,9 @@ import {
   useSubmitAllocation,
 } from '@/hooks/useResources'
 
-// The 12 resource slots on the allocation form, in the order the docs list them
-// (Tech Req §4.7 / PRD §5.7). `white` may be left blank — TBD is allowed.
-const RESOURCE_FIELDS = [
-  ['execution_red', 'Execution Red'],
-  ['execution_brown', 'Execution Brown'],
-  ['white', 'White'],
+// Single-holder slots (one user each). Execution Red drives the next task's
+// assignee. Browns and White are multi-select and handled separately.
+const SINGLE_FIELDS = [
   ['auditor1', 'Auditor 1'],
   ['auditor2', 'Auditor 2'],
   ['auditor3', 'Auditor 3'],
@@ -36,14 +36,23 @@ const RESOURCE_FIELDS = [
 
 const NONE = '__none__'
 
-const STATUS_STYLES = {
-  Pending: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  Open: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
-  Closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+// Open = resources actively tied up; Closed = freed up (auto-close rules).
+const STATUS_META = {
+  Pending: { cls: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', label: 'Pending', hint: 'Awaiting allocation' },
+  Open: { cls: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300', label: 'Open', hint: 'Resources tied up' },
+  Closed: { cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300', label: 'Freed', hint: 'Resources freed up' },
 }
 
 function StatusBadge({ status }) {
-  return <Badge variant="secondary" className={STATUS_STYLES[status] || ''}>{status}</Badge>
+  const meta = STATUS_META[status] || { cls: '', label: status, hint: '' }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="secondary" className={meta.cls}>{meta.label}</Badge>
+      </TooltipTrigger>
+      {meta.hint && <TooltipContent>{meta.hint}</TooltipContent>}
+    </Tooltip>
+  )
 }
 
 function UserSelect({ value, onChange, users, disabled }) {
@@ -52,77 +61,190 @@ function UserSelect({ value, onChange, users, disabled }) {
       <SelectTrigger className="w-full"><SelectValue placeholder="— None —" /></SelectTrigger>
       <SelectContent>
         <SelectItem value={NONE}>— None (TBD) —</SelectItem>
-        {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name} ({u.username})</SelectItem>)}
+        {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
       </SelectContent>
     </Select>
+  )
+}
+
+// Multi-select for Browns / White: a stage can need several of each.
+function MultiUserSelect({ value = [], onChange, users, disabled }) {
+  const [open, setOpen] = useState(false)
+  const selected = users.filter((u) => value.includes(u.id))
+  const toggle = (id) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id])
+
+  return (
+    // `modal` so an outside click while the dropdown is open closes only the
+    // dropdown — its own layer captures the click before it reaches the parent
+    // AllocationDialog (which is portalled separately and would otherwise treat
+    // the click as "outside" and dismiss the whole dialog).
+    <Popover open={open} onOpenChange={setOpen} modal>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          className="h-auto min-h-9 w-full flex-wrap justify-start gap-1 py-1.5 font-normal"
+        >
+          {selected.length === 0 ? (
+            <span className="text-muted-foreground">— None (TBD) —</span>
+          ) : (
+            selected.map((u) => (
+              <Badge key={u.id} variant="secondary" className="gap-1">
+                {u.name}
+                {!disabled && (
+                  <X
+                    className="size-3 cursor-pointer opacity-70 hover:opacity-100"
+                    onClick={(e) => { e.stopPropagation(); toggle(u.id) }}
+                  />
+                )}
+              </Badge>
+            ))
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search people…" />
+          <CommandList>
+            <CommandEmpty>No user found.</CommandEmpty>
+            <CommandGroup>
+              {users.map((u) => (
+                <CommandItem key={u.id} value={u.name} onSelect={() => toggle(u.id)}>
+                  <Check className={cn('mr-2 size-4', value.includes(u.id) ? 'opacity-100' : 'opacity-0')} />
+                  {u.name}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+// Guard the allocation dialog against being dismissed by a click that actually
+// landed inside a portalled popover/select layer (rendered outside the dialog's
+// DOM node). A genuine click outside the dialog still closes it.
+function isInPortalLayer(e) {
+  const t = e.detail?.originalEvent?.target
+  return !!(t && t.closest?.('[data-radix-popper-content-wrapper]'))
+}
+
+function DetailRow({ label, value }) {
+  if (!value) return null
+  return <span>{label}: <b className="font-medium text-foreground">{value}</b></span>
+}
+
+function ManpowerLine({ label, required, allocated }) {
+  const over = required > 0 && allocated > required
+  return (
+    <span>
+      {label}: <b className={over ? 'text-red-600' : 'text-foreground'}>{allocated}</b>
+      <span className="text-muted-foreground"> / {required}</span>
+    </span>
   )
 }
 
 function AllocationDialog({ allocation, users, onClose }) {
   const update = useUpdateAllocation()
   const submit = useSubmitAllocation()
-  const [form, setForm] = useState({})
+  const [singles, setSingles] = useState({})
+  const [browns, setBrowns] = useState([])
+  const [whites, setWhites] = useState([])
   const [remark, setRemark] = useState('')
 
   useEffect(() => {
     if (!allocation) return
-    const next = {}
-    for (const [key] of RESOURCE_FIELDS) next[key] = allocation[key] || null
-    setForm(next)
+    const next = { execution_red: allocation.execution_red || null }
+    for (const [key] of SINGLE_FIELDS) next[key] = allocation[key] || null
+    setSingles(next)
+    setBrowns(allocation.execution_browns || [])
+    setWhites(allocation.whites || [])
     setRemark(allocation.remark || '')
   }, [allocation])
 
   if (!allocation) return null
   const readOnly = allocation.status === 'Closed'
-  const allocatedCount = RESOURCE_FIELDS.filter(([k]) => form[k]).length
-  const over = allocatedCount > allocation.man_power_required
-  const payload = { ...form, remark }
+  const isPending = allocation.status === 'Pending'
+  const busy = update.isPending || submit.isPending
+  const payload = { ...singles, execution_browns: browns, whites, remark }
 
-  async function handleSave() {
+  const overBrown = allocation.man_power_brown > 0 && browns.length > allocation.man_power_brown
+  const overWhite = allocation.man_power_white > 0 && whites.length > allocation.man_power_white
+  const over = overBrown || overWhite
+
+  async function handleAllocate() {
+    // Single CTA: save the form, then submit — which closes the allocation
+    // task and opens the next workflow task for the chosen Execution Red.
     await update.mutateAsync({ id: allocation.id, patch: payload })
-    toast.success('Allocation saved')
+    await submit.mutateAsync({ id: allocation.id })
+    toast.success('Resources allocated — next task opened')
     onClose()
   }
 
-  async function handleSubmit() {
+  async function handleUpdate() {
     await update.mutateAsync({ id: allocation.id, patch: payload })
-    await submit.mutateAsync({ id: allocation.id })
-    toast.success('Allocation submitted — next task opened')
+    toast.success('Allocation updated')
     onClose()
   }
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent
+        className="max-h-[90vh] max-w-2xl overflow-y-auto"
+        onPointerDownOutside={(e) => { if (isInPortalLayer(e)) e.preventDefault() }}
+        onInteractOutside={(e) => { if (isInPortalLayer(e)) e.preventDefault() }}
+      >
         <DialogHeader><DialogTitle>Allocate resources — {allocation.type}</DialogTitle></DialogHeader>
 
-        {/* Lead / man-power context (§7.4) shown above the allocation form. */}
+        {/* Lead / project context (PRD §5.7) so the RM can staff with clarity. */}
         <div className="rounded-md border bg-muted/40 p-3 text-sm">
-          <div className="font-medium">{allocation.lead_project_name}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{allocation.lead_project_name}</span>
+            <StatusBadge status={allocation.status} />
+          </div>
           <div className="text-muted-foreground">{allocation.lead_company_name}</div>
-          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
-            <span>Lead Manager: <b>{allocation.lead_manager?.name || '—'}</b></span>
-            <span>Man-power required: <b>{allocation.man_power_required}</b></span>
-            <span>Allocated: <b className={over ? 'text-red-600' : ''}>{allocatedCount}</b></span>
-            <span>Status: <b>{allocation.status}</b></span>
+          <div className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+            <DetailRow label="Lead ID" value={allocation.lead_display_id} />
+            <DetailRow label="Project ID" value={allocation.lead_project_id} />
+            <DetailRow label="Lead Manager" value={allocation.lead_manager?.name} />
+            <DetailRow label="Country" value={allocation.lead_country} />
+            <DetailRow label="Industry" value={allocation.lead_industry} />
+            <DetailRow label="Domain" value={allocation.lead_domain} />
+            <DetailRow label="Division" value={allocation.lead_division} />
+            <DetailRow label="Scope" value={allocation.lead_scope} />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs">
+            <span className="font-medium text-muted-foreground">Man-power (allocated / required):</span>
+            <ManpowerLine label="Brown" required={allocation.man_power_brown} allocated={browns.length} />
+            <ManpowerLine label="White" required={allocation.man_power_white} allocated={whites.length} />
           </div>
           {over && (
             <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600">
-              <AlertTriangle className="size-3.5" /> Allocated resources exceed the required man-power.
+              <AlertTriangle className="size-3.5" />
+              {overBrown && overWhite ? 'Browns and White exceed' : overBrown ? 'Browns exceed' : 'White exceeds'} the required man-power.
             </p>
           )}
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {RESOURCE_FIELDS.map(([key, label]) => (
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Execution Red</Label>
+            <UserSelect value={singles.execution_red} users={users} disabled={readOnly} onChange={(v) => setSingles((s) => ({ ...s, execution_red: v }))} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Browns {allocation.man_power_brown > 0 && <span className="text-muted-foreground">(need {allocation.man_power_brown})</span>}</Label>
+            <MultiUserSelect value={browns} users={users} disabled={readOnly} onChange={setBrowns} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">White {allocation.man_power_white > 0 && <span className="text-muted-foreground">(need {allocation.man_power_white})</span>}</Label>
+            <MultiUserSelect value={whites} users={users} disabled={readOnly} onChange={setWhites} />
+          </div>
+          {SINGLE_FIELDS.map(([key, label]) => (
             <div key={key} className="flex flex-col gap-1.5">
               <Label className="text-xs">{label}</Label>
-              <UserSelect
-                value={form[key]}
-                users={users}
-                disabled={readOnly}
-                onChange={(v) => setForm((f) => ({ ...f, [key]: v }))}
-              />
+              <UserSelect value={singles[key]} users={users} disabled={readOnly} onChange={(v) => setSingles((s) => ({ ...s, [key]: v }))} />
             </div>
           ))}
         </div>
@@ -134,14 +256,11 @@ function AllocationDialog({ allocation, users, onClose }) {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
           {!readOnly && (
-            <>
-              <Button variant="secondary" onClick={handleSave} disabled={update.isPending}>Save draft</Button>
-              {allocation.status === 'Pending' && (
-                <Button onClick={handleSubmit} disabled={update.isPending || submit.isPending}>
-                  Submit &amp; open next task
-                </Button>
-              )}
-            </>
+            isPending ? (
+              <Button onClick={handleAllocate} disabled={busy}>Allocate resources</Button>
+            ) : (
+              <Button onClick={handleUpdate} disabled={busy}>Update allocation</Button>
+            )
           )}
         </DialogFooter>
       </DialogContent>
@@ -151,7 +270,7 @@ function AllocationDialog({ allocation, users, onClose }) {
 
 // Resource Manager reporting screen (Tech Req §9.1 / PRD §5.7) — every
 // allocation row with its status and an over-allocation indicator; Edit opens
-// the allocation form with lead/man-power context.
+// the allocation form with the full lead/project + man-power context.
 export default function Resources() {
   const { data: allocations = [], isLoading } = useResourceAllocations()
   const { data: users = [] } = useAllocationUsers()
@@ -166,7 +285,9 @@ export default function Resources() {
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Resource Allocation</h1>
-        <p className="text-sm text-muted-foreground">Allocate resources for each workflow stage. Resources free up automatically as engagements finish.</p>
+        <p className="text-sm text-muted-foreground">
+          Allocate resources for each workflow stage. <b>Open</b> = resources tied up; <b>Freed</b> = released automatically as engagements finish.
+        </p>
       </div>
 
       <Card>
@@ -190,13 +311,13 @@ export default function Resources() {
                 <TableRow key={a.id}>
                   <TableCell>
                     <div className="font-medium">{a.lead_project_name}</div>
-                    <div className="text-xs text-muted-foreground">{a.lead_company_name}</div>
+                    <div className="text-xs text-muted-foreground">{a.lead_company_name} · {a.lead_display_id}</div>
                   </TableCell>
                   <TableCell>{a.type}</TableCell>
                   <TableCell><StatusBadge status={a.status} /></TableCell>
                   <TableCell>
                     <span className={a.is_over_allocated ? 'font-medium text-red-600' : ''}>
-                      {a.allocated_count} / {a.man_power_required}
+                      Brown {a.brown_count}/{a.man_power_brown} · White {a.white_count}/{a.man_power_white}
                     </span>
                   </TableCell>
                   <TableCell className="text-right">
@@ -210,7 +331,7 @@ export default function Resources() {
                         </Tooltip>
                       )}
                       <Button size="sm" variant="outline" onClick={() => setEditing(a)}>
-                        <Pencil className="size-4" /> Edit
+                        <Pencil className="size-4" /> {a.status === 'Closed' ? 'View' : 'Edit'}
                       </Button>
                     </div>
                   </TableCell>

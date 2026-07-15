@@ -11,6 +11,14 @@ export function useResourceAllocations(filters = {}) {
   })
 }
 
+export function useLeadResourceAllocations(leadId) {
+  return useQuery({
+    queryKey: ['lead-resource-allocations', leadId],
+    queryFn: () => resourcesApi.listLeadResourceAllocations(leadId),
+    enabled: !!leadId,
+  })
+}
+
 export function useAllocationUsers() {
   return useQuery({
     queryKey: ['allocation-users'],

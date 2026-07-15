@@ -355,13 +355,12 @@ class ResourceAllocation(models.Model):
     Manager only.
     """
 
-    # The resource-holding FK fields, in the order shown on the allocation form.
-    # Reused for the over-allocation count and by the engine's execution_red
-    # resolution. ``white`` may be left blank ("TBD allowed", PRD §5.7).
-    RESOURCE_FIELDS = (
+    # Single-holder resource slots (one user each), in form order. Execution
+    # Red drives the next task's assignee (``latest_execution_red``). Browns and
+    # White are multi-select instead (``MULTI_RESOURCE_FIELDS``) — a stage can
+    # need several of each (e.g. "3 Brown, 1 White").
+    SINGLE_RESOURCE_FIELDS = (
         "execution_red",
-        "execution_brown",
-        "white",
         "auditor1",
         "auditor2",
         "auditor3",
@@ -372,6 +371,14 @@ class ResourceAllocation(models.Model):
         "project_member4",
         "project_member5",
     )
+    # Multi-holder slots (many users each) — Browns and White. White may be left
+    # empty ("TBD allowed", PRD §5.7).
+    MULTI_RESOURCE_FIELDS = (
+        "execution_browns",
+        "whites",
+    )
+    # All resource-holding field names (kept for callers that iterate every slot).
+    RESOURCE_FIELDS = SINGLE_RESOURCE_FIELDS + MULTI_RESOURCE_FIELDS
 
     class Type(models.TextChoices):
         TWO_HR = "2HR", _("2Hr Study & Presentation")
@@ -406,14 +413,17 @@ class ResourceAllocation(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="+", verbose_name=_("execution red"),
     )
-    execution_brown = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("execution brown"),
+    # Browns and White are multi-select: a stage can need several of each, and
+    # the Resource Manager assigns however many the upstream man-power figure
+    # calls for. White may be left empty — TBD is allowed (PRD §5.7).
+    execution_browns = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, related_name="+", blank=True,
+        verbose_name=_("execution browns"),
     )
-    white = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("white"),
-        help_text=_("May be left blank — TBD is allowed (PRD §5.7)."),
+    whites = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, related_name="+", blank=True,
+        verbose_name=_("whites"),
+        help_text=_("May be left empty — TBD is allowed (PRD §5.7)."),
     )
     auditor1 = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
@@ -459,8 +469,13 @@ class ResourceAllocation(models.Model):
     man_power_required = models.PositiveIntegerField(
         _("man power required"),
         default=0,
-        help_text=_("Headcount captured from the triggering stage; over-allocation reference."),
+        help_text=_("Total headcount captured from the triggering stage (Brown + White)."),
     )
+    # The Brown/White split of the required man-power, captured upstream and
+    # preserved so the Resource Manager sees exactly how many of each is needed
+    # (not just the total) and over-allocation is checked per belt.
+    man_power_brown = models.PositiveIntegerField(_("man power required — brown"), default=0)
+    man_power_white = models.PositiveIntegerField(_("man power required — white"), default=0)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     closed_at = models.DateTimeField(_("closed at"), null=True, blank=True)
 
@@ -473,16 +488,31 @@ class ResourceAllocation(models.Model):
         return f"[{self.lead_id}] {self.type} ({self.status})"
 
     @property
+    def brown_count(self):
+        return self.execution_browns.count()
+
+    @property
+    def white_count(self):
+        return self.whites.count()
+
+    @property
     def allocated_count(self):
-        """How many resource slots the Resource Manager has actually filled."""
-        return sum(
-            1 for f in self.RESOURCE_FIELDS if getattr(self, f"{f}_id") is not None
+        """Total resources the Resource Manager has assigned (singles + multis)."""
+        singles = sum(
+            1 for f in self.SINGLE_RESOURCE_FIELDS if getattr(self, f"{f}_id") is not None
         )
+        return singles + self.brown_count + self.white_count
 
     @property
     def is_over_allocated(self):
-        """Red exceeded-indicator: more resources allocated than required (§4.7)."""
-        return self.allocated_count > self.man_power_required
+        """Red exceeded-indicator (§4.7): more Browns or Whites assigned than the
+        upstream man-power figure calls for. Checked per belt now that the
+        Brown/White split is preserved; a required figure of 0 means "not
+        captured", so it never flags.
+        """
+        brown_over = self.man_power_brown > 0 and self.brown_count > self.man_power_brown
+        white_over = self.man_power_white > 0 and self.white_count > self.man_power_white
+        return brown_over or white_over
 
 
 class ProjectDetails(models.Model):
@@ -727,6 +757,8 @@ class Notification(models.Model):
         TASK_OPENED = "task_opened", _("task opened")
         TASK_REASSIGNED = "task_reassigned", _("task reassigned")
         FOLLOWUP = "followup", _("follow-up")
+        LEAD_HELD = "lead_held", _("lead put on hold")
+        TASK_HELD = "task_held", _("task put on hold")
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

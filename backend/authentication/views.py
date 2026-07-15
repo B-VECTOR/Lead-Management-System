@@ -184,9 +184,19 @@ class BeltListView(ListAPIView):
     pagination_class = None
 
 
+# User Management is an exclusive back-office role managed only through the
+# Django admin panel; its holders never appear in the app's user listing/CRUD.
+USER_MANAGEMENT_GROUP = "user_management"
+
+
 def _user_queryset(*, include_deleted=False):
     manager = User.all_objects if include_deleted else User.objects
-    return manager.filter(is_superuser=False).select_related("belt", "acting_belt_level").order_by("email")
+    return (
+        manager.filter(is_superuser=False)
+        .exclude(groups__name=USER_MANAGEMENT_GROUP)
+        .select_related("belt", "acting_belt_level")
+        .order_by("email")
+    )
 
 
 class UserListCreateView(APIView):

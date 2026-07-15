@@ -161,10 +161,27 @@ class LeadVisibilityTests(LeadApiTestBase):
         res = self.client.get(LIST_URL)
         self.assertEqual(self._ids(res), {self.mkt_lead.id})
 
-    def test_employee_cannot_list_leads(self):
-        # Employee holds no view-leads permission in the §12 matrix at all.
+    def test_employee_sees_only_leads_assigned_to_them(self):
+        # An Employee may open the Lead module to work their tasks, but sees
+        # only the leads assigned to them — nothing else.
         self.client.force_authenticate(self.employee)
         res = self.client.get(LIST_URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._ids(res), set())
+        # Assign a lead to the employee → it now shows up.
+        self.assigned_lead.assigned_to = self.employee
+        self.assigned_lead.save(update_fields=["assigned_to"])
+        res = self.client.get(LIST_URL)
+        self.assertEqual(self._ids(res), {self.assigned_lead.id})
+
+    def test_employee_cannot_edit_assigned_lead(self):
+        # Read-only: the Employee sees their lead but cannot edit its fields.
+        self.assigned_lead.assigned_to = self.employee
+        self.assigned_lead.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.employee)
+        res = self.client.patch(
+            detail_url(self.assigned_lead.id), {"scope": "x"}, format="json"
+        )
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_manager_cannot_retrieve_out_of_scope_lead(self):
@@ -257,12 +274,42 @@ class LeadAuthTests(LeadApiTestBase):
 class AssignableUsersTests(LeadApiTestBase):
     URL = "/api/assignable-users/"
 
-    def test_lists_only_lead_managers(self):
+    def test_lists_only_lead_managers_and_employees(self):
+        # Per the user, a lead may be assigned only to Lead Managers or
+        # Employees — Lead Admin, Marketing, Resource Manager, Finance and User
+        # Management are all excluded.
+        rm = self._make_user("resource_manager")
         self.client.force_authenticate(self.lead_manager)
         res = self.client.get(self.URL)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         ids = {row["id"] for row in res.data}
-        self.assertEqual(ids, {self.lead_manager.id, self.other_manager.id})
+        self.assertEqual(
+            ids,
+            {self.lead_manager.id, self.other_manager.id, self.employee.id},
+        )
+        self.assertNotIn(self.marketing.id, ids)
+        self.assertNotIn(self.lead_admin.id, ids)
+        self.assertNotIn(rm.id, ids)
+
+    def test_excludes_superusers(self):
+        # The Django admin/superuser account is hidden from User Management, so
+        # it must not be selectable as a lead owner either.
+        su = self._make_user()
+        su.is_superuser = True
+        su.save(update_fields=["is_superuser"])
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotIn(su.id, {row["id"] for row in res.data})
+
+    def test_excludes_user_management(self):
+        # User Management is an exclusive back-office role: its holders never
+        # appear in any assignment dropdown.
+        um_user = self._make_user("user_management")
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotIn(um_user.id, {row["id"] for row in res.data})
 
     def test_marketing_forbidden(self):
         self.client.force_authenticate(self.marketing)
@@ -532,11 +579,14 @@ class TaskApiTests(WorkflowEngineTestBase):
 
     def test_complete_blocked_for_non_assignee(self):
         # Open Task 2 (unassigned) then check a stranger can't complete it.
+        # (Lead Admin, and the lead's own owner/creator, now *can* — Phase 9
+        # widened can_edit_task/can_reassign_task beyond the assignee alone —
+        # so this uses an unrelated Lead Manager who is neither.)
         self.drive(self.open_task(1))
         task2 = self.open_task(2)
-        self.client.force_authenticate(self.lead_admin)  # sees all, but not assignee
+        self.client.force_authenticate(self.other_manager)
         res = self.client.post(f"/api/tasks/{task2.id}/complete/")
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn(res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
 
     def test_reassign_makes_new_user_the_editor(self):
         self.drive(self.open_task(1))
@@ -568,18 +618,73 @@ class TaskApiTests(WorkflowEngineTestBase):
         self.assertEqual(item.last_edited_by, self.lead_manager)
         self.assertIsNotNone(item.last_edited_at)
 
-    def test_lead_owner_gets_view_only_on_unassigned_task(self):
-        self.drive(self.open_task(1))
+    def test_only_task_assignee_can_edit(self):
+        # Phase 11 (per the user): only the task's assignee edits/completes it —
+        # the lead's creator/owner can no longer edit a task they aren't the
+        # assignee of (reverting the Phase-9 widening).
+        task1 = self.open_task(1)  # assigned to the lead owner (self-assigned LM)
+        self.drive(task1)
         task2 = self.open_task(2)  # unassigned
-        self.client.force_authenticate(self.lead_manager)  # lead owner
-        # Can view via the lead's task list…
+        self.client.force_authenticate(self.lead_manager)  # lead owner + creator
+        # Can still view via the lead's task list…
         res = self.client.get(f"/api/leads/{self.lead.id}/tasks/")
         self.assertIn(2, [t["task_no"] for t in res.data])
-        # …but cannot edit (not the assignee).
+        # …but can no longer edit a task they aren't assigned to.
         res = self.client.patch(
             f"/api/tasks/{task2.id}/", {"extra_fields": {}}, format="json"
         )
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+
+    def test_self_assigned_manager_can_edit_own_task(self):
+        # A self-assigned Lead Manager IS the task assignee, so they may edit.
+        task1 = self.open_task(1)
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_non_assignee_manager_cannot_edit_assigned_task(self):
+        # Task reassigned to the employee — the (non-assignee) LM owner may no
+        # longer edit it; the assignee can.
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+        self.client.force_authenticate(self.employee)
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_expected_start_date_floor_is_lead_creation(self):
+        # Phase 11 (#4): expected_start_date may be back-dated to the lead's
+        # creation date (relaxing the global "before today" rule for this field),
+        # but not earlier.
+        created = timezone.now() - timedelta(days=10)
+        Lead.objects.filter(pk=self.lead.id).update(created_at=created)
+        self.lead.refresh_from_db()
+        task1 = self.open_task(1)
+        self.client.force_authenticate(self.lead_manager)
+        # A date after creation but before today — allowed by the exemption.
+        between = (created.date() + timedelta(days=2)).isoformat()
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/",
+            {"extra_fields": {"expected_start_date": between}}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        # A date before the lead was created — rejected.
+        before = (created.date() - timedelta(days=1)).isoformat()
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/",
+            {"extra_fields": {"expected_start_date": before}}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.assertIn("extra_fields", res.data)
 
 
 # --- Phase 5: trigger scheduler --------------------------------------------
@@ -762,6 +867,63 @@ class HoldApiTests(WorkflowEngineTestBase):
         res = self.client.post(f"/api/leads/{self.lead.id}/hold/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_hold_lead_notifies_assignee(self):
+        # Lead owned by the employee, held by its Lead-Manager creator → the
+        # employee (assignee) is notified instead of watching a Held Leads tab.
+        self.lead.assigned_to = self.employee
+        self.lead.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.post(f"/api/leads/{self.lead.id}/hold/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.employee, type=Notification.Type.LEAD_HELD
+            ).exists()
+        )
+
+    def test_hold_own_lead_does_not_notify_self(self):
+        # lead_manager owns self.lead; holding it must not notify themselves.
+        self.client.force_authenticate(self.lead_manager)
+        self.client.post(f"/api/leads/{self.lead.id}/hold/")
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.lead_manager, type=Notification.Type.LEAD_HELD
+            ).exists()
+        )
+
+    def test_hold_task_notifies_assignee(self):
+        # Phase 11: task hold = assignee only (+ Lead Admin override). A Lead
+        # Admin holding a task assigned to the employee notifies the assignee.
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.lead_admin)
+        res = self.client.post(f"/api/tasks/{task1.id}/hold/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.employee, type=Notification.Type.TASK_HELD
+            ).exists()
+        )
+
+    def test_non_assignee_manager_cannot_hold_task(self):
+        # A Lead Manager who is not the task's assignee can no longer hold it
+        # (Phase 11) — task hold belongs to the assignee.
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.post(f"/api/tasks/{task1.id}/hold/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+
+    def test_plain_assignee_cannot_hold_lead(self):
+        # Phase 11: the plain-employee assignee holds their task, not the lead.
+        self.lead.assigned_to = self.employee
+        self.lead.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.employee)
+        res = self.client.post(f"/api/leads/{self.lead.id}/hold/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+
     def test_task_hold_and_held_tasks_list(self):
         task1 = self.open_task(1)
         self.client.force_authenticate(self.lead_manager)
@@ -836,6 +998,28 @@ class AllocationEngineTests(Phase6TestBase):
         alloc = self.lead.resource_allocations.get(type="2HR")
         self.assertEqual(alloc.status, ResourceAllocation.Status.OPEN)
 
+    def test_snt_allocation_autocloses_when_task9_closes(self):
+        # Blueprint path (Task 5 = Yes) creates the SNT allocation at Task 6;
+        # it must auto-free when Task 9 (Solution Blueprint Payment) closes.
+        blueprint = {
+            "solution_blueprint_required": "Yes", "fee": 100,
+            "manpower_brown": 2, "manpower_white": 1,
+            "expected_start_date": _future(), "payment_tranches": 2,
+        }
+        self.drive(self.open_task(1))                        # → 2
+        self.drive_alloc(self.open_task(2), self.exec_red)   # → 3
+        self.drive(self.open_task(3))                        # → 4, 5
+        self.drive(self.open_task(4))                        # 2HR closes
+        self.drive(self.open_task(5), values=blueprint)      # → 6 (SNT alloc)
+        self.drive_alloc(self.open_task(6), self.exec_red)   # → 7
+        self.drive(self.open_task(7))                        # 7 No → 9
+        snt = self.lead.resource_allocations.get(type="SNT")
+        self.assertEqual(snt.status, ResourceAllocation.Status.OPEN)
+        self.assertEqual(snt.man_power_brown, 2)  # split preserved
+        self.drive(self.open_task(9))                        # SNT auto-closes
+        snt.refresh_from_db()
+        self.assertEqual(snt.status, ResourceAllocation.Status.CLOSED)
+
     def test_2hr_allocation_autocloses_when_task4_closes(self):
         self.drive(self.open_task(1))                       # → 2
         self.drive_alloc(self.open_task(2), self.exec_red)  # → 3
@@ -847,16 +1031,33 @@ class AllocationEngineTests(Phase6TestBase):
         self.assertEqual(alloc.status, ResourceAllocation.Status.CLOSED)
         self.assertIsNotNone(alloc.closed_at)
 
-    def test_over_allocation_flag(self):
-        self.drive(self.open_task(1))  # → 2 (man_power_required = 3)
+    def test_manpower_split_preserved(self):
+        self.drive(self.open_task(1))  # Task 1: brown 2, white 1
+        alloc = self.open_task(2).resource_allocations.first()
+        self.assertEqual(alloc.man_power_brown, 2)
+        self.assertEqual(alloc.man_power_white, 1)
+        self.assertEqual(alloc.man_power_required, 3)
+
+    def test_over_allocation_flag_per_belt(self):
+        # Task 1 requires 2 Brown, 1 White. Allocating 3 Browns exceeds the
+        # Brown requirement → over-allocated (per-belt check).
+        self.drive(self.open_task(1))
         alloc = self.open_task(2).resource_allocations.first()
         alloc.execution_red = self.exec_red
-        alloc.execution_brown = self.lead_manager
-        alloc.white = self.marketing
-        alloc.auditor1 = self.employee
-        alloc.save()
-        self.assertEqual(alloc.allocated_count, 4)
-        self.assertTrue(alloc.is_over_allocated)  # 4 > 3
+        alloc.execution_browns.add(self.lead_manager, self.marketing, self.employee)  # 3 > 2
+        alloc.whites.add(self.lead_admin)  # 1 == 1, fine
+        self.assertEqual(alloc.brown_count, 3)
+        self.assertEqual(alloc.white_count, 1)
+        self.assertEqual(alloc.allocated_count, 5)  # red + 3 brown + 1 white
+        self.assertTrue(alloc.is_over_allocated)
+
+    def test_within_manpower_not_over_allocated(self):
+        self.drive(self.open_task(1))  # 2 Brown, 1 White
+        alloc = self.open_task(2).resource_allocations.first()
+        alloc.execution_red = self.exec_red
+        alloc.execution_browns.add(self.lead_manager, self.marketing)  # 2 == 2
+        alloc.whites.add(self.lead_admin)  # 1 == 1
+        self.assertFalse(alloc.is_over_allocated)
 
 
 class ProjectIdTests(Phase6TestBase):
@@ -940,6 +1141,21 @@ class ResourceApiTests(Phase6TestBase):
         self.assertEqual(len(res.data), 1)
         self.assertEqual(res.data[0]["man_power_required"], 3)
 
+    def test_lead_people_see_lead_scoped_allocations(self):
+        # Phase 11 (#6): the lead's own people read their allocations on the
+        # Lead Detail Resources tab, not just the RM.
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/resource-allocations/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(len(res.data), 1)
+        self.assertIn("man_power_brown", res.data[0])
+
+    def test_lead_scoped_allocations_out_of_scope_404(self):
+        # A Lead Manager with no visibility of this lead gets a 404.
+        self.client.force_authenticate(self.other_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/resource-allocations/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_rm_patch_then_submit_allocation(self):
         self.client.force_authenticate(self.resource_manager)
         patch = self.client.patch(
@@ -954,16 +1170,52 @@ class ResourceApiTests(Phase6TestBase):
         self.alloc.refresh_from_db()
         self.assertEqual(self.alloc.status, ResourceAllocation.Status.OPEN)
 
+    def test_rm_patches_multi_select_browns_and_whites(self):
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.patch(
+            f"/api/resource-allocations/{self.alloc.id}/",
+            {
+                "execution_red": self.exec_red.id,
+                "execution_browns": [self.lead_manager.id, self.marketing.id],
+                "whites": [self.lead_admin.id],
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data["brown_count"], 2)
+        self.assertEqual(res.data["white_count"], 1)
+        self.assertEqual(sorted(res.data["execution_browns"]),
+                         sorted([self.lead_manager.id, self.marketing.id]))
+        self.assertEqual(res.data["man_power_brown"], 2)
+        self.assertEqual(res.data["man_power_white"], 1)
+        self.assertFalse(res.data["is_over_allocated"])
+
     def test_allocation_users_rm_only(self):
         self.client.force_authenticate(self.marketing)
         self.assertEqual(
             self.client.get("/api/allocation-users/").status_code,
             status.HTTP_403_FORBIDDEN,
         )
+        um_user = self._make_user("user_management")
         self.client.force_authenticate(self.resource_manager)
         res = self.client.get("/api/allocation-users/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertGreater(len(res.data), 1)
+        # User Management holders are never selectable in the resource dropdown.
+        self.assertNotIn(um_user.id, {row["id"] for row in res.data})
+
+    def test_allocation_users_only_lead_managers_and_employees(self):
+        # The task-assignment screen allocates only Lead Manager / Employee
+        # people (Marketing, Finance, Resource Manager, Lead Admin excluded).
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.get("/api/allocation-users/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in res.data}
+        self.assertIn(self.lead_manager.id, ids)
+        self.assertIn(self.employee.id, ids)
+        self.assertNotIn(self.marketing.id, ids)
+        self.assertNotIn(self.lead_admin.id, ids)
+        self.assertNotIn(self.resource_manager.id, ids)
 
 
 class ProjectClosureApiTests(Phase6TestBase):
@@ -1229,6 +1481,26 @@ class ActivityLogTests(WorkflowEngineTestBase):
         res = self.client.get(f"/api/leads/{self.lead.id}/activities/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertTrue(len(res.data) >= 1)
+
+    def test_lead_reassignment_logs_actor_and_remark(self):
+        # Phase 11 (#1): reassigning an already-assigned lead records who → who,
+        # the acting user, and the optional remark.
+        self.client.force_authenticate(self.lead_manager)  # creator + current owner
+        res = self.client.patch(
+            detail_url(self.lead.id),
+            {"assigned_to": self.other_manager.id, "remark": "handing over"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        entry = (
+            ActivityLog.objects.filter(lead=self.lead, type="lead")
+            .order_by("-id")
+            .first()
+        )
+        self.assertIsNotNone(entry)
+        self.assertIn("reassigned", entry.summary.lower())
+        self.assertEqual(entry.actor, self.lead_manager)
+        self.assertEqual(entry.body, "handing over")
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())

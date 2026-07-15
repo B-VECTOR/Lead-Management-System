@@ -38,15 +38,16 @@ async function beltNameToId(name) {
 }
 
 // Domain is a FK → areas; the UI works in area names (like belts), so map
-// pk <-> name at the API boundary.
+// pk <-> name at the API boundary. An unset domain surfaces as the literal
+// "NA" option (mirrors belts) and "NA" maps back to a null FK on write.
 async function areaIdToName(id) {
-  if (id == null) return ''
+  if (id == null) return 'NA'
   const areas = await loadAreas()
-  return areas.find((a) => a.id === id)?.name || ''
+  return areas.find((a) => a.id === id)?.name || 'NA'
 }
 
 async function areaNameToId(name) {
-  if (!name) return null
+  if (!name || name === 'NA') return null
   const areas = await loadAreas()
   return areas.find((a) => a.name === name)?.id ?? null
 }

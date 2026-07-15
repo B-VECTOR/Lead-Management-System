@@ -53,12 +53,13 @@ export function useUpdateLeadStatus() {
 
 export function useAssignLeadOwner() {
   const qc = useQueryClient()
-  const { user } = useAuth()
   return useMutation({
-    mutationFn: ({ id, ownerId }) => leadsApi.assignLeadOwner(id, ownerId, user),
+    mutationFn: ({ id, ownerId, remark }) => leadsApi.assignLeadOwner(id, ownerId, remark),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['lead', id] })
+      qc.invalidateQueries({ queryKey: ['lead-tasks', String(id)] })
+      qc.invalidateQueries({ queryKey: ['activities', 'lead', id] })
       qc.invalidateQueries({ queryKey: ['notifications'] })
     },
   })

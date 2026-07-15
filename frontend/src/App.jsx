@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
+import { canSeeLeadModule, canSeeFollowUps, canSeeHeldQueues } from '@/api/scope'
 import Login from '@/pages/Login'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
@@ -32,23 +33,23 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/account" element={<Account />} />
 
-        <Route path="/leads" element={<LeadsList />} />
-        <Route path="/leads/new" element={<LeadForm />} />
-        <Route path="/leads/:id" element={<LeadDetail />} />
-        <Route path="/leads/:id/edit" element={<LeadForm />} />
+        <Route path="/leads" element={<RequireAuth check={canSeeLeadModule}><LeadsList /></RequireAuth>} />
+        <Route path="/leads/new" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
+        <Route path="/leads/:id" element={<RequireAuth check={canSeeLeadModule}><LeadDetail /></RequireAuth>} />
+        <Route path="/leads/:id/edit" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
 
-        <Route path="/other-tasks" element={<OtherTasks />} />
+        <Route path="/other-tasks" element={<RequireAuth check={canSeeFollowUps}><OtherTasks /></RequireAuth>} />
 
-        <Route path="/held-leads" element={<HeldLeads />} />
-        <Route path="/held-tasks" element={<HeldTasks />} />
+        <Route path="/held-leads" element={<RequireAuth check={canSeeHeldQueues}><HeldLeads /></RequireAuth>} />
+        <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldQueues}><HeldTasks /></RequireAuth>} />
 
-        <Route path="/resources" element={<Resources />} />
-        <Route path="/project-closure" element={<ProjectClosure />} />
-        <Route path="/finance" element={<Finance />} />
+        <Route path="/resources" element={<RequireAuth roles={['Resource Manager']}><Resources /></RequireAuth>} />
+        <Route path="/project-closure" element={<RequireAuth roles={['Resource Manager']}><ProjectClosure /></RequireAuth>} />
+        <Route path="/finance" element={<RequireAuth roles={['Finance']}><Finance /></RequireAuth>} />
 
-        <Route path="/users" element={<UsersList />} />
-        <Route path="/users/new" element={<UserForm />} />
-        <Route path="/users/:id/edit" element={<UserForm />} />
+        <Route path="/users" element={<RequireAuth roles={['User Management']}><UsersList /></RequireAuth>} />
+        <Route path="/users/new" element={<RequireAuth roles={['User Management']}><UserForm /></RequireAuth>} />
+        <Route path="/users/:id/edit" element={<RequireAuth roles={['User Management']}><UserForm /></RequireAuth>} />
 
         <Route path="/notifications" element={<Notifications />} />
       </Route>

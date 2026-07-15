@@ -53,9 +53,11 @@ export async function completeTask(taskId) {
   }
 }
 
-export async function reassignTask(taskId, userId) {
+export async function reassignTask(taskId, userId, remark) {
   try {
-    const { data } = await client.post(`/api/tasks/${taskId}/reassign/`, { assigned_to: userId })
+    const body = { assigned_to: userId }
+    if (remark) body.remark = remark
+    const { data } = await client.post(`/api/tasks/${taskId}/reassign/`, body)
     return data
   } catch (err) {
     throwApiError(err)

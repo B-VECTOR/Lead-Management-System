@@ -44,6 +44,19 @@ export async function listResourceAllocations({ leadId, status } = {}) {
   }
 }
 
+// Lead-scoped allocations for the Lead Detail "Resources" tab (#6) — visible to
+// the lead's own people (assignee/creator/LM/Lead Admin), not just the RM. A
+// 403/404 (lead out of scope) degrades to an empty list.
+export async function listLeadResourceAllocations(leadId) {
+  try {
+    const { data } = await client.get(`/api/leads/${leadId}/resource-allocations/`)
+    return rows(data)
+  } catch (err) {
+    if (err.response?.status === 403 || err.response?.status === 404) return []
+    throw err
+  }
+}
+
 export async function getResourceAllocation(id) {
   const { data } = await client.get(`/api/resource-allocations/${id}/`)
   return data

@@ -8,7 +8,7 @@ Version 1.0 · Draft
 
 This PRD defines the product requirements for the Lead Management System (LMS) --- an internal platform to manage the full lifecycle of Business Development (BD) leads, from first client contact through implementation, extensions, and project closure. It formalizes the workflow, roles, permissions, and screen-level behavior needed for engineering to build the system.
 
-A companion engineering document, LMS_Technical_Requirements_updated.md, provides the detailed data model, full BD workflow task table, and field-level specifications referenced throughout this PRD.
+A companion engineering document, LMS_Technical_Requirements.md, provides the detailed data model, full BD workflow task table, and field-level specifications referenced throughout this PRD.
 
 # 2. Goals
 
@@ -514,4 +514,4 @@ Belt (used for both Acting Belt Level and Belt on the user form --- same table, 
 
 # 9. Related Documents
 
-LMS_Technical_Requirements_updated.md --- full data model, complete 17-task BD workflow table, task-trigger configuration design, and the finalized Project ID code lookup.
+LMS_Technical_Requirements.md --- full data model, complete 17-task BD workflow table, task-trigger configuration design, and the finalized Project ID code lookup.

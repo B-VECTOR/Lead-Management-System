@@ -20,6 +20,7 @@ function useTaskMutation(leadId, mutationFn) {
       qc.invalidateQueries({ queryKey: ['lead-tasks', leadId] })
       qc.invalidateQueries({ queryKey: ['lead', leadId] })
       qc.invalidateQueries({ queryKey: ['leads'] })
+      qc.invalidateQueries({ queryKey: ['activities', 'lead', leadId] })
     },
   })
 }
@@ -35,7 +36,9 @@ export function useCompleteTask(leadId) {
 }
 
 export function useReassignTask(leadId) {
-  return useTaskMutation(leadId, ({ taskId, userId }) => tasksApi.reassignTask(taskId, userId))
+  return useTaskMutation(leadId, ({ taskId, userId, remark }) =>
+    tasksApi.reassignTask(taskId, userId, remark),
+  )
 }
 
 export function useUpdateChecklistItem(leadId) {

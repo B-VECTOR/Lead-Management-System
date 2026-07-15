@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/context/AuthContext'
 
 export default function Login() {
@@ -36,7 +36,6 @@ export default function Login() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">LeadFlow</CardTitle>
-          <CardDescription>Internal lead & project management. Sign in to continue.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -58,13 +57,6 @@ export default function Login() {
               {submitting ? 'Signing in…' : 'Sign in'}
             </Button>
           </form>
-
-          <div className="mt-6 border-t pt-4">
-            <p className="text-xs text-muted-foreground">
-              Sign in with a backend account. For local dev, the seeded admin username is{' '}
-              <span className="font-medium">admin</span>.
-            </p>
-          </div>
         </CardContent>
       </Card>
     </div>

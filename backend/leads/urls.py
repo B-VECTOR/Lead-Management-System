@@ -17,6 +17,7 @@ from .views import (
     LeadDetailView,
     LeadHoldView,
     LeadListCreateView,
+    LeadResourceAllocationListView,
     LeadTaskListView,
     NotificationListView,
     NotificationMarkAllReadView,
@@ -88,6 +89,11 @@ urlpatterns = [
         name="api-checklist-item",
     ),
     # Resource allocation + Project closure (Phase 6 — Tech Req §4.7–4.8, §7, §9)
+    path(
+        "api/leads/<int:lead_id>/resource-allocations/",
+        LeadResourceAllocationListView.as_view(),
+        name="api-lead-resource-allocations",
+    ),
     path(
         "api/resource-allocations/",
         ResourceAllocationListView.as_view(),

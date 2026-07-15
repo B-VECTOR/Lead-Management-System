@@ -29,6 +29,8 @@ function throwApiError(err) {
 function fromApiLead(l) {
   return {
     id: l.id,
+    lead_display_id: l.lead_display_id,
+    progress: l.progress ?? 0,
     name: l.project_name,
     project_name: l.project_name,
     company_name: l.company_name,
@@ -135,10 +137,13 @@ export async function updateLeadStatus(id, status) {
 }
 
 // Assign/reassign the owner (assigned_to). Lead Admin uses this to assign an
-// unassigned Marketing lead; a Lead Manager to reassign one of their own.
-export async function assignLeadOwner(id, ownerId) {
+// unassigned Marketing lead; a Lead Manager to reassign one of their own. An
+// optional `remark` is recorded on the reassignment activity entry (#1).
+export async function assignLeadOwner(id, ownerId, remark) {
   try {
-    const { data } = await client.patch(`/api/leads/${id}/`, { assigned_to: ownerId || null })
+    const payload = { assigned_to: ownerId || null }
+    if (remark) payload.remark = remark
+    const { data } = await client.patch(`/api/leads/${id}/`, payload)
     return fromApiLead(data)
   } catch (err) {
     throwApiError(err)

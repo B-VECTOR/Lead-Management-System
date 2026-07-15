@@ -2,12 +2,17 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 import { hasRole } from '@/api/scope'
 
-export function RequireAuth({ children, roles }) {
+// `roles` gates a route to specific role names; `check(user)` is a predicate
+// for finer module gating (e.g. canSeeLeadModule). Either failing sends an
+// authenticated-but-unauthorized user back to /dashboard, so a role can no
+// longer reach another module's screen just by typing its URL.
+export function RequireAuth({ children, roles, check }) {
   const { user, loading } = useAuth()
   const location = useLocation()
 
   if (loading) return null
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />
   if (roles && !roles.some((r) => hasRole(user, r))) return <Navigate to="/dashboard" replace />
+  if (check && !check(user)) return <Navigate to="/dashboard" replace />
   return children
 }

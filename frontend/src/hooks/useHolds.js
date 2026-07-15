@@ -17,25 +17,26 @@ function useHoldMutation(mutationFn) {
       if (vars.leadId) {
         qc.invalidateQueries({ queryKey: ['lead', String(vars.leadId)] })
         qc.invalidateQueries({ queryKey: ['lead-tasks', String(vars.leadId)] })
+        qc.invalidateQueries({ queryKey: ['activities', 'lead', String(vars.leadId)] })
       }
     },
   })
 }
 
 export function useHoldLead() {
-  return useHoldMutation(({ leadId }) => holdsApi.holdLead(leadId))
+  return useHoldMutation(({ leadId, remark }) => holdsApi.holdLead(leadId, remark))
 }
 
 export function useUnholdLead() {
-  return useHoldMutation(({ leadId }) => holdsApi.unholdLead(leadId))
+  return useHoldMutation(({ leadId, remark }) => holdsApi.unholdLead(leadId, remark))
 }
 
 export function useHoldTask() {
-  return useHoldMutation(({ taskId }) => holdsApi.holdTask(taskId))
+  return useHoldMutation(({ taskId, remark }) => holdsApi.holdTask(taskId, remark))
 }
 
 export function useUnholdTask() {
-  return useHoldMutation(({ taskId }) => holdsApi.unholdTask(taskId))
+  return useHoldMutation(({ taskId, remark }) => holdsApi.unholdTask(taskId, remark))
 }
 
 export function useHeldLeads() {

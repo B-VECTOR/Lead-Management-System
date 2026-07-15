@@ -1,16 +1,19 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowLeft, Download, Eye, Paperclip, PauseCircle, Pencil, PlayCircle, Trash2, UserCog } from 'lucide-react'
+import { ArrowLeft, Download, Eye, Paperclip, Pencil, Trash2, UserCog } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { LeadStatusBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
+import { ProgressRing } from '@/components/shared/ProgressRing'
+import { HoldActionButton } from '@/components/leads/HoldActionButton'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
@@ -59,6 +62,7 @@ export default function LeadDetail() {
   const [fileTitle, setFileTitle] = useState('')
   const [reassignOwnerOpen, setReassignOwnerOpen] = useState(false)
   const [newOwner, setNewOwner] = useState('')
+  const [reassignRemark, setReassignRemark] = useState('')
 
   if (isLoading || !lead) return <div className="text-sm text-muted-foreground">Loading lead…</div>
 
@@ -66,10 +70,10 @@ export default function LeadDetail() {
   const canHold = PERMISSIONS.holdLead(user, lead)
   const isHeld = lead.status === 'On Hold'
 
-  function handleHoldToggle() {
+  function handleHoldToggle(remark) {
     const action = isHeld ? unholdLead : holdLead
     action.mutate(
-      { leadId: id },
+      { leadId: id, remark },
       {
         onSuccess: () => toast.success(isHeld ? 'Lead resumed' : 'Lead put on hold'),
         onError: (err) => toast.error(err.message),
@@ -118,7 +122,9 @@ export default function LeadDetail() {
             <LeadStatusBadge status={lead.status} />
             <LeadTypeBadge type={lead.lead_type} />
           </div>
-          <p className="text-sm text-muted-foreground">{lead.company_name} · {lead.country_name} · {lead.industry_name}</p>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">{lead.lead_display_id}</span> · {lead.company_name} · {lead.country_name} · {lead.industry_name}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canEdit && !isHeld && (
@@ -130,52 +136,60 @@ export default function LeadDetail() {
             </Select>
           )}
           {canHold && (isHeld || lead.status === 'In Progress') && (
-            <Button
-              variant="outline"
-              onClick={handleHoldToggle}
-              disabled={holdLead.isPending || unholdLead.isPending}
-            >
-              {isHeld ? <><PlayCircle className="size-4" /> Unhold</> : <><PauseCircle className="size-4" /> Hold</>}
-            </Button>
+            <HoldActionButton
+              isHeld={isHeld}
+              noun="lead"
+              pending={holdLead.isPending || unholdLead.isPending}
+              onConfirm={handleHoldToggle}
+            />
           )}
           {canEdit && !isHeld && (
             <Button variant="outline" onClick={() => navigate(`/leads/${id}/edit`)}><Pencil className="size-4" /> Edit</Button>
           )}
           {canReassignOwner && (
             <Button variant="outline" onClick={() => { setNewOwner(lead.assigned_to ? String(lead.assigned_to) : ''); setReassignOwnerOpen(true) }}>
-              <UserCog className="size-4" /> {lead.assigned_to ? 'Reassign owner' : 'Assign owner'}
+              <UserCog className="size-4" /> {lead.assigned_to ? 'Change assigned to' : 'Assign to'}
             </Button>
           )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
-        <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Assigned to (owner)</p>
-          <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Card><CardContent className="flex items-center justify-between gap-3 p-4">
+          <div>
+            <p className="text-xs text-muted-foreground">Overall progress</p>
+            <p className="mt-1 text-sm font-medium">Tasks completed</p>
+          </div>
+          <ProgressRing value={lead.progress ?? 0} />
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Created by</p>
+          <p className="text-xs text-muted-foreground">Lead ID</p>
+          <p className="mt-1 text-sm font-medium">{lead.lead_display_id}</p>
+        </CardContent></Card>
+        <Card><CardContent className="p-4">
+          <p className="text-xs text-muted-foreground">Owner</p>
           <p className="mt-1 text-sm font-medium">{lead.created_by_name || '—'}</p>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Project ID</p>
-          <p className="mt-1 text-sm font-medium">{lead.project_id || <span className="text-muted-foreground">Pending (set at Implementation)</span>}</p>
+          <p className="text-xs text-muted-foreground">Assigned to</p>
+          <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
         </CardContent></Card>
-        <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Created</p>
-          <p className="mt-1 text-sm font-medium">{formatDate(lead.created_at)}</p>
-        </CardContent></Card>
+        {lead.project_id && (
+          <Card><CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Project ID</p>
+            <p className="mt-1 text-sm font-medium">{lead.project_id}</p>
+          </CardContent></Card>
+        )}
       </div>
 
       <Tabs defaultValue="task">
         <TabsList>
           <TabsTrigger value="task">Task</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
-          <TabsTrigger value="files">Files</TabsTrigger>
-          <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="followup">Follow Up</TabsTrigger>
           <TabsTrigger value="resources">Resources</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="details">Details</TabsTrigger>
         </TabsList>
 
         <TabsContent value="task">
@@ -194,8 +208,10 @@ export default function LeadDetail() {
                     <Badge variant="secondary" className="h-fit shrink-0">{a.type}</Badge>
                     <div className="min-w-0 flex-1">
                       <p>{a.summary}</p>
-                      {a.body && <p className="mt-0.5 text-muted-foreground">{a.body}</p>}
-                      <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(a.created_at)}</p>
+                      {a.body && <p className="mt-0.5 text-muted-foreground">“{a.body}”</p>}
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {a.actor_name ? `${a.actor_name} · ` : ''}{formatDateTime(a.created_at)}
+                      </p>
                     </div>
                   </div>
                 ))}
@@ -285,23 +301,40 @@ export default function LeadDetail() {
 
       <Dialog open={reassignOwnerOpen} onOpenChange={setReassignOwnerOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>{lead.assigned_to ? 'Reassign lead owner' : 'Assign lead owner'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{lead.assigned_to ? 'Change assigned to' : 'Assign to'}</DialogTitle></DialogHeader>
           <Select value={newOwner} onValueChange={(v) => v && setNewOwner(v)}>
-            <SelectTrigger><SelectValue placeholder="Select a BD owner" /></SelectTrigger>
-            <SelectContent>{owners.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}</SelectContent>
+            <SelectTrigger><SelectValue placeholder="Select a person" /></SelectTrigger>
+            <SelectContent>
+              {owners.map((m) => (
+                <SelectItem key={m.id} value={String(m.id)}>
+                  {m.name}{m.id === user?.id ? ' (self)' : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
           </Select>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="reassign-remark">Remark (optional)</Label>
+            <Textarea
+              id="reassign-remark"
+              value={reassignRemark}
+              onChange={(e) => setReassignRemark(e.target.value)}
+              placeholder="Reason for the (re)assignment…"
+              rows={3}
+            />
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReassignOwnerOpen(false)}>Cancel</Button>
             <Button
               disabled={!newOwner}
               onClick={() => {
                 assignOwner.mutate(
-                  { id, ownerId: Number(newOwner) },
+                  { id, ownerId: Number(newOwner), remark: reassignRemark.trim() },
                   {
                     onSuccess: () => toast.success('Owner assigned'),
                     onError: (err) => toast.error(err.message),
                   },
                 )
+                setReassignRemark('')
                 setReassignOwnerOpen(false)
               }}
             >

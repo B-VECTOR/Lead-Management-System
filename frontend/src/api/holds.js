@@ -16,19 +16,22 @@ function throwApiError(err) {
   throw new Error('Something went wrong. Please try again.')
 }
 
-async function post(url) {
+// An optional free-text `remark` is passed through to the activity log (#1);
+// the backend reads it off the request body and records it on the entry.
+async function post(url, remark) {
   try {
-    const { data } = await client.post(url)
+    const body = remark ? { remark } : {}
+    const { data } = await client.post(url, body)
     return data
   } catch (err) {
     throwApiError(err)
   }
 }
 
-export const holdLead = (leadId) => post(`/api/leads/${leadId}/hold/`)
-export const unholdLead = (leadId) => post(`/api/leads/${leadId}/unhold/`)
-export const holdTask = (taskId) => post(`/api/tasks/${taskId}/hold/`)
-export const unholdTask = (taskId) => post(`/api/tasks/${taskId}/unhold/`)
+export const holdLead = (leadId, remark) => post(`/api/leads/${leadId}/hold/`, remark)
+export const unholdLead = (leadId, remark) => post(`/api/leads/${leadId}/unhold/`, remark)
+export const holdTask = (taskId, remark) => post(`/api/tasks/${taskId}/hold/`, remark)
+export const unholdTask = (taskId, remark) => post(`/api/tasks/${taskId}/unhold/`, remark)
 
 // Held Leads is paginated (default page size); walk every page.
 export async function listHeldLeads() {

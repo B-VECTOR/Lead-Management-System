@@ -71,15 +71,24 @@ const ROLE_STYLES = {
   Employee: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
 }
 
-// Solid fill for the 4 "real" belts; a lighter/dashed-outline treatment for
-// the Potential-* variants (not yet earned) and NA.
+// Solid fill for the 4 "real" belts. Each Potential-* variant (not yet earned)
+// gets a dashed outline in its base belt's colour instead of one flat grey —
+// so a Potential Red still reads red, a Potential Brown brown, etc. White is
+// the exception: it has no visible colour of its own, so its Potential variant
+// uses a grey dashed outline with a faint white tint (per the user).
 const BELT_SOLID_STYLES = {
   Black: 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900',
   Brown: 'bg-amber-800 text-white dark:bg-amber-700 dark:text-white',
   Red: 'bg-red-600 text-white dark:bg-red-700 dark:text-white',
   White: 'border border-border bg-white text-neutral-700 dark:bg-neutral-100 dark:text-neutral-900',
 }
-const BELT_POTENTIAL_STYLES = 'border border-dashed border-border bg-transparent text-muted-foreground'
+const BELT_POTENTIAL_STYLES = {
+  Black: 'border border-dashed border-neutral-800 bg-transparent text-neutral-800 dark:border-neutral-300 dark:text-neutral-300',
+  Brown: 'border border-dashed border-amber-800 bg-transparent text-amber-800 dark:border-amber-600 dark:text-amber-500',
+  Red: 'border border-dashed border-red-600 bg-transparent text-red-600 dark:border-red-500 dark:text-red-400',
+  White: 'border border-dashed border-neutral-400 bg-white/40 text-neutral-600 dark:border-neutral-500 dark:bg-neutral-100/10 dark:text-neutral-300',
+}
+const BELT_POTENTIAL_FALLBACK = 'border border-dashed border-border bg-transparent text-muted-foreground'
 const BELT_NA_STYLES = 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
 
 function Pill({ className, children }) {
@@ -124,6 +133,9 @@ export function RoleBadge({ role }) {
 
 export function BeltBadge({ belt }) {
   if (!belt || belt === 'NA') return <Pill className={BELT_NA_STYLES}>N/A</Pill>
-  if (belt.startsWith('Potential ')) return <Pill className={BELT_POTENTIAL_STYLES}>{belt}</Pill>
+  if (belt.startsWith('Potential ')) {
+    const base = belt.slice('Potential '.length)
+    return <Pill className={BELT_POTENTIAL_STYLES[base] || BELT_POTENTIAL_FALLBACK}>{belt}</Pill>
+  }
   return <Pill className={BELT_SOLID_STYLES[belt] || 'bg-neutral-100 text-neutral-700'}>{belt}</Pill>
 }

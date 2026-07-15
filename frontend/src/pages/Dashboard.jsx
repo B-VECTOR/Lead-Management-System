@@ -1,12 +1,15 @@
 import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ListTodo } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ListTodo, Boxes, Wallet, UserCog, Clock } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { ProgressRing } from '@/components/shared/ProgressRing'
 import { LeadStatusBadge } from '@/components/shared/StatusBadge'
 import { useAuth } from '@/context/AuthContext'
-import { hasRole } from '@/api/scope'
+import { hasRole, canSeeLeadModule } from '@/api/scope'
 import { useDashboardSummary } from '@/hooks/useDashboard'
+import { useResourceAllocations } from '@/hooks/useResources'
+import { useUsers } from '@/hooks/useUsers'
 import { formatDate } from '@/lib/format'
 
 function StatCard({ label, value, icon: Icon, hint }) {
@@ -24,8 +27,19 @@ function StatCard({ label, value, icon: Icon, hint }) {
   )
 }
 
+// The dashboard is module-scoped: a lead-facing user sees the leads funnel; a
+// pure Resource Manager / Finance / User-Management user sees their module's
+// dashboard instead. Each sub-dashboard owns its data hooks (hooks rules).
 export default function Dashboard() {
   const { user } = useAuth()
+  if (canSeeLeadModule(user)) return <LeadDashboard user={user} />
+  if (hasRole(user, 'Resource Manager')) return <ResourceDashboard />
+  if (hasRole(user, 'Finance')) return <FinanceDashboard />
+  if (hasRole(user, 'User Management')) return <UserManagementDashboard />
+  return <LeadDashboard user={user} />
+}
+
+function LeadDashboard({ user }) {
   const { data, isLoading } = useDashboardSummary()
 
   if (isLoading || !data) return <div className="text-sm text-muted-foreground">Loading dashboard…</div>
@@ -108,6 +122,92 @@ export default function Dashboard() {
               </Link>
             ))}
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Resource Manager module dashboard — allocation workload sourced from the
+// existing resource-allocations endpoint (no new API).
+function ResourceDashboard() {
+  const { data: allocations = [], isLoading } = useResourceAllocations()
+  const pending = allocations.filter((a) => a.status === 'Pending')
+  const open = allocations.filter((a) => a.status === 'Open')
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Resource dashboard</h1>
+        <p className="text-sm text-muted-foreground">Allocations waiting on you, and engagements currently staffed.</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard label="Awaiting allocation" value={pending.length} icon={Clock} hint="Needs resources assigned" />
+        <StatCard label="Open engagements" value={open.length} icon={Boxes} hint="Resources allocated" />
+        <StatCard label="Total records" value={allocations.length} icon={ListTodo} hint="All allocation rows" />
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Awaiting allocation</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {!isLoading && pending.length === 0 && <p className="text-sm text-muted-foreground">Nothing waiting on you right now. 🎉</p>}
+          {pending.map((a) => (
+            <Link key={a.id} to="/resources" className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent">
+              <span className="truncate pr-2">
+                <span className="font-medium">{a.lead_project_name}</span>
+                <span className="text-muted-foreground"> · {a.type}</span>
+              </span>
+              <Badge variant="secondary" className="shrink-0">{a.allocated_count} / {a.man_power_required}</Badge>
+            </Link>
+          ))}
+          <Button asChild variant="outline" className="mt-2 self-start"><Link to="/resources">Open resource allocation</Link></Button>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function FinanceDashboard() {
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Finance dashboard</h1>
+        <p className="text-sm text-muted-foreground">Your workspace overview.</p>
+      </div>
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <Wallet className="size-12 text-muted-foreground/40" />
+          <p className="text-lg font-medium">Coming soon</p>
+          <p className="text-sm text-muted-foreground">The Finance module isn't ready yet — check back later.</p>
+          <Button asChild variant="outline"><Link to="/finance">Go to Finance</Link></Button>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function UserManagementDashboard() {
+  const { data: users = [], isLoading } = useUsers()
+  const active = users.filter((u) => u.active ?? u.is_active).length
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">User management dashboard</h1>
+        <p className="text-sm text-muted-foreground">Manage the people who can access the system.</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <StatCard label="Total users" value={isLoading ? '—' : users.length} icon={UserCog} />
+        <StatCard label="Active users" value={isLoading ? '—' : active} icon={CheckCircle2} />
+      </div>
+
+      <Card>
+        <CardContent className="flex flex-col gap-3 p-4">
+          <p className="text-sm text-muted-foreground">Add, edit, and deactivate user accounts and their roles.</p>
+          <Button asChild variant="outline" className="self-start"><Link to="/users">Open user management</Link></Button>
         </CardContent>
       </Card>
     </div>

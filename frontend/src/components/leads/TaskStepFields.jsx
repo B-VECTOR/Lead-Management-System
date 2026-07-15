@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -7,6 +7,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSaveTaskDraft } from '@/hooks/useTasks'
+import { useLead } from '@/hooks/useLeads'
+
+const TODAY_ISO = new Date().toISOString().slice(0, 10)
+
+// Per-field past-date floor for the date picker's `min` (mirrors the backend
+// engine, Phase 11): the "expected start date of next stage" may go back to the
+// lead's creation date; every other date field is floored at today.
+function dateMinFor(field, leadCreatedDate) {
+  if (field.key === 'expected_start_date' && leadCreatedDate) return leadCreatedDate
+  return TODAY_ISO
+}
 
 // Renders a task's dynamic extra fields from the backend `field_schema`
 // (Tech Req §4.6). Field types: text / number / date / boolean (Yes/No) /
@@ -19,7 +30,7 @@ function inputTypeFor(type) {
   return type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'
 }
 
-function ScalarInput({ field, value, disabled, onChange }) {
+function ScalarInput({ field, value, disabled, onChange, dateMin }) {
   if (field.type === 'boolean') {
     return (
       <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
@@ -31,10 +42,11 @@ function ScalarInput({ field, value, disabled, onChange }) {
       </Select>
     )
   }
+  const min = field.type === 'number' ? 0 : field.type === 'date' ? dateMin : undefined
   return (
     <Input
       type={inputTypeFor(field.type)}
-      min={field.type === 'number' ? 0 : undefined}
+      min={min}
       value={value ?? ''}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
@@ -133,9 +145,11 @@ function initialValues(schema, saved) {
   return out
 }
 
-export function TaskStepFields({ task, leadId, canEdit }) {
+export const TaskStepFields = forwardRef(function TaskStepFields({ task, leadId, canEdit }, ref) {
   const schema = task.field_schema || []
   const saveDraft = useSaveTaskDraft(leadId)
+  const { data: lead } = useLead(leadId)
+  const leadCreatedDate = lead?.created_at ? String(lead.created_at).slice(0, 10) : null
   const [values, setValues] = useState(() => initialValues(schema, task.extra_fields))
 
   // Re-seed whenever we switch to a different task or its saved values change.
@@ -145,13 +159,16 @@ export function TaskStepFields({ task, leadId, canEdit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedKey])
 
-  if (schema.length === 0) return null
-
   const visibleFields = schema.filter((f) => isVisible(f, values))
 
-  async function handleSave() {
-    // Send only currently-visible fields; drop empty row-group rows.
-    const payload = {}
+  function buildPayload() {
+    // Merge into whatever was already saved rather than replacing the whole
+    // blob: the PATCH overwrites `extra_fields` wholesale, so if we only sent
+    // currently-*visible* fields a value previously entered for a field that is
+    // momentarily hidden (its `required_when` controller was toggled) would be
+    // silently dropped. Start from the saved values, then overlay the visible
+    // fields — setting a filled value, or removing a visible-but-cleared one.
+    const payload = { ...(task.extra_fields || {}) }
     for (const f of visibleFields) {
       if (f.type === 'rowgroup') {
         const cols = f.columns || []
@@ -159,9 +176,28 @@ export function TaskStepFields({ task, leadId, canEdit }) {
         payload[f.key] = rows
       } else if (values[f.key] !== '' && values[f.key] != null) {
         payload[f.key] = values[f.key]
+      } else {
+        delete payload[f.key]
       }
     }
-    await saveDraft.mutateAsync({ taskId: task.id, extraFields: payload })
+    return payload
+  }
+
+  // Exposed so "Save & Complete" (LeadTaskTab) can persist whatever is
+  // currently typed here first — this form's values only ever reached the
+  // server via its own "Save as Draft" button, so completing without
+  // drafting first closed against stale/empty data (Phase 9 bug fix).
+  useImperativeHandle(ref, () => ({
+    saveDraft: async () => {
+      if (schema.length === 0) return
+      await saveDraft.mutateAsync({ taskId: task.id, extraFields: buildPayload() })
+    },
+  }))
+
+  if (schema.length === 0) return null
+
+  async function handleSave() {
+    await saveDraft.mutateAsync({ taskId: task.id, extraFields: buildPayload() })
     toast.success('Details saved')
   }
 
@@ -189,6 +225,7 @@ export function TaskStepFields({ task, leadId, canEdit }) {
                 field={f}
                 value={values[f.key]}
                 disabled={!canEdit}
+                dateMin={dateMinFor(f, leadCreatedDate)}
                 onChange={(val) => setValues((v) => ({ ...v, [f.key]: val }))}
               />
             )}
@@ -204,4 +241,4 @@ export function TaskStepFields({ task, leadId, canEdit }) {
       )}
     </Card>
   )
-}
+})

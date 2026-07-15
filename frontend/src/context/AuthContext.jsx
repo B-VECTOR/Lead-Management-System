@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { login as apiLogin, logout as apiLogout, getMe } from '@/api/auth'
 import { getAccessToken, USER_STORAGE_KEY } from '@/api/client'
+import { queryClient } from '@/lib/queryClient'
 
 const AuthContext = createContext(null)
 
@@ -40,6 +41,9 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = useCallback(async (username, password) => {
+    // Drop any cached queries from a prior session before signing in, so the
+    // new user never sees the previous user's leads/tasks/etc.
+    queryClient.clear()
     const u = await apiLogin(username, password)
     localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(u))
     setUser(u)
@@ -49,6 +53,9 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     await apiLogout()
     setUser(null)
+    // Purge the React Query cache — it's a module-level singleton, so without
+    // this the next login would flash the previous user's cached data.
+    queryClient.clear()
   }, [])
 
   const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout])

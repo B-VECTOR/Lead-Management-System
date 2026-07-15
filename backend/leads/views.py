@@ -22,9 +22,12 @@ from .models import (
     Task,
 )
 from .permissions import (
+    FINANCE,
     LEAD_ADMIN,
     LEAD_MANAGER,
     MARKETING,
+    RESOURCE_MANAGER,
+    USER_MANAGEMENT,
     CanAddFollowupPermission,
     CanAssignOwnerPermission,
     FollowupPermission,
@@ -56,6 +59,18 @@ from .serializers import (
 
 User = get_user_model()
 
+# Groups that are never selectable as a lead/task assignee. Excluding these
+# leaves exactly Lead Managers + plain Employees (everyone is implicitly in the
+# ``employee`` group), i.e. the "lead & employee people only" rule the user
+# asked for on both the lead-owner and resource-allocation people pickers.
+NON_ASSIGNABLE_GROUPS = [
+    LEAD_ADMIN,
+    MARKETING,
+    RESOURCE_MANAGER,
+    FINANCE,
+    USER_MANAGEMENT,
+]
+
 
 class LeadQuerysetMixin:
     """Role-scoped lead queryset shared by the list and detail views.
@@ -63,7 +78,9 @@ class LeadQuerysetMixin:
     Enforces the PRD §6 / Tech Req §12 visibility rows server-side:
     Lead Admin sees everything; a Lead Manager sees leads they created or that
     are assigned to them (Tech Req §5.9); Marketing sees leads they created.
-    Anyone else gets nothing here (task/allocation-driven access comes later).
+    Anyone else (a plain Employee) sees only the leads assigned to them, so they
+    can open a lead to work its task list — read-only (writes are blocked by
+    :class:`LeadPermission`).
     """
 
     def get_queryset(self):
@@ -71,19 +88,17 @@ class LeadQuerysetMixin:
         roles = user_role_names(user)
         qs = Lead.objects.select_related(
             "country", "industry", "domain", "assigned_to", "created_by"
-        )
+        ).prefetch_related("tasks")
         if LEAD_ADMIN in roles:
             return qs
         scope = Q()
-        matched = False
         if LEAD_MANAGER in roles:
             scope |= Q(created_by=user) | Q(assigned_to=user)
-            matched = True
         if MARKETING in roles:
             scope |= Q(created_by=user)
-            matched = True
-        if not matched:
-            return qs.none()
+        if not (roles & {LEAD_MANAGER, MARKETING}):
+            # Plain Employee: only the leads assigned to them.
+            scope |= Q(assigned_to=user)
         return qs.filter(scope).distinct()
 
 
@@ -124,12 +139,13 @@ class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
 
 
 class AssignableUserListView(generics.ListAPIView):
-    """BD users selectable as a lead's owner (``assigned_to``).
+    """Users selectable as a lead's ``assigned_to`` (the BD/LM person actively
+    working the lead — not to be confused with the lead's owner/creator,
+    ``created_by``, which is never client-settable).
 
-    "BD users" is read here as members of the ``lead_manager`` group — the
-    owner is the "Default BD Person" (Tech Req §4.3), and a Lead Manager may
-    assign a lead to themself or another BD person (PRD §5.2). Read-only, and
-    limited to the roles that actually assign owners.
+    Per the user, a lead may only be assigned to a **Lead Manager or an
+    Employee** — so Lead Admin, Marketing, Resource Manager, Finance and User
+    Management are excluded (see :data:`NON_ASSIGNABLE_GROUPS`). Read-only.
     """
 
     serializer_class = AssignableUserSerializer
@@ -138,7 +154,8 @@ class AssignableUserListView(generics.ListAPIView):
 
     def get_queryset(self):
         return (
-            User.objects.filter(is_active=True, groups__name=LEAD_MANAGER)
+            User.objects.filter(is_active=True, is_superuser=False)
+            .exclude(groups__name__in=NON_ASSIGNABLE_GROUPS)
             .order_by("name")
             .distinct()
         )
@@ -155,12 +172,36 @@ class LeadDetailView(LeadQuerysetMixin, generics.RetrieveUpdateAPIView):
     permission_classes = [LeadPermission]
 
     def perform_update(self, serializer):
-        had_owner = serializer.instance.assigned_to_id is not None
-        prev_status = serializer.instance.status
+        instance = serializer.instance
+        had_owner = instance.assigned_to_id is not None
+        prev_assigned = instance.assigned_to
+        prev_assigned_id = instance.assigned_to_id
+        prev_status = instance.status
+        # Optional free-text note the actor may attach to a reassignment (not a
+        # model field — read straight off the request); recorded on the activity.
+        remark = (self.request.data.get("remark") or "").strip()
         lead = serializer.save()
         # Lead Admin assigning an owner to an unassigned lead (starts the flow).
         if not had_owner and lead.assigned_to_id is not None:
             _notify_owner_assigned(lead, self.request.user)
+        elif had_owner and lead.assigned_to_id != prev_assigned_id:
+            # Reassignment of an already-assigned lead — record who → who (#1).
+            prev_name = prev_assigned.name if prev_assigned else "Not Assigned"
+            new_name = lead.assigned_to.name if lead.assigned_to_id else "Not Assigned"
+            events.log_activity(
+                lead,
+                self.request.user,
+                "lead",
+                f"Lead reassigned from {prev_name} to {new_name}",
+                remark,
+            )
+            if lead.assigned_to_id and lead.assigned_to_id != self.request.user.id:
+                events.notify(
+                    lead.assigned_to,
+                    Notification.Type.LEAD_ASSIGNED,
+                    f"You are now assigned to “{lead.company_name} — {lead.project_name}”.",
+                    events.lead_link(lead),
+                )
         elif lead.status != prev_status:
             events.log_activity(
                 lead, self.request.user, "lead", f"Status changed to {lead.status}"
@@ -204,12 +245,23 @@ class LeadHoldView(LeadQuerysetMixin, APIView):
                     {"detail": "This lead is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+        remark = (request.data.get("remark") or "").strip()
         events.log_activity(
             lead,
             request.user,
             "hold",
             "Lead put on hold" if self.action == "hold" else "Lead resumed",
+            remark,
         )
+        # Notify the lead's owner when someone else puts it on hold (Employees
+        # get the alert in place of the Held Leads tab).
+        if self.action == "hold" and lead.assigned_to_id not in (None, request.user.id):
+            events.notify(
+                lead.assigned_to,
+                Notification.Type.LEAD_HELD,
+                f"“{lead.company_name} — {lead.project_name}” was put on hold.",
+                events.lead_link(lead),
+            )
         lead.refresh_from_db()
         return Response(LeadSerializer(lead, context={"request": request}).data)
 
@@ -340,19 +392,26 @@ class TaskReassignView(TaskScopeMixin, APIView):
                 {"detail": "You cannot reassign this task."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        target = User.objects.filter(pk=request.data.get("assigned_to"), is_active=True).first()
+        target = (
+            User.objects.filter(pk=request.data.get("assigned_to"), is_active=True)
+            .exclude(groups__name=USER_MANAGEMENT)
+            .first()
+        )
         if target is None:
             return Response(
                 {"assigned_to": "Select a valid active user."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        prev_name = task.assigned_to.name if task.assigned_to_id else "Not Assigned"
         task.assigned_to = target
         task.save(update_fields=["assigned_to", "updated_at"])
+        remark = (request.data.get("remark") or "").strip()
         events.log_activity(
             task.lead,
             request.user,
             "task",
-            f"Task {task.task_no} reassigned to {target.name}",
+            f"Task {task.task_no} reassigned from {prev_name} to {target.name}",
+            remark,
         )
         if target.id != request.user.id:
             events.notify(
@@ -413,12 +472,23 @@ class TaskHoldView(TaskScopeMixin, APIView):
                     {"detail": "This task is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+        remark = (request.data.get("remark") or "").strip()
         events.log_activity(
             task.lead,
             request.user,
             "hold",
             f"Task {task.task_no} {'put on hold' if self.action == 'hold' else 'resumed'}",
+            remark,
         )
+        # Notify the task's assignee when someone else puts it on hold.
+        if self.action == "hold" and task.assigned_to_id not in (None, request.user.id):
+            events.notify(
+                task.assigned_to,
+                Notification.Type.TASK_HELD,
+                f"Task {task.task_no} on “{task.lead.company_name} — "
+                f"{task.lead.project_name}” was put on hold.",
+                events.lead_link(task.lead),
+            )
         task.refresh_from_db()
         defs = engine.task_defs_for(task.lead.lead_type)
         return Response(
@@ -440,8 +510,8 @@ class ResourceAllocationListView(generics.ListAPIView):
     def get_queryset(self):
         qs = ResourceAllocation.objects.select_related(
             "lead", "lead__assigned_to", "allocation_task",
-            *ResourceAllocation.RESOURCE_FIELDS,
-        )
+            *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
+        ).prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
         lead_id = self.request.query_params.get("lead")
         if lead_id:
             qs = qs.filter(lead_id=lead_id)
@@ -449,6 +519,33 @@ class ResourceAllocationListView(generics.ListAPIView):
         if status_val:
             qs = qs.filter(status=status_val)
         return qs
+
+
+class LeadResourceAllocationListView(LeadQuerysetMixin, generics.ListAPIView):
+    """A single lead's resource allocations — the Lead Detail "Resources" tab (#6).
+
+    Unlike the RM-only :class:`ResourceAllocationListView`, this is scoped by
+    lead visibility (``LeadQuerysetMixin``), so the lead's own people (assignee /
+    creator / Lead Manager / Lead Admin) can see which resources + man-power were
+    allocated, read-only. Editing stays RM-only on the Resources screen.
+    """
+
+    serializer_class = ResourceAllocationSerializer
+    permission_classes = [LeadPermission]
+    pagination_class = None
+
+    def get_lead(self):
+        return get_object_or_404(super().get_queryset(), pk=self.kwargs["lead_id"])
+
+    def get_queryset(self):
+        return (
+            ResourceAllocation.objects.filter(lead=self.get_lead())
+            .select_related(
+                "lead", "lead__assigned_to", "allocation_task",
+                *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
+            )
+            .prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
+        )
 
 
 class ResourceAllocationDetailView(generics.RetrieveUpdateAPIView):
@@ -464,8 +561,8 @@ class ResourceAllocationDetailView(generics.RetrieveUpdateAPIView):
     def get_queryset(self):
         return ResourceAllocation.objects.select_related(
             "lead", "lead__assigned_to", "allocation_task",
-            *ResourceAllocation.RESOURCE_FIELDS,
-        )
+            *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
+        ).prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
 
 
 class ResourceAllocationSubmitView(APIView):
@@ -509,9 +606,9 @@ class ResourceAllocationSubmitView(APIView):
 class AllocationUserListView(generics.ListAPIView):
     """Active users selectable in the allocation form's resource dropdowns.
 
-    The Resource Manager allocates any active user (Execution Red/Brown, White,
-    auditors, project members), so — unlike the lead-owner list — this is not
-    limited to the BD group. RM-only.
+    Per the user, the task-assignment screen allocates only **Lead Manager or
+    Employee** people — Marketing, Finance, Resource Manager, Lead Admin and
+    User Management are excluded (see :data:`NON_ASSIGNABLE_GROUPS`). RM-only.
     """
 
     serializer_class = AssignableUserSerializer
@@ -519,7 +616,12 @@ class AllocationUserListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return User.objects.filter(is_active=True).order_by("name")
+        return (
+            User.objects.filter(is_active=True, is_superuser=False)
+            .exclude(groups__name__in=NON_ASSIGNABLE_GROUPS)
+            .order_by("name")
+            .distinct()
+        )
 
 
 class ProjectClosureListView(generics.ListAPIView):
@@ -537,8 +639,9 @@ class ProjectClosureListView(generics.ListAPIView):
         qs = ProjectDetails.objects.select_related(
             "lead", "lead__assigned_to", "resource_allocation",
             "resource_allocation__execution_red",
-            "resource_allocation__execution_brown",
-            "resource_allocation__white",
+        ).prefetch_related(
+            "resource_allocation__execution_browns",
+            "resource_allocation__whites",
         ).order_by("lead", "extension_no")
         lead_id = self.request.query_params.get("lead")
         if lead_id:
@@ -684,7 +787,11 @@ class FollowupAssigneeListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return User.objects.filter(is_active=True).order_by("name")
+        return (
+            User.objects.filter(is_active=True, is_superuser=False)
+            .exclude(groups__name=USER_MANAGEMENT)
+            .order_by("name")
+        )
 
 
 class ChecklistItemUpdateView(generics.UpdateAPIView):
@@ -706,10 +813,29 @@ class ChecklistItemUpdateView(generics.UpdateAPIView):
         return item
 
     def perform_update(self, serializer):
-        serializer.save(
+        prev_status = serializer.instance.status
+        item = serializer.save(
             last_edited_by=self.request.user,
             last_edited_at=timezone.now(),
         )
+        # Auto-log checklist progress on the lead's Activity feed (PRD §6). A
+        # status change (which moves the lead's overall progress) or a remark is
+        # worth recording; a no-op save is not. Best-effort/additive — mirrors
+        # the log_activity pattern used on task completion.
+        status_changed = item.status != prev_status
+        remark = (item.remark or "").strip()
+        if status_changed or remark:
+            if status_changed:
+                summary = f'Checklist "{item.item_label}" marked {item.get_status_display()}'
+            else:
+                summary = f'Checklist "{item.item_label}" updated'
+            events.log_activity(
+                item.task.lead,
+                self.request.user,
+                "checklist",
+                summary,
+                remark,
+            )
 
 
 # --- Activity log + Attachments (Phase 8, PRD §6 / Decision #4) -------------

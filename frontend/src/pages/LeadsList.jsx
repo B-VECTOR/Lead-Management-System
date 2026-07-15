@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { LeadStatusBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
+import { ProgressBar } from '@/components/shared/ProgressBar'
 import { useLeads } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
@@ -26,7 +27,7 @@ export default function LeadsList() {
     () => [...leads].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
     [leads],
   )
-  const columnCount = 7
+  const columnCount = 9
 
   return (
     <div className="flex flex-col gap-4">
@@ -65,12 +66,14 @@ export default function LeadsList() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Lead ID</TableHead>
                 <TableHead>Project</TableHead>
                 <TableHead>Company</TableHead>
                 <TableHead>Country</TableHead>
                 <TableHead>Industry</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Progress</TableHead>
                 <TableHead>Assigned to</TableHead>
               </TableRow>
             </TableHeader>
@@ -81,6 +84,7 @@ export default function LeadsList() {
               )}
               {sorted.map((lead) => (
                 <TableRow key={lead.id} className="cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
+                  <TableCell className="font-medium tabular-nums text-muted-foreground">{lead.lead_display_id}</TableCell>
                   <TableCell>
                     <Link to={`/leads/${lead.id}`} className="font-medium hover:underline" onClick={(e) => e.stopPropagation()}>
                       {lead.project_name}
@@ -91,6 +95,7 @@ export default function LeadsList() {
                   <TableCell>{lead.industry_name || '—'}</TableCell>
                   <TableCell><LeadTypeBadge type={lead.lead_type} /></TableCell>
                   <TableCell><LeadStatusBadge status={lead.status} /></TableCell>
+                  <TableCell><ProgressBar value={lead.progress ?? 0} /></TableCell>
                   <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not assigned</span>}</TableCell>
                 </TableRow>
               ))}

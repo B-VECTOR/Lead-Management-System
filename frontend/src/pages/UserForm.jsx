@@ -11,11 +11,13 @@ import { useUser, useCreateUser, useUpdateUser, useResetPassword } from '@/hooks
 import { useGroups, useBelts, useAreas } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { groupLabel, IMPLICIT_GROUP_NAME } from '@/lib/roles'
+import { groupLabel, IMPLICIT_GROUP_NAME, IMPLICIT_ROLE } from '@/lib/roles'
+
+const TODAY = new Date().toISOString().slice(0, 10)
 
 const emptyForm = {
   username: '', name: '', employee_id: '', email: '', mobile_no: '', date_of_joining: '',
-  acting_belt_level: 'NA', belt: 'NA', domain: '', roles: [],
+  acting_belt_level: 'NA', belt: 'NA', domain: 'NA', roles: [],
   password: '', confirmPassword: '', active: true,
 }
 
@@ -58,7 +60,7 @@ export default function UserForm() {
         email: existingUser.email || '', mobile_no: existingUser.mobile_no || '',
         date_of_joining: existingUser.date_of_joining ? existingUser.date_of_joining.slice(0, 10) : '',
         acting_belt_level: existingUser.acting_belt_level || 'NA', belt: existingUser.belt || 'NA',
-        domain: existingUser.domain || '', roles: (existingUser.roles || []).filter((r) => r !== 'Employee'),
+        domain: existingUser.domain || 'NA', roles: (existingUser.roles || []).filter((r) => r !== 'Employee'),
         password: '', confirmPassword: '', active: existingUser.active,
       })
     }
@@ -90,7 +92,7 @@ export default function UserForm() {
         toast.success('User updated')
         navigate('/users')
       } else {
-        const created = await createUser.mutateAsync({ ...payload, password: form.password })
+        await createUser.mutateAsync({ ...payload, password: form.password })
         toast.success('User created')
         navigate('/users')
       }
@@ -102,16 +104,21 @@ export default function UserForm() {
   const saving = createUser.isPending || updateUser.isPending || resetPassword.isPending
   const availableRoles = isEdit ? selectableRoles : creatableRoles
 
+  // Domain is mandatory for everyone (like belts); pick "NA" when not applicable.
+  const domainOk = !!form.domain
+  // Date of joining is exempt from the no-past-dates rule, but a future joining
+  // date is not allowed.
+  const joiningDateOk = !!form.date_of_joining && form.date_of_joining <= TODAY
+
   const basicFieldsFilled = form.username.trim() && form.name.trim() && String(form.employee_id).trim()
-    && form.email.trim() && String(form.mobile_no).trim() && form.date_of_joining && form.domain
+    && form.email.trim() && String(form.mobile_no).trim() && joiningDateOk && domainOk
 
   const newPasswordOk = isEdit
     ? !form.password || form.password.length >= 6
     : form.password.length >= 6 && form.password === form.confirmPassword
 
-  const canSubmit = isEdit
-    ? basicFieldsFilled && newPasswordOk
-    : basicFieldsFilled && form.roles.length > 0 && newPasswordOk
+  // Roles are optional — every user is implicitly an Employee already.
+  const canSubmit = basicFieldsFilled && newPasswordOk
 
   if (!canManage) return null
   if (isEdit && !existingUser) return <div className="text-sm text-muted-foreground">Loading user…</div>
@@ -120,7 +127,7 @@ export default function UserForm() {
     <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{isEdit ? 'Edit user' : 'New user'}</h1>
-        <p className="text-sm text-muted-foreground">Every user is automatically granted the Employee role, on top of anything selected below.</p>
+        <p className="text-sm text-muted-foreground">Every user is an Employee by default; add any additional roles below.</p>
       </div>
 
       <Card>
@@ -148,7 +155,10 @@ export default function UserForm() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Date of joining *</Label>
-            <Input type="date" value={form.date_of_joining} onChange={(e) => set('date_of_joining', e.target.value)} />
+            <Input type="date" max={TODAY} value={form.date_of_joining} onChange={(e) => set('date_of_joining', e.target.value)} />
+            {form.date_of_joining && form.date_of_joining > TODAY && (
+              <p className="text-xs text-destructive">Joining date can't be in the future.</p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -177,9 +187,10 @@ export default function UserForm() {
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label>Domain *</Label>
             <Select value={form.domain} onValueChange={(v) => v && set('domain', v)}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select domain" /></SelectTrigger>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select domain (NA if not applicable)" /></SelectTrigger>
               <SelectContent>
                 {areaNames.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                <SelectItem value="NA">NA</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -187,9 +198,13 @@ export default function UserForm() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">Roles{!isEdit ? ' *' : ''}</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">Roles</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Checkbox checked disabled />
+              {IMPLICIT_ROLE} (default for everyone)
+            </label>
             {availableRoles.map((role) => (
               <label key={role} className="flex items-center gap-2 text-sm">
                 <Checkbox checked={form.roles.includes(role)} onCheckedChange={(checked) => toggleRole(role, checked)} />
@@ -197,10 +212,11 @@ export default function UserForm() {
               </label>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">
-            Employee is granted automatically to every user and isn't shown here.
-            {!isEdit && ' User Management can only belong to one person — grant it by editing that person directly.'}
-          </p>
+          {!isEdit && (
+            <p className="text-xs text-muted-foreground">
+              User Management can only belong to one person — grant it by editing that person directly.
+            </p>
+          )}
         </CardContent>
       </Card>
 

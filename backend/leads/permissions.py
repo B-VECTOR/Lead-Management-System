@@ -9,7 +9,22 @@ LEAD_ADMIN = "lead_admin"
 LEAD_MANAGER = "lead_manager"
 MARKETING = "marketing"
 RESOURCE_MANAGER = "resource_manager"
+FINANCE = "finance"
 EMPLOYEE = "employee"
+# Exclusive back-office role: its holders manage users (via Django admin) and
+# never take part in the lead/task/resource workflow, so they must not appear
+# in user listings or any assignment/resource people-picker.
+USER_MANAGEMENT = "user_management"
+
+
+def exclude_user_management(qs):
+    """Drop User Management holders from a people-selection queryset.
+
+    A single home for the "UM users are never selectable/listed" rule so every
+    dropdown and listing filters them out the same way. Uses ``exclude`` (a
+    subquery), so it adds no duplicate rows.
+    """
+    return qs.exclude(groups__name=USER_MANAGEMENT)
 
 
 def in_group(user, name):
@@ -58,52 +73,59 @@ def can_view_task(user, task):
 
 
 def can_edit_task(user, task):
-    """Editable only by the assigned user, and only while open (§6 rules 2, 4)."""
-    if not user or not user.is_authenticated:
-        return False
-    return task.status == Task.Status.OPEN and task.assigned_to_id == user.id
+    """Editable by the task's assignee only, while open (§6 rules 2, 4).
 
-
-def can_reassign_task(user, task):
-    """Who may reassign a task.
-
-    The docs say "any task can be reassigned" from within the task view but do
-    not name the actor; this build allows the current assignee (handing it off)
-    and Lead Admin. Only meaningful while the task is open.
+    Phase 11 (per the user): only the person a task is *assigned to* may complete
+    its checklist/fields — the lead's creator (a Lead Manager or Marketing) can
+    no longer make task changes just from having created/owned the lead. A
+    self-assigned Lead Manager still edits because they *are* the assignee. Lead
+    Admin is retained as an administrative override (Lead Admin is the lead
+    super-role throughout the system).
     """
     if not user or not user.is_authenticated:
         return False
     if task.status != Task.Status.OPEN:
         return False
-    return task.assigned_to_id == user.id or LEAD_ADMIN in user_role_names(user)
+    if task.assigned_to_id == user.id:
+        return True
+    return LEAD_ADMIN in user_role_names(user)
+
+
+def can_reassign_task(user, task):
+    """Who may reassign a task: the current assignee (handing it off) or a Lead
+    Admin — the same actor set as :func:`can_edit_task`, and only while open.
+    """
+    return can_edit_task(user, task)
 
 
 def can_hold_lead(user, lead):
-    """Who may hold/unhold a lead (Tech Req §6 / PRD §5.8).
+    """Who may hold/unhold (and reassign) a lead — Lead Manager (+ Lead Admin).
 
-    The docs require the action but don't name the actor; this build allows the
-    lead's owner, its Lead-Manager creator, and any Lead Admin — the same people
-    who steer the lead. (Marketing, which only sources leads, is excluded.)
+    Phase 11 (per the user): only the managing Lead Manager holds the lead; the
+    plain-employee assignee can no longer hold a lead (only their own task). An
+    LM who *created* or was *assigned* the lead qualifies (so a self-assigned LM
+    works), and Lead Admin overrides. Marketing, which only sources leads, is
+    excluded.
     """
     if not user or not user.is_authenticated:
         return False
     roles = user_role_names(user)
     if LEAD_ADMIN in roles:
         return True
-    if lead.assigned_to_id == user.id:
-        return True
     return LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id)
 
 
 def can_hold_task(user, task):
-    """Who may hold/unhold a single task: its assignee, the lead owner, or a
-    Lead Admin (mirrors the reassign actor set, Tech Req §6).
+    """Who may hold/unhold a single task: its assignee only (+ Lead Admin as an
+    administrative override).
+
+    Phase 11 (per the user): the person actively working a task holds/resumes
+    it. A self-assigned Lead Manager gets this because they are the assignee; a
+    non-assignee Lead Manager does not.
     """
     if not user or not user.is_authenticated:
         return False
     if task.assigned_to_id == user.id:
-        return True
-    if task.lead.assigned_to_id == user.id:
         return True
     return LEAD_ADMIN in user_role_names(user)
 
@@ -225,7 +247,10 @@ class LeadPermission(BasePermission):
             return False
         roles = user_role_names(user)
         if request.method in SAFE_METHODS:
-            return bool(roles & {LEAD_ADMIN, LEAD_MANAGER, MARKETING})
+            # Read access is decided by the view's role-scoped queryset — a plain
+            # Employee may open the lead(s) assigned to them (to work their tasks)
+            # and sees nothing else.
+            return True
         if request.method == "POST":
             return bool(roles & {LEAD_MANAGER, MARKETING})
         # PUT/PATCH — object-level check does the real work.
