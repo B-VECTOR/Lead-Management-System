@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Search } from 'lucide-react'
+import { Plus, Search, PauseCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -94,7 +94,19 @@ export default function LeadsList() {
                   <TableCell>{lead.country_name || '—'}</TableCell>
                   <TableCell>{lead.industry_name || '—'}</TableCell>
                   <TableCell><LeadTypeBadge type={lead.lead_type} /></TableCell>
-                  <TableCell><LeadStatusBadge status={lead.status} /></TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <LeadStatusBadge status={lead.status} />
+                      {lead.has_held_task && lead.status !== 'On Hold' && (
+                        <span
+                          title="A task under this lead is on hold"
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        >
+                          <PauseCircle className="size-3" /> Task on hold
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell><ProgressBar value={lead.progress ?? 0} /></TableCell>
                   <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not assigned</span>}</TableCell>
                 </TableRow>

@@ -18,6 +18,14 @@ import { useHoldTask, useUnholdTask } from '@/hooks/useHolds'
 import { useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 
+// A trigger task's scheduled open date is a date-only string ("2026-08-12");
+// pin it to local midnight so it never shifts a day when formatted.
+function formatOpenDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+  })
+}
+
 // The lead's BD workflow track (Phase 4) — the 17-task sequence instantiated
 // by the backend engine. Tasks are listed in the order they opened (loops and
 // extension cycles append later instances). Only the active task's checklist +
@@ -120,6 +128,10 @@ export function LeadTaskTab({ leadId }) {
   const completeTask = useCompleteTask(leadId)
   const [activeId, setActiveId] = useState(null)
   const fieldsRef = useRef(null)
+  // Id of a task we've just opened by completing a step but which hasn't yet
+  // arrived in the (refetching) list — so the reset effect doesn't clobber the
+  // auto-advance before the new task loads (#12d).
+  const awaitingId = useRef(null)
 
   // Default to the first still-open task (the one that needs work), else the
   // last task in the list.
@@ -129,7 +141,12 @@ export function LeadTaskTab({ leadId }) {
   }, [tasks])
 
   useEffect(() => {
-    if (activeId && tasks.some((t) => t.id === activeId)) return
+    if (activeId && tasks.some((t) => t.id === activeId)) {
+      awaitingId.current = null
+      return
+    }
+    // Hold position while a just-opened successor is still loading.
+    if (awaitingId.current) return
     setActiveId(defaultActive)
   }, [tasks, activeId, defaultActive])
 
@@ -165,7 +182,12 @@ export function LeadTaskTab({ leadId }) {
       const res = await completeTask.mutateAsync({ taskId: activeTask.id })
       const opened = res?.opened_tasks || []
       toast.success(opened.length ? `Task completed — opened: ${opened.map((t) => t.task_name).join(', ')}` : 'Task completed')
-      if (opened.length) setActiveId(opened[0].id)
+      // Auto-advance to the next step (open or trigger-pending). awaitingId keeps
+      // the selection until the refetch delivers the new task.
+      if (opened.length) {
+        awaitingId.current = opened[0].id
+        setActiveId(opened[0].id)
+      }
     } catch (err) {
       toast.error(err.message)
     }
@@ -210,6 +232,27 @@ export function LeadTaskTab({ leadId }) {
             </p>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
+            {activeTask.status === 'pending' && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                {activeTask.scheduled_open ? (
+                  <>
+                    <p className="font-medium">
+                      Not open yet — scheduled to open on {formatOpenDate(activeTask.scheduled_open.open_date)}.
+                    </p>
+                    <p className="mt-0.5 text-xs">
+                      {activeTask.scheduled_open.days_from_now > 0
+                        ? `Opens in ${activeTask.scheduled_open.days_from_now} day${activeTask.scheduled_open.days_from_now === 1 ? '' : 's'}`
+                        : 'Due now — it opens on the next scheduled run'}
+                      {` · configured to open ${activeTask.scheduled_open.offset_days} day${activeTask.scheduled_open.offset_days === 1 ? '' : 's'} before the reference date captured in Task ${activeTask.scheduled_open.reference_task_no}.`}
+                    </p>
+                  </>
+                ) : (
+                  <p className="font-medium">
+                    Not open yet — this task opens automatically once its trigger date is reached.
+                  </p>
+                )}
+              </div>
+            )}
             {activeTask.is_allocation_task && (
               <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
                 Resource-allocation step — the Resource Manager fills the allocation

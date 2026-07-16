@@ -39,7 +39,7 @@ export function LeadResourcesTab({ leadId }) {
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Execution Red</TableHead>
-                <TableHead>Execution Brown(s)</TableHead>
+                <TableHead>Execution Brown</TableHead>
                 <TableHead>White(s)</TableHead>
                 <TableHead>Man-power (allocated / required)</TableHead>
               </TableRow>
@@ -62,7 +62,7 @@ export function LeadResourcesTab({ leadId }) {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm">{rn.execution_red?.name || <span className="text-muted-foreground">Unassigned</span>}</TableCell>
-                    <TableCell className="text-sm">{names(rn.execution_browns) || <span className="text-muted-foreground">—</span>}</TableCell>
+                    <TableCell className="text-sm">{rn.execution_brown?.name || <span className="text-muted-foreground">—</span>}</TableCell>
                     <TableCell className="text-sm">{names(rn.whites) || <span className="text-muted-foreground">—</span>}</TableCell>
                     <TableCell className="text-sm">
                       <div className="flex flex-col gap-0.5">

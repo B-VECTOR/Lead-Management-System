@@ -43,10 +43,12 @@ function ScalarInput({ field, value, disabled, onChange, dateMin }) {
     )
   }
   const min = field.type === 'number' ? 0 : field.type === 'date' ? dateMin : undefined
+  const max = field.type === 'number' ? field.max : undefined
   return (
     <Input
       type={inputTypeFor(field.type)}
       min={min}
+      max={max}
       value={value ?? ''}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}

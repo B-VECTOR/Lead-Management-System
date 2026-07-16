@@ -31,6 +31,7 @@ function fromApiLead(l) {
     id: l.id,
     lead_display_id: l.lead_display_id,
     progress: l.progress ?? 0,
+    has_held_task: l.has_held_task ?? false,
     name: l.project_name,
     project_name: l.project_name,
     company_name: l.company_name,

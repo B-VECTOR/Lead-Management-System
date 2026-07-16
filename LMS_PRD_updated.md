@@ -232,6 +232,8 @@ Each checklist item has two editable fields: status (not_started / inprogress / 
 
 3.  If a task isn\'t assigned to a given user but the parent lead is assigned to them, that user gets view-only access to the task.
 
+> **Phase 13 override (2026-07-15, confirmed with the user):** for the post-allocation execution tasks (3, 4, 7, 8, 9, 12, 13, 14, 16, 17) the *editor* is the allocated **Execution Brown together with the allocated White(s)** — not the Execution Red. The **Execution Red is a view-only overseer** of every step in the block (as are the BD owner / Lead Manager). The task's `assigned_to` is the Brown (or the first White when there is no Brown); the other Whites of the same allocation may co-edit. This supersedes the "Edit: execution red" cells in the workflow table above for those tasks.
+
 4.  Closed tasks are not editable.
 
 5.  Allocation tasks (Tasks 2, 6, 11, 15) have no checklist or extra fields --- they simply show a Pending status until the Resource Manager completes the corresponding resource allocation.
@@ -254,7 +256,7 @@ On the Resource Manager\'s edit screen, an accordion displays the lead\'s releva
 
 Fields on the allocation form: Execution Red, Execution Brown, White, Auditor 1--4, Project Member 1--5, Remark, Status (TBD is allowed for White).
 
-Submitting the form closes the allocation task and opens the next workflow task, assigned to the Execution Red selected by the Resource Manager.
+Submitting the form closes the allocation task and opens the next workflow task, assigned to the allocated **Execution Brown** (or a White if no Brown is set) — the resource who *edits* the step. The **Execution Red is a view-only overseer** across every step of the block and is not the assignee. *(Phase 13 override, confirmed with the user 2026-07-15 — this replaces the earlier "assigned to the Execution Red" wording and the workflow table's "Edit: execution red" cells; Execution Red remains a mandatory selection as the overseer.)*
 
 Reporting view: all allocation records are listed with an Edit action, each showing its current status (Pending / Open / Closed) so it\'s clear at a glance which resources are still tied up versus freed up. If the number of resources allocated exceeds the man-power figure captured upstream, a red indicator icon appears next to Edit to flag the over-allocation.
 

@@ -45,7 +45,7 @@ export default function LeadDetail() {
   const navigate = useNavigate()
   const { user } = useAuth()
 
-  const { data: lead, isLoading } = useLead(id)
+  const { data: lead, isLoading, isError } = useLead(id)
   const { data: activities = [] } = useActivitiesForLead(id)
   const { data: attachments = [] } = useAttachments('lead', id)
 
@@ -64,7 +64,17 @@ export default function LeadDetail() {
   const [newOwner, setNewOwner] = useState('')
   const [reassignRemark, setReassignRemark] = useState('')
 
-  if (isLoading || !lead) return <div className="text-sm text-muted-foreground">Loading lead…</div>
+  if (isLoading) return <div className="text-sm text-muted-foreground">Loading lead…</div>
+  if (isError || !lead) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={() => navigate(-1)}>
+          <ArrowLeft className="size-4" /> Back
+        </Button>
+        <p className="text-sm text-muted-foreground">This lead doesn’t exist or you don’t have access to it.</p>
+      </div>
+    )
+  }
 
   const canEdit = PERMISSIONS.editLead(user, lead)
   const canHold = PERMISSIONS.holdLead(user, lead)

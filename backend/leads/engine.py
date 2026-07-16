@@ -57,15 +57,19 @@ def task_defs_for(lead_type):
 def _resolve_assignee(lead, tdef):
     """Who the step opens assigned to.
 
-    ``default_bd_person`` → the lead's owner. ``execution_red`` → the Execution
-    Red the Resource Manager set on the lead's current allocation row (Phase 6,
-    §7.5); None until an allocation is filled. ``resource_manager`` allocation
-    tasks stay unassigned — the Resource Manager reaches them via the role-scoped
-    allocation screen, not a per-user assignment.
+    ``default_bd_person`` → the lead's owner. ``execution_brown`` → the allocated
+    editor of the current block (Execution Brown, or its first White if Brown is
+    empty); None until an allocation is filled (Phase 13 — Brown/White edit, Red
+    is a view-only overseer). ``resource_manager`` allocation tasks stay
+    unassigned — the Resource Manager reaches them via the role-scoped allocation
+    screen. ``execution_red`` is retained for any admin-edited workflow that
+    still names it.
     """
     assignee = tdef.get("assignee")
     if assignee == "default_bd_person":
         return lead.assigned_to
+    if assignee == "execution_brown":
+        return resources.latest_task_assignee(lead)
     if assignee == "execution_red":
         return resources.latest_execution_red(lead)
     return None
@@ -190,6 +194,9 @@ def _validate_scalar(field, value, *, lead_created_date=None):
             return "Enter a valid number."
         if num < 0:
             return "Negative values are not allowed."
+        max_val = field.get("max")
+        if max_val is not None and num > max_val:
+            return f"Value cannot exceed {max_val}."
     elif ftype == "date":
         try:
             parsed = date.fromisoformat(str(value))
@@ -415,6 +422,35 @@ def _reference_date(lead, reference_task_no, field_key):
         return date.fromisoformat(str(raw))
     except ValueError:
         return None
+
+
+def pending_open_info(task):
+    """When a ``pending`` trigger task will open, and the rule behind it.
+
+    Returns ``{"open_date", "offset_days", "reference_task_no",
+    "reference_field_key"}`` for a pending task whose reference date is known, or
+    ``None`` (task not pending / no active config / reference date not captured
+    yet). Surfaced on the task serializer so the frontend can show "Opens on
+    <date>" instead of a pending task with no explanation (PRD §5.6)."""
+    if task.status != Task.Status.PENDING:
+        return None
+    wf = active_workflow(task.lead.lead_type)
+    if wf is None:
+        return None
+    config = WorkflowTriggerConfig.objects.filter(
+        workflow=wf, task_no=task.task_no, is_active=True
+    ).first()
+    if config is None:
+        return None
+    ref = _reference_date(task.lead, config.reference_task_no, config.reference_field_key)
+    if ref is None:
+        return None
+    return {
+        "open_date": ref - timezone.timedelta(days=config.offset_days),
+        "offset_days": config.offset_days,
+        "reference_task_no": config.reference_task_no,
+        "reference_field_key": config.reference_field_key,
+    }
 
 
 def run_due_triggers(*, today=None):

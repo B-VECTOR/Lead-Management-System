@@ -12,9 +12,13 @@ Each task is a dict:
 - ``task_no`` int, ``name`` str.
 - ``assignee``: how the engine resolves ``Task.assigned_to`` when it opens the
   step — ``default_bd_person`` (the lead's ``assigned_to``), ``resource_manager``
-  or ``execution_red``. The latter two are resolved by the Resource-Manager
+  or ``execution_brown``. The latter two are resolved by the Resource-Manager
   allocation flow in **Phase 6**; until then the engine opens those steps
   unassigned (Tech Req §6 gives the lead owner view-only access).
+  ``execution_brown`` resolves to the current allocation's Execution Brown (or
+  its first White if Brown is empty) — the allocated resource who *edits* the
+  step. The Execution Red is a view-only overseer across all steps and is not an
+  assignee (Phase 13 override of PRD §5.7, confirmed with the user 2026-07-15).
 - ``is_allocation_task`` / ``allocation_type``: tasks 2/6/11/15 carry no
   checklist or fields — they show status only until the Resource Manager
   submits the allocation form (Phase 6). ``allocation_type`` drives which
@@ -78,7 +82,7 @@ BD_WORKFLOW = {
             ),
             "extra_fields": [
                 {"key": "expected_start_date", "label": "Expected start date of next stage", "type": "date", "required": True},
-                {"key": "manpower_brown", "label": "Manpower required — Brown", "type": "number", "required": True},
+                {"key": "manpower_brown", "label": "Manpower required — Brown", "type": "number", "required": True, "max": 1},
                 {"key": "manpower_white", "label": "Manpower required — White", "type": "number", "required": True},
                 {"key": "key_stakeholders", "label": "Key stakeholder contacts", "type": "rowgroup", "min_rows": 3, "required": False, "columns": _NAME_ROLE_COLS},
             ],
@@ -99,7 +103,7 @@ BD_WORKFLOW = {
         {
             "task_no": 3,
             "name": "2Hr Study & Presentation",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("3.1", "Study plan done"),
                 ("3.2", "NDA formality completed"),
@@ -119,7 +123,7 @@ BD_WORKFLOW = {
         {
             "task_no": 4,
             "name": "2Hr Study Reimbursement",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("4.1", "Reimbursement expenses invoiced"),
                 ("4.2", "Reimbursement expenses received"),
@@ -144,7 +148,7 @@ BD_WORKFLOW = {
             "extra_fields": [
                 {"key": "solution_blueprint_required", "label": "Is Solution Blueprint required?", "type": "boolean", "required": True},
                 {"key": "fee", "label": "Fee for engagement", "type": "number", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
-                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
+                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "max": 1, "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
                 {"key": "manpower_white", "label": "Manpower — White", "type": "number", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
                 {"key": "expected_start_date", "label": "Expected start date of next stage", "type": "date", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
                 {"key": "payment_tranches", "label": "Number of tranches of payment", "type": "number", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
@@ -169,7 +173,7 @@ BD_WORKFLOW = {
         {
             "task_no": 7,
             "name": "Solution Blueprint",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("7.1", "Engagement start"),
                 ("7.2", "Initial invoice raised"),
@@ -202,7 +206,7 @@ BD_WORKFLOW = {
         {
             "task_no": 8,
             "name": "Solution Blueprint Repeat Presentation",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("8.1", "Presentation dates locked"),
                 ("8.2", "SnT workshop done"),
@@ -220,7 +224,7 @@ BD_WORKFLOW = {
         {
             "task_no": 9,
             "name": "Solution Blueprint Payment",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("9.1", "Fixed fee invoices received"),
                 ("9.2", "Reimbursement expenses invoiced"),
@@ -261,7 +265,7 @@ BD_WORKFLOW = {
                 {"key": "variable_fee_cap_total", "label": "Total variable fee cap", "type": "number", "required": False},
                 {"key": "variable_milestone_fee_cap", "label": "Variable milestone fee cap", "type": "number", "required": False},
                 {"key": "variable_performance_fee_cap", "label": "Variable performance fee cap", "type": "number", "required": False},
-                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "required": True},
+                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "required": True, "max": 1},
                 {"key": "manpower_white", "label": "Manpower — White", "type": "number", "required": True},
             ],
             "routing": [{"open": [11]}],
@@ -281,7 +285,7 @@ BD_WORKFLOW = {
         {
             "task_no": 12,
             "name": "Implementation",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("12.1", "Handover & engagement start"),
                 ("12.2", "PO from customer"),
@@ -313,7 +317,7 @@ BD_WORKFLOW = {
         {
             "task_no": 13,
             "name": "Extension Proposal",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("13.1", "Discuss next set of problems with client"),
                 ("13.2", "Identify area of extension"),
@@ -332,7 +336,7 @@ BD_WORKFLOW = {
         {
             "task_no": 14,
             "name": "Extension Detail",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("13.8", "Addendum agreement"),
                 ("13.9", "Expected variable fee over eligible period submitted"),
@@ -343,7 +347,7 @@ BD_WORKFLOW = {
                 {"key": "period_months", "label": "Period (months)", "type": "number", "required": True},
                 {"key": "actual_fixed_fee_invoice_date", "label": "Actual fixed fee invoice date", "type": "date", "required": True},
                 {"key": "variable_fee_start_date", "label": "Variable fee start date", "type": "date", "required": True},
-                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "required": True},
+                {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "required": True, "max": 1},
                 {"key": "manpower_white", "label": "Manpower — White", "type": "number", "required": True},
             ],
             "routing": [{"open": [15]}],
@@ -363,7 +367,7 @@ BD_WORKFLOW = {
         {
             "task_no": 16,
             "name": "Extension Implementation",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("12.1", "Handover & engagement start"),
                 ("12.2", "PO from customer"),
@@ -395,7 +399,7 @@ BD_WORKFLOW = {
         {
             "task_no": 17,
             "name": "Project Closure",
-            "assignee": "execution_red",
+            "assignee": "execution_brown",
             "checklist": _cl(
                 ("16.1", "All fixed fee received"),
                 ("16.2", "All variable fee received"),

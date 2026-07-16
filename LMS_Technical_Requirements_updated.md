@@ -370,6 +370,8 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 5. Allocation tasks (2, 6, 11, 15) show status only (no checklist/extra fields) until closed by the Resource Manager.
 6. Every task has **Save as Draft** (persists without closing) and **Save & Complete** (validates + closes + opens next task per workflow).
 
+> **Phase 13 override (2026-07-15, confirmed with the user):** for post-allocation execution tasks (3, 4, 7, 8, 9, 12, 13, 14, 16, 17) the *editor* is the allocated **Execution Brown + White(s)**; **Execution Red is a view-only overseer** across all steps (as are the BD owner / Lead Manager). `Task.assigned_to` resolves to the current allocation's Execution Brown (or its first White when Brown is empty); the other Whites of that allocation co-edit. This supersedes the "Execution red" / "Edit: execution red" assignee cells in the workflow table above (Tasks 12/13/14/16/17) and the "assigned to the Execution Red" wording in §4.7 / PRD §5.7. Every person on any of the lead's allocation rows (Red, auditors, project members, Whites) additionally gets view-only access to every step.
+
 ### Task Reassignment
 - Any task can be reassigned to a different user.
 - On reassignment, the task immediately becomes visible with edit access to the new assignee (and reverts the previous assignee to view-only, per the assignment rule above).

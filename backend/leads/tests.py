@@ -332,7 +332,7 @@ def _future(days=30):
 # test can drive a task to closure. Branch-controlling values are overridden
 # per test where the branch matters.
 _VALUES = {
-    1: {"expected_start_date": _future(), "manpower_brown": 2, "manpower_white": 1},
+    1: {"expected_start_date": _future(), "manpower_brown": 1, "manpower_white": 1},
     2: {},
     3: {"presentation_date": _future()},
     4: {"expected_receipt_date": _future()},
@@ -342,7 +342,7 @@ _VALUES = {
     8: {"presentation_date": _future(), "re_presentation_required_again": "No"},
     9: {"expected_receipt_date": _future()},
     10: {"planned_start_date": _future(), "planned_end_date": _future(90),
-         "period_months": 3, "manpower_brown": 2, "manpower_white": 1},
+         "period_months": 3, "manpower_brown": 1, "manpower_white": 1},
     11: {},
     12: {"actual_start_date": _future(), "modified_planned_end_date": _future(90),
          "period_months": 3, "actual_fixed_fee_invoice_date": _future(),
@@ -551,11 +551,23 @@ class TaskApiTests(WorkflowEngineTestBase):
         self.client.force_authenticate(self.lead_manager)
         res = self.client.patch(
             f"/api/tasks/{task1.id}/",
-            {"extra_fields": {"manpower_brown": 3}}, format="json",
+            {"extra_fields": {"manpower_white": 3}}, format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
         task1.refresh_from_db()
-        self.assertEqual(task1.extra_fields["manpower_brown"], 3)
+        self.assertEqual(task1.extra_fields["manpower_white"], 3)
+
+    def test_brown_manpower_capped_at_one(self):
+        # Phase 12: Execution Brown is a single holder, so the required Brown
+        # count is capped at 1 (White is uncapped).
+        task1 = self.open_task(1)
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.patch(
+            f"/api/tasks/{task1.id}/",
+            {"extra_fields": {"manpower_brown": 2}}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.assertIn("extra_fields", res.data)
 
     def test_non_assignee_cannot_edit_task(self):
         task1 = self.open_task(1)  # assigned to lead_manager
@@ -767,6 +779,28 @@ class TriggerSchedulerTests(WorkflowEngineTestBase):
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])  # already opened → not re-opened
 
+    def test_pending_task_serializer_exposes_scheduled_open(self):
+        # Phase 13: a pending trigger task carries its scheduled open date + the
+        # days-from-now so the frontend can show the offset.
+        self._config(task_no=2, offset_days=2)
+        today = timezone.now().date()
+        self.drive(
+            self.open_task(1),
+            values={"expected_start_date": (today + timedelta(days=5)).isoformat(),
+                    "manpower_brown": 1, "manpower_white": 1},
+        )
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/tasks/")
+        task2 = next(t for t in res.data if t["task_no"] == 2)
+        self.assertEqual(task2["status"], "pending")
+        so = task2["scheduled_open"]
+        self.assertIsNotNone(so)
+        # 5-day reference minus a 2-day offset → opens in 3 days.
+        self.assertEqual(so["open_date"], (today + timedelta(days=3)).isoformat())
+        self.assertEqual(so["days_from_now"], 3)
+        self.assertEqual(so["offset_days"], 2)
+        self.assertEqual(so["reference_task_no"], 1)
+
     def test_seed_trigger_config_command(self):
         from django.core.management import call_command
         call_command("seed_trigger_config")
@@ -950,6 +984,67 @@ class HoldApiTests(WorkflowEngineTestBase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("status", res.data)
 
+    # --- Phase 13: hold reason on the trail + Lead-Manager notifications -------
+
+    def test_hold_reason_stored_and_exposed_on_trail(self):
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.employee)
+        res = self.client.post(
+            f"/api/tasks/{task1.id}/hold/",
+            {"remark": "waiting on client data"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        # Reason lands on the hold interval itself, not only the activity log.
+        hold = task1.holds.first()
+        self.assertEqual(hold.reason, "waiting on client data")
+        # …and is surfaced on the held-tasks list trail.
+        res = self.client.get("/api/held-tasks/")
+        row = next(t for t in res.data if t["id"] == task1.id)
+        self.assertEqual(row["holds"][0]["reason"], "waiting on client data")
+
+    def test_hold_unhold_trail_accumulates(self):
+        task1 = self.open_task(1)
+        self.client.force_authenticate(self.lead_manager)
+        self.client.post(f"/api/tasks/{task1.id}/hold/", {"remark": "r1"}, format="json")
+        self.client.post(f"/api/tasks/{task1.id}/unhold/")
+        self.client.post(f"/api/tasks/{task1.id}/hold/", {"remark": "r2"}, format="json")
+        self.assertEqual(task1.holds.count(), 2)
+        reasons = list(task1.holds.order_by("hold_at").values_list("reason", flat=True))
+        self.assertEqual(reasons, ["r1", "r2"])
+
+    def test_task_hold_notifies_lead_manager(self):
+        # A different user (the assignee employee) holds the task → the lead's
+        # managing Lead Manager (creator/owner) is notified (Phase 13).
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.save(update_fields=["assigned_to"])
+        self.client.force_authenticate(self.employee)
+        res = self.client.post(f"/api/tasks/{task1.id}/hold/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.lead_manager, type=Notification.Type.TASK_HELD
+            ).exists()
+        )
+
+    def test_task_completion_notifies_lead_manager(self):
+        task1 = self.open_task(1)
+        task1.assigned_to = self.employee
+        task1.extra_fields = _VALUES.get(1, {})
+        task1.save(update_fields=["assigned_to", "extra_fields"])
+        task1.checklist_items.update(status=Checklist.Status.COMPLETE)
+        self.client.force_authenticate(self.employee)
+        res = self.client.post(f"/api/tasks/{task1.id}/complete/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.lead_manager, type=Notification.Type.TASK_COMPLETED
+            ).exists()
+        )
+
 
 # --- Phase 6: resource allocation, Project ID & project closure -------------
 
@@ -959,11 +1054,16 @@ class Phase6TestBase(WorkflowEngineTestBase):
     def setUp(self):
         super().setUp()
         self.exec_red = self._make_user("employee")
+        # Phase 13: the allocated Execution Brown is the task *editor* (the
+        # successor's assignee); Red is a view-only overseer.
+        self.exec_brown = self._make_user("employee")
 
-    def drive_alloc(self, task, red):
-        """Fill an allocation row's Execution Red and submit it (RM flow)."""
+    def drive_alloc(self, task, red, brown=None):
+        """Fill an allocation's Execution Red (overseer) + Brown (editor) and
+        submit it (RM flow). The successor opens assigned to the Brown."""
         alloc = task.resource_allocations.first()
         alloc.execution_red = red
+        alloc.execution_brown = brown or self.exec_brown
         alloc.save()
         return resources.submit_allocation(alloc, self.resource_manager)
 
@@ -987,14 +1087,16 @@ class AllocationEngineTests(Phase6TestBase):
         self.assertIsNotNone(alloc)
         self.assertEqual(alloc.type, ResourceAllocation.Type.TWO_HR)
         self.assertEqual(alloc.status, ResourceAllocation.Status.PENDING)
-        # man_power_required = Task 1 brown(2) + white(1)
-        self.assertEqual(alloc.man_power_required, 3)
+        # man_power_required = Task 1 brown(1) + white(1) (Phase 12: Brown capped at 1)
+        self.assertEqual(alloc.man_power_required, 2)
 
-    def test_submit_allocation_opens_successor_assigned_to_execution_red(self):
+    def test_submit_allocation_opens_successor_assigned_to_execution_brown(self):
+        # Phase 13: the successor is assigned to the allocated Brown (editor),
+        # not the Red (view-only overseer).
         self.drive(self.open_task(1))  # → 2
         opened = self.drive_alloc(self.open_task(2), self.exec_red)  # → 3
         self.assertEqual([t.task_no for t in opened], [3])
-        self.assertEqual(opened[0].assigned_to, self.exec_red)
+        self.assertEqual(opened[0].assigned_to, self.exec_brown)
         alloc = self.lead.resource_allocations.get(type="2HR")
         self.assertEqual(alloc.status, ResourceAllocation.Status.OPEN)
 
@@ -1003,7 +1105,7 @@ class AllocationEngineTests(Phase6TestBase):
         # it must auto-free when Task 9 (Solution Blueprint Payment) closes.
         blueprint = {
             "solution_blueprint_required": "Yes", "fee": 100,
-            "manpower_brown": 2, "manpower_white": 1,
+            "manpower_brown": 1, "manpower_white": 1,
             "expected_start_date": _future(), "payment_tranches": 2,
         }
         self.drive(self.open_task(1))                        # → 2
@@ -1015,7 +1117,7 @@ class AllocationEngineTests(Phase6TestBase):
         self.drive(self.open_task(7))                        # 7 No → 9
         snt = self.lead.resource_allocations.get(type="SNT")
         self.assertEqual(snt.status, ResourceAllocation.Status.OPEN)
-        self.assertEqual(snt.man_power_brown, 2)  # split preserved
+        self.assertEqual(snt.man_power_brown, 1)  # split preserved (Brown capped at 1)
         self.drive(self.open_task(9))                        # SNT auto-closes
         snt.refresh_from_db()
         self.assertEqual(snt.status, ResourceAllocation.Status.CLOSED)
@@ -1032,30 +1134,32 @@ class AllocationEngineTests(Phase6TestBase):
         self.assertIsNotNone(alloc.closed_at)
 
     def test_manpower_split_preserved(self):
-        self.drive(self.open_task(1))  # Task 1: brown 2, white 1
+        self.drive(self.open_task(1))  # Task 1 (Phase 12): brown 1, white 1
         alloc = self.open_task(2).resource_allocations.first()
-        self.assertEqual(alloc.man_power_brown, 2)
+        self.assertEqual(alloc.man_power_brown, 1)
         self.assertEqual(alloc.man_power_white, 1)
-        self.assertEqual(alloc.man_power_required, 3)
+        self.assertEqual(alloc.man_power_required, 2)
 
-    def test_over_allocation_flag_per_belt(self):
-        # Task 1 requires 2 Brown, 1 White. Allocating 3 Browns exceeds the
-        # Brown requirement → over-allocated (per-belt check).
+    def test_over_allocation_flag_white(self):
+        # Task 1 requires 1 White (Phase 12); allocating 2 Whites exceeds it →
+        # over-allocated. Brown is single now, so it can't be over-allocated.
         self.drive(self.open_task(1))
         alloc = self.open_task(2).resource_allocations.first()
         alloc.execution_red = self.exec_red
-        alloc.execution_browns.add(self.lead_manager, self.marketing, self.employee)  # 3 > 2
-        alloc.whites.add(self.lead_admin)  # 1 == 1, fine
-        self.assertEqual(alloc.brown_count, 3)
-        self.assertEqual(alloc.white_count, 1)
-        self.assertEqual(alloc.allocated_count, 5)  # red + 3 brown + 1 white
+        alloc.execution_brown = self.lead_manager  # single Brown
+        alloc.save()
+        alloc.whites.add(self.marketing, self.employee)  # 2 > 1
+        self.assertEqual(alloc.brown_count, 1)
+        self.assertEqual(alloc.white_count, 2)
+        self.assertEqual(alloc.allocated_count, 4)  # red + brown + 2 white
         self.assertTrue(alloc.is_over_allocated)
 
     def test_within_manpower_not_over_allocated(self):
-        self.drive(self.open_task(1))  # 2 Brown, 1 White
+        self.drive(self.open_task(1))  # 1 Brown, 1 White
         alloc = self.open_task(2).resource_allocations.first()
         alloc.execution_red = self.exec_red
-        alloc.execution_browns.add(self.lead_manager, self.marketing)  # 2 == 2
+        alloc.execution_brown = self.lead_manager  # 1 == 1
+        alloc.save()
         alloc.whites.add(self.lead_admin)  # 1 == 1
         self.assertFalse(alloc.is_over_allocated)
 
@@ -1139,7 +1243,7 @@ class ResourceApiTests(Phase6TestBase):
         res = self.client.get("/api/resource-allocations/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data), 1)
-        self.assertEqual(res.data[0]["man_power_required"], 3)
+        self.assertEqual(res.data[0]["man_power_required"], 2)
 
     def test_lead_people_see_lead_scoped_allocations(self):
         # Phase 11 (#6): the lead's own people read their allocations on the
@@ -1160,7 +1264,11 @@ class ResourceApiTests(Phase6TestBase):
         self.client.force_authenticate(self.resource_manager)
         patch = self.client.patch(
             f"/api/resource-allocations/{self.alloc.id}/",
-            {"execution_red": self.exec_red.id, "remark": "team A"},
+            {
+                "execution_red": self.exec_red.id,
+                "execution_brown": self.exec_brown.id,
+                "remark": "team A",
+            },
             format="json",
         )
         self.assertEqual(patch.status_code, status.HTTP_200_OK, patch.data)
@@ -1170,23 +1278,23 @@ class ResourceApiTests(Phase6TestBase):
         self.alloc.refresh_from_db()
         self.assertEqual(self.alloc.status, ResourceAllocation.Status.OPEN)
 
-    def test_rm_patches_multi_select_browns_and_whites(self):
+    def test_rm_patches_single_brown_and_multi_whites(self):
+        # Phase 12: Execution Brown is a single FK; only White is multi-select.
         self.client.force_authenticate(self.resource_manager)
         res = self.client.patch(
             f"/api/resource-allocations/{self.alloc.id}/",
             {
                 "execution_red": self.exec_red.id,
-                "execution_browns": [self.lead_manager.id, self.marketing.id],
+                "execution_brown": self.lead_manager.id,
                 "whites": [self.lead_admin.id],
             },
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        self.assertEqual(res.data["brown_count"], 2)
+        self.assertEqual(res.data["brown_count"], 1)
         self.assertEqual(res.data["white_count"], 1)
-        self.assertEqual(sorted(res.data["execution_browns"]),
-                         sorted([self.lead_manager.id, self.marketing.id]))
-        self.assertEqual(res.data["man_power_brown"], 2)
+        self.assertEqual(res.data["execution_brown"], self.lead_manager.id)
+        self.assertEqual(res.data["man_power_brown"], 1)
         self.assertEqual(res.data["man_power_white"], 1)
         self.assertFalse(res.data["is_over_allocated"])
 
@@ -1322,13 +1430,32 @@ class FollowupCreateTests(FollowupApiTestBase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("followup_date", res.data)
 
-    def test_non_lead_manager_cannot_create(self):
-        for user in (self.marketing, self.lead_admin, self.employee):
+    def test_non_viewer_cannot_create(self):
+        # Phase 12: creation is gated by lead *visibility*, not the LM role.
+        # marketing/employee can't see this Lead Manager's lead → blocked.
+        for user in (self.marketing, self.employee):
             self.client.force_authenticate(user)
             res = self.client.post(self.FOLLOWUPS_URL, self.followup_payload(), format="json")
             self.assertEqual(
                 res.status_code, status.HTTP_403_FORBIDDEN, f"{user} should be blocked"
             )
+
+    def test_task_worker_can_create_followup(self):
+        # A user assigned a task on the lead (e.g. the Execution Red) may now
+        # raise a follow-up on it (Phase 12).
+        Task.objects.create(
+            lead=self.lead, task_no=1, assigned_to=self.employee, status=Task.Status.OPEN
+        )
+        self.client.force_authenticate(self.employee)
+        res = self.client.post(self.FOLLOWUPS_URL, self.followup_payload(), format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["created_by"], self.employee.id)
+
+    def test_lead_admin_can_create_followup(self):
+        # Lead Admin sees every lead, so may raise a follow-up on any of them.
+        self.client.force_authenticate(self.lead_admin)
+        res = self.client.post(self.FOLLOWUPS_URL, self.followup_payload(), format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
 
 
 class FollowupVisibilityTests(FollowupApiTestBase):
@@ -1353,6 +1480,14 @@ class FollowupVisibilityTests(FollowupApiTestBase):
     def test_creator_sees_followup(self):
         self.client.force_authenticate(self.lead_manager)
         res = self.client.get(self.FOLLOWUPS_URL)
+        ids = [f["id"] for f in (res.data["results"] if isinstance(res.data, dict) else res.data)]
+        self.assertIn(self.followup.id, ids)
+
+    def test_creator_sees_followup_on_other_tasks(self):
+        # Other Tasks (?assigned_to_me) must still show a follow-up the caller
+        # created but assigned to someone else (Phase 13, per the user).
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(self.FOLLOWUPS_URL + "?assigned_to_me=1")
         ids = [f["id"] for f in (res.data["results"] if isinstance(res.data, dict) else res.data)]
         self.assertIn(self.followup.id, ids)
 
@@ -1425,10 +1560,12 @@ class FollowupAssigneeListTests(FollowupApiTestBase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertTrue(len(res.data) >= 1)
 
-    def test_non_lead_manager_forbidden(self):
+    def test_any_authenticated_can_list_assignees(self):
+        # Phase 12: follow-up creation is no longer LM-only, so any authenticated
+        # user can load the assignee dropdown.
         self.client.force_authenticate(self.employee)
         res = self.client.get(self.ASSIGNEES_URL)
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
 
 
 # --- Phase 8: Activity log, Attachments, Notifications, Dashboard -----------
@@ -1625,3 +1762,110 @@ class DashboardTests(WorkflowEngineTestBase):
         res = self.client.get("/api/dashboard/")
         self.assertEqual(res.data["total_leads"], 0)
         self.assertEqual(len(res.data["overdue_followups"]), 1)
+
+
+# --- Phase 12: lead access for task workers + RM, red-required allocation ----
+
+class Phase12AccessTests(Phase6TestBase):
+    """The assigned Execution Red / Resource Manager can open the lead they're
+    working (view-only) and raise follow-ups; non-participants cannot; and an
+    allocation cannot be submitted without an Execution Red."""
+
+    def _open_task3(self):
+        self.drive(self.open_task(1))                       # → Task 2 (2HR alloc)
+        self.drive_alloc(self.open_task(2), self.exec_red)  # → Task 3 (execution_brown)
+        return self.open_task(3)
+
+    def test_successor_assigned_to_chosen_brown(self):
+        # Phase 13: the successor is assigned to the allocated Brown (editor).
+        task3 = self._open_task3()
+        self.assertEqual(task3.assigned_to, self.exec_brown)
+
+    def test_brown_edits_red_views(self):
+        task3 = self._open_task3()
+        # The allocated Brown edits their task…
+        self.client.force_authenticate(self.exec_brown)
+        res = self.client.patch(
+            f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        # The Execution Red can open the lead + follow every step, but view-only…
+        self.client.force_authenticate(self.exec_red)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        res = self.client.get(f"/api/tasks/{task3.id}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertFalse(res.data["can_edit"])  # Red is view-only on the step
+        # …and cannot edit the task or the lead.
+        res = self.client.patch(
+            f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+        res = self.client.patch(
+            f"/api/leads/{self.lead.id}/", {"division": "X"}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+        # …but can raise a follow-up on the lead.
+        res = self.client.post(
+            "/api/followups/",
+            {
+                "lead": self.lead.id, "title": "Call client",
+                "assigned_to": self.exec_red.id,
+                "followup_date": (timezone.now().date() + timedelta(days=5)).isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+    def test_white_co_edits_execution_task(self):
+        # Phase 13: a White of the current allocation co-edits the step alongside
+        # the Brown assignee.
+        self.drive(self.open_task(1))                       # → Task 2 (2HR alloc)
+        alloc = self.open_task(2).resource_allocations.first()
+        alloc.execution_red = self.exec_red
+        alloc.execution_brown = self.exec_brown
+        alloc.save()
+        white = self._make_user("employee")
+        alloc.whites.add(white)
+        resources.submit_allocation(alloc, self.resource_manager)  # → Task 3
+        task3 = self.open_task(3)
+        self.client.force_authenticate(white)
+        res = self.client.patch(
+            f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_rm_can_view_lead_with_allocation(self):
+        self.drive(self.open_task(1))  # creates the 2HR allocation row
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_rm_cannot_view_lead_without_allocation(self):
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_non_participant_cannot_view_lead(self):
+        self._open_task3()
+        self.client.force_authenticate(self.other_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_red_and_editor_required_to_submit(self):
+        self.drive(self.open_task(1))  # → Task 2 (2HR alloc), nothing set yet
+        alloc = self.open_task(2).resource_allocations.first()
+        self.client.force_authenticate(self.resource_manager)
+        # Nothing set → blocked (needs an Execution Red overseer).
+        res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        # Red alone still blocked (Phase 13 — needs an editor: Brown or a White).
+        alloc.execution_red = self.exec_red
+        alloc.save(update_fields=["execution_red"])
+        res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        # Adding an Execution Brown (the editor) unblocks it.
+        alloc.execution_brown = self.exec_brown
+        alloc.save(update_fields=["execution_brown"])
+        res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)

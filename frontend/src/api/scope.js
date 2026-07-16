@@ -32,11 +32,19 @@ export const canSeeLeadModule = (user) =>
 export const canSeeFollowUps = (user) =>
   canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
 
-// Held Leads / Held Tasks queues are for the lead-facing management roles only.
-// A plain Employee works only their assigned lead's tasks and is *notified* when
-// a lead/task of theirs goes on hold, so these tabs are hidden from them.
-export const canSeeHeldQueues = (user) =>
+// Held Leads is for the lead-facing management roles only (they own the lead's
+// overall hold state).
+export const canSeeHeldLeads = (user) =>
   LEAD_MODULE_ROLES.some((r) => hasRole(user, r))
+
+// Held Tasks is open to every user (Phase 13, per the user): an assignee/Employee
+// needs to see the tasks of theirs that are on hold, a Lead Manager reviews the
+// hold reason + trail, and the API self-scopes each caller to only the held
+// tasks they can see.
+export const canSeeHeldTasks = (user) => !!user
+
+// Back-compat alias (older callers) — the stricter lead-facing gate.
+export const canSeeHeldQueues = canSeeHeldLeads
 
 // --- Backend-lead-shaped helpers (mirror leads/permissions.py) --------------
 // A Lead Manager owns a lead they created or that is assigned to them; Marketing
@@ -66,7 +74,8 @@ export const PERMISSIONS = {
   manageUsers: (user) => hasRole(user, 'User Management'),
   // Lead Admin: global visibility, read-only across the lead screens.
   viewFollowupPreview: (user) => hasRole(user, 'Lead Admin'),
-  // Only a Lead Manager may raise a follow-up (§12 "Add follow-up task");
-  // mirrors the backend FollowupPermission POST rule.
-  manageFollowups: (user) => hasRole(user, 'Lead Manager'),
+  // Anyone who can see a lead may raise a follow-up on it (Phase 12 — the
+  // assigned Red / Resource Manager included). Mirrors the backend, which lets
+  // any authenticated user create and validates the target lead is visible.
+  manageFollowups: (user) => canSeeFollowUps(user),
 }

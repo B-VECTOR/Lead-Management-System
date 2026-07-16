@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
-import { canSeeLeadModule, canSeeFollowUps, canSeeHeldQueues } from '@/api/scope'
+import { canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks } from '@/api/scope'
 import Login from '@/pages/Login'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
@@ -35,13 +35,17 @@ export default function App() {
 
         <Route path="/leads" element={<RequireAuth check={canSeeLeadModule}><LeadsList /></RequireAuth>} />
         <Route path="/leads/new" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
-        <Route path="/leads/:id" element={<RequireAuth check={canSeeLeadModule}><LeadDetail /></RequireAuth>} />
+        {/* Detail is open to any authenticated user — the backend scopes lead
+            visibility, so a task worker (e.g. the assigned Red) or the Resource
+            Manager can open a lead they're entitled to; others get a not-found
+            state. The Leads *list* and edit stay gated. */}
+        <Route path="/leads/:id" element={<LeadDetail />} />
         <Route path="/leads/:id/edit" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
 
         <Route path="/other-tasks" element={<RequireAuth check={canSeeFollowUps}><OtherTasks /></RequireAuth>} />
 
-        <Route path="/held-leads" element={<RequireAuth check={canSeeHeldQueues}><HeldLeads /></RequireAuth>} />
-        <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldQueues}><HeldTasks /></RequireAuth>} />
+        <Route path="/held-leads" element={<RequireAuth check={canSeeHeldLeads}><HeldLeads /></RequireAuth>} />
+        <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldTasks}><HeldTasks /></RequireAuth>} />
 
         <Route path="/resources" element={<RequireAuth roles={['Resource Manager']}><Resources /></RequireAuth>} />
         <Route path="/project-closure" element={<RequireAuth roles={['Resource Manager']}><ProjectClosure /></RequireAuth>} />

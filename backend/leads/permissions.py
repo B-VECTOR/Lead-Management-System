@@ -55,8 +55,10 @@ def can_view_task(user, task):
     """Task visibility (Tech Req §6 rules 2–3 + §12 view rows).
 
     Lead Admin sees every task; a user always sees a task assigned to them; a
-    Lead Manager sees tasks under leads they created or own; and the lead's
-    owner gets view-only access to a task assigned to someone else.
+    Lead Manager sees tasks under leads they created or own; the lead's owner
+    gets view-only access; and (Phase 13) anyone on any of the lead's allocation
+    rows — the Execution Red overseer and the wider allocated team — gets
+    view-only access to every step.
     """
     if not user or not user.is_authenticated:
         return False
@@ -68,25 +70,37 @@ def can_view_task(user, task):
     lead = task.lead
     if LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id):
         return True
-    # Lead owner keeps view-only access even without the Lead Manager role.
-    return lead.assigned_to_id == user.id
+    if lead.assigned_to_id == user.id:
+        return True
+    # Allocated resources (Execution Red overseer, auditors, project members,
+    # Whites) follow every step in view-only mode.
+    from . import resources
+
+    return user.id in resources.lead_allocation_people_ids(lead)
 
 
 def can_edit_task(user, task):
-    """Editable by the task's assignee only, while open (§6 rules 2, 4).
+    """Editable while open by the allocated editor(s) of the step (§6 rules 2, 4).
 
-    Phase 11 (per the user): only the person a task is *assigned to* may complete
-    its checklist/fields — the lead's creator (a Lead Manager or Marketing) can
-    no longer make task changes just from having created/owned the lead. A
-    self-assigned Lead Manager still edits because they *are* the assignee. Lead
-    Admin is retained as an administrative override (Lead Admin is the lead
-    super-role throughout the system).
+    Phase 13 (per the user): an execution step is edited by the allocated
+    Execution **Brown + White(s)**, not the Execution Red (who is a view-only
+    overseer). The task's ``assigned_to`` is the Brown (or first White); every
+    other White of the *current* allocation may co-edit it. A ``default_bd_person``
+    step (Tasks 1/5/10) is still edited by its assignee alone — the White co-edit
+    only applies when the step itself is assigned to an allocation member, so a
+    resource can never edit a BD step. A self-assigned Lead Manager edits because
+    they are the assignee; Lead Admin is retained as an administrative override.
     """
     if not user or not user.is_authenticated:
         return False
     if task.status != Task.Status.OPEN:
         return False
     if task.assigned_to_id == user.id:
+        return True
+    from . import resources
+
+    editor_ids = resources.current_allocation_editor_ids(task.lead)
+    if user.id in editor_ids and task.assigned_to_id in editor_ids:
         return True
     return LEAD_ADMIN in user_role_names(user)
 
@@ -191,21 +205,24 @@ def can_edit_followup(user, followup):
 
 
 class CanAddFollowupPermission(BasePermission):
-    """Read access to the follow-up assignee list — Lead Manager only, since
-    they are the only role that raises follow-ups (§12 "Add follow-up task").
+    """Read access to the follow-up assignee list. Open to any authenticated
+    user (Phase 12) — follow-up creation is no longer Lead-Manager-only, so any
+    creator needs to load the assignee dropdown.
     """
 
     def has_permission(self, request, view):
         user = request.user
-        if not user or not user.is_authenticated:
-            return False
-        return LEAD_MANAGER in user_role_names(user)
+        return bool(user and user.is_authenticated)
 
 
 class FollowupPermission(BasePermission):
     """Server-side enforcement of the PRD §6 / Tech Req §12 follow-up rows.
 
-    - **Create** ("Add follow-up task") — Lead Manager only.
+    - **Create** — any authenticated user (Phase 12, per the user: the assigned
+      Red / Resource Manager / anyone who can see the lead may raise follow-ups).
+      The view additionally checks the *target lead* is one the caller can view
+      (``user_can_view_lead``), so a user can only raise a follow-up on a lead
+      they have access to.
     - **View** — role-scoped by the view's queryset (assignee / creator, or all
       for Lead Admin); object-level SAFE access is granted here since the
       queryset already narrows it.
@@ -215,11 +232,7 @@ class FollowupPermission(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        if not user or not user.is_authenticated:
-            return False
-        if request.method == "POST":
-            return LEAD_MANAGER in user_role_names(user)
-        return True
+        return bool(user and user.is_authenticated)
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:

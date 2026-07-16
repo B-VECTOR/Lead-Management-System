@@ -32,12 +32,18 @@ def _open_hold(holds_manager):
 
 
 @transaction.atomic
-def hold_task(task, user, *, when=None):
-    """Pause one open task. Returns the created ``TaskHold`` or None (no-op)."""
+def hold_task(task, user, *, when=None, reason=""):
+    """Pause one open task. Returns the created ``TaskHold`` or None (no-op).
+
+    ``reason`` is stored on the interval so the hold trail keeps why each pause
+    was taken across repeated cycles (Phase 13).
+    """
     if task.status != Task.Status.OPEN:
         return None
     when = when or timezone.now()
-    hold = TaskHold.objects.create(task=task, hold_by=user, hold_at=when)
+    hold = TaskHold.objects.create(
+        task=task, hold_by=user, hold_at=when, reason=reason or ""
+    )
     task.status = Task.Status.HOLD
     task.save(update_fields=["status", "updated_at"])
     return hold
@@ -60,20 +66,23 @@ def unhold_task(task, user, *, when=None):
 
 
 @transaction.atomic
-def hold_lead(lead, user, *, when=None):
+def hold_lead(lead, user, *, when=None, reason=""):
     """Put a lead On Hold and cascade to its open tasks (Tech Req §6).
 
     Only meaningful for an ``In Progress`` lead; idempotent otherwise. Returns
-    the created ``LeadHold`` or None.
+    the created ``LeadHold`` or None. ``reason`` is recorded on the lead hold and
+    propagated to each cascaded task hold so the trail explains the pause.
     """
     if lead.status != Lead.Status.IN_PROGRESS:
         return None
     when = when or timezone.now()
-    lead_hold = LeadHold.objects.create(lead=lead, hold_by=user, hold_at=when)
+    lead_hold = LeadHold.objects.create(
+        lead=lead, hold_by=user, hold_at=when, reason=reason or ""
+    )
     lead.status = Lead.Status.ON_HOLD
     lead.save(update_fields=["status", "updated_at"])
     for task in lead.tasks.filter(status=Task.Status.OPEN):
-        hold_task(task, user, when=when)
+        hold_task(task, user, when=when, reason=reason)
     return lead_hold
 
 

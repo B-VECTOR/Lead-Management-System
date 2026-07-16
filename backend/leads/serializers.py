@@ -14,6 +14,7 @@ from .models import (
     ProjectDetails,
     ResourceAllocation,
     Task,
+    TaskHold,
 )
 from .permissions import (
     LEAD_ADMIN,
@@ -64,6 +65,10 @@ class LeadSerializer(serializers.ModelSerializer):
     # Computed the same way the dashboard does (closed tasks / total tasks);
     # read-only and additive — uses the prefetched ``tasks`` when available.
     progress = serializers.SerializerMethodField()
+    # True when any task under the lead is currently on hold — drives a "Task on
+    # hold" flag in the leads list even while the lead itself is In Progress
+    # (Phase 13; a single held task doesn't change lead.status).
+    has_held_task = serializers.SerializerMethodField()
     # A human-readable Lead ID (Phase 9 — no such concept exists in the docs;
     # confirmed with the user). Deliberately shaped unlike a Project ID
     # ("IN-PHNPD26001-I00") so the two are never confused before a lead has
@@ -89,6 +94,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "lead_type",
             "status",
             "progress",
+            "has_held_task",
             "lead_display_id",
             "project_id",
             "project_id_base",
@@ -101,6 +107,7 @@ class LeadSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "progress",
+            "has_held_task",
             "lead_display_id",
             "project_id",
             "project_id_base",
@@ -117,6 +124,9 @@ class LeadSerializer(serializers.ModelSerializer):
             return 0
         closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
         return round(closed / total * 100)
+
+    def get_has_held_task(self, obj):
+        return any(t.status == Task.Status.HOLD for t in obj.tasks.all())
 
     def get_lead_display_id(self, obj):
         return f"LD-{obj.created_at.year}-{obj.id:05d}"
@@ -195,6 +205,31 @@ class ChecklistSerializer(serializers.ModelSerializer):
         ]
 
 
+class HoldIntervalSerializer(serializers.ModelSerializer):
+    """One hold→unhold interval of a task's hold trail (Phase 13).
+
+    Read-only: the reason + who/when for each pause, so a Lead Manager can review
+    the full trail of a task that was held and resumed several times.
+    """
+
+    hold_by_name = serializers.CharField(source="hold_by.name", read_only=True, default=None)
+    unhold_by_name = serializers.CharField(source="unhold_by.name", read_only=True, default=None)
+
+    class Meta:
+        model = TaskHold
+        fields = [
+            "id",
+            "reason",
+            "hold_at",
+            "hold_by",
+            "hold_by_name",
+            "unhold_at",
+            "unhold_by",
+            "unhold_by_name",
+        ]
+        read_only_fields = fields
+
+
 class TaskSerializer(serializers.ModelSerializer):
     """A workflow task instance with its checklist and dynamic-field schema.
 
@@ -213,10 +248,15 @@ class TaskSerializer(serializers.ModelSerializer):
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
     checklist_items = ChecklistSerializer(many=True, read_only=True)
+    # The task's hold trail (most-recent first) — reason + who/when per interval.
+    holds = HoldIntervalSerializer(many=True, read_only=True)
     field_schema = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
     can_hold = serializers.SerializerMethodField()
     can_reassign = serializers.SerializerMethodField()
+    # For a trigger-`pending` task: when it will open and how many days out, so
+    # the frontend can show the offset instead of an unexplained pending state.
+    scheduled_open = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -234,9 +274,11 @@ class TaskSerializer(serializers.ModelSerializer):
             "extra_fields",
             "field_schema",
             "checklist_items",
+            "holds",
             "can_edit",
             "can_hold",
             "can_reassign",
+            "scheduled_open",
             "opened_at",
             "closed_at",
             "elapsed_time",
@@ -286,6 +328,19 @@ class TaskSerializer(serializers.ModelSerializer):
         if not request:
             return False
         return can_reassign_task(request.user, obj)
+
+    def get_scheduled_open(self, obj):
+        info = engine.pending_open_info(obj)
+        if not info:
+            return None
+        open_date = info["open_date"]
+        days = (open_date - timezone.now().date()).days
+        return {
+            "open_date": open_date.isoformat(),
+            "days_from_now": days,
+            "offset_days": info["offset_days"],
+            "reference_task_no": info["reference_task_no"],
+        }
 
     def validate_extra_fields(self, value):
         if not isinstance(value, dict):
@@ -350,10 +405,9 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
     is_over_allocated = serializers.BooleanField(read_only=True)
     brown_count = serializers.IntegerField(read_only=True)
     white_count = serializers.IntegerField(read_only=True)
-    # Browns/Whites are multi-select: a list of user ids in, a list out.
-    execution_browns = serializers.PrimaryKeyRelatedField(
-        many=True, required=False, queryset=exclude_user_management(User.objects.all())
-    )
+    # Execution Brown is a single FK (auto-generated from RESOURCE_FIELDS, like
+    # Execution Red / the auditors). Only White stays a multi-select — a list of
+    # user ids in, a list out.
     whites = serializers.PrimaryKeyRelatedField(
         many=True, required=False, queryset=exclude_user_management(User.objects.all())
     )
@@ -432,7 +486,7 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
     lead_manager = serializers.SerializerMethodField()
     execution_red = serializers.SerializerMethodField()
-    execution_browns = serializers.SerializerMethodField()
+    execution_brown = serializers.SerializerMethodField()
     whites = serializers.SerializerMethodField()
     fixed_fee = serializers.SerializerMethodField()
     variable_fee = serializers.SerializerMethodField()
@@ -454,7 +508,7 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
             "status",
             "is_current",
             "execution_red",
-            "execution_browns",
+            "execution_brown",
             "whites",
             "fixed_fee",
             "variable_fee",
@@ -477,8 +531,8 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
         alloc = obj.resource_allocation
         return [_user_label(u) for u in getattr(alloc, field).all()] if alloc else []
 
-    def get_execution_browns(self, obj):
-        return self._alloc_users(obj, "execution_browns")
+    def get_execution_brown(self, obj):
+        return self._alloc_user(obj, "execution_brown")
 
     def get_whites(self, obj):
         return self._alloc_users(obj, "whites")

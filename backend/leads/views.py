@@ -72,34 +72,56 @@ NON_ASSIGNABLE_GROUPS = [
 ]
 
 
-class LeadQuerysetMixin:
-    """Role-scoped lead queryset shared by the list and detail views.
+def lead_scope_q(user):
+    """The lead-visibility ``Q`` for ``user`` — or ``None`` when they see every
+    lead (Lead Admin). One home for the PRD §6 / Tech Req §12 rows, extended in
+    Phase 12 so task workers and the Resource Manager can open the leads they're
+    working:
 
-    Enforces the PRD §6 / Tech Req §12 visibility rows server-side:
-    Lead Admin sees everything; a Lead Manager sees leads they created or that
-    are assigned to them (Tech Req §5.9); Marketing sees leads they created.
-    Anyone else (a plain Employee) sees only the leads assigned to them, so they
-    can open a lead to work its task list — read-only (writes are blocked by
-    :class:`LeadPermission`).
+    - **Lead Admin** — all leads (``None``).
+    - **Anyone** — leads they own (``assigned_to``), are actively working a task
+      on (``tasks__assigned_to``), or are allocated to on any resource row
+      (Phase 13 — the Execution Red overseer / Whites / auditors open the lead to
+      follow every step, view-only).
+    - **Lead Manager / Marketing** — additionally the leads they created.
+    - **Resource Manager** — additionally any lead with a ``resource_allocation``
+      row (it has reached an allocation stage they staff).
+    """
+    roles = user_role_names(user)
+    if LEAD_ADMIN in roles:
+        return None
+    scope = Q(assigned_to=user) | Q(tasks__assigned_to=user)
+    scope |= resources.user_allocation_q(user)
+    if roles & {LEAD_MANAGER, MARKETING}:
+        scope |= Q(created_by=user)
+    if RESOURCE_MANAGER in roles:
+        scope |= Q(resource_allocations__isnull=False)
+    return scope
+
+
+def user_can_view_lead(user, lead):
+    """True if ``user`` may view ``lead`` (a Lead or its pk) — mirrors
+    :func:`lead_scope_q`. Gates follow-up creation to a visible lead (Phase 12)."""
+    q = lead_scope_q(user)
+    lead_id = getattr(lead, "pk", lead)
+    base = Lead.objects.filter(pk=lead_id)
+    if q is not None:
+        base = base.filter(q)
+    return base.exists()
+
+
+class LeadQuerysetMixin:
+    """Role-scoped lead queryset shared by the list and detail views — writes
+    are still blocked by :class:`LeadPermission`, so the broadened visibility is
+    view-only for task workers / the Resource Manager. See :func:`lead_scope_q`.
     """
 
     def get_queryset(self):
-        user = self.request.user
-        roles = user_role_names(user)
         qs = Lead.objects.select_related(
             "country", "industry", "domain", "assigned_to", "created_by"
         ).prefetch_related("tasks")
-        if LEAD_ADMIN in roles:
-            return qs
-        scope = Q()
-        if LEAD_MANAGER in roles:
-            scope |= Q(created_by=user) | Q(assigned_to=user)
-        if MARKETING in roles:
-            scope |= Q(created_by=user)
-        if not (roles & {LEAD_MANAGER, MARKETING}):
-            # Plain Employee: only the leads assigned to them.
-            scope |= Q(assigned_to=user)
-        return qs.filter(scope).distinct()
+        q = lead_scope_q(self.request.user)
+        return qs if q is None else qs.filter(q).distinct()
 
 
 def _notify_owner_assigned(lead, actor):
@@ -123,6 +145,22 @@ def _notify_owner_assigned(lead, actor):
         f"You are now the owner of “{lead.company_name} — {lead.project_name}”.",
         events.lead_link(lead),
     )
+
+
+def _notify_lead_managers(lead, actor, type, message):
+    """Notify the lead's managing people (owner ``assigned_to`` + ``created_by``)
+    of a task event, skipping the actor and any duplicate/empty recipient.
+
+    Phase 13 (per the user): the Lead Manager should hear about every task change
+    on their lead — a task being held/unheld or completed — even when they are
+    not the task's assignee.
+    """
+    seen = set()
+    for manager in (lead.assigned_to, lead.created_by):
+        if manager is None or manager.id in seen or manager.id == actor.id:
+            continue
+        seen.add(manager.id)
+        events.notify(manager, type, message, events.lead_link(lead))
 
 
 class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
@@ -233,8 +271,9 @@ class LeadHoldView(LeadQuerysetMixin, APIView):
                 {"detail": "You cannot hold or unhold this lead."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        remark = (request.data.get("remark") or "").strip()
         if self.action == "hold":
-            if holds.hold_lead(lead, request.user) is None:
+            if holds.hold_lead(lead, request.user, reason=remark) is None:
                 return Response(
                     {"detail": "Only an in-progress lead can be put on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -245,7 +284,6 @@ class LeadHoldView(LeadQuerysetMixin, APIView):
                     {"detail": "This lead is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        remark = (request.data.get("remark") or "").strip()
         events.log_activity(
             lead,
             request.user,
@@ -275,11 +313,14 @@ class TaskScopeMixin:
         user = self.request.user
         roles = user_role_names(user)
         qs = base_qs.select_related("lead", "assigned_to").prefetch_related(
-            "checklist_items"
+            "checklist_items", "holds__hold_by", "holds__unhold_by"
         )
         if LEAD_ADMIN in roles:
             return qs
         conds = Q(assigned_to=user) | Q(lead__assigned_to=user)
+        # Allocated people (Execution Red overseer + the wider team) see every
+        # step under a lead they're staffed on (Phase 13).
+        conds |= resources.user_allocation_q(user, prefix="lead__")
         if LEAD_MANAGER in roles:
             conds |= Q(lead__created_by=user)
         return qs.filter(conds).distinct()
@@ -353,6 +394,14 @@ class TaskCompleteView(TaskScopeMixin, APIView):
             request.user,
             "task",
             f"Task {task.task_no} “{task.task_name}” completed",
+        )
+        # Keep the Lead Manager in the loop on every task change (Phase 13).
+        _notify_lead_managers(
+            task.lead,
+            request.user,
+            Notification.Type.TASK_COMPLETED,
+            f"Task {task.task_no} “{task.task_name}” on “{task.lead.company_name} — "
+            f"{task.lead.project_name}” was completed.",
         )
         for nxt in opened:
             events.log_activity(
@@ -460,8 +509,9 @@ class TaskHoldView(TaskScopeMixin, APIView):
                 {"detail": "You cannot hold or unhold this task."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        remark = (request.data.get("remark") or "").strip()
         if self.action == "hold":
-            if holds.hold_task(task, request.user) is None:
+            if holds.hold_task(task, request.user, reason=remark) is None:
                 return Response(
                     {"detail": "Only an open task can be put on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -472,7 +522,6 @@ class TaskHoldView(TaskScopeMixin, APIView):
                     {"detail": "This task is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        remark = (request.data.get("remark") or "").strip()
         events.log_activity(
             task.lead,
             request.user,
@@ -480,15 +529,24 @@ class TaskHoldView(TaskScopeMixin, APIView):
             f"Task {task.task_no} {'put on hold' if self.action == 'hold' else 'resumed'}",
             remark,
         )
-        # Notify the task's assignee when someone else puts it on hold.
-        if self.action == "hold" and task.assigned_to_id not in (None, request.user.id):
+        verb = "put on hold" if self.action == "hold" else "resumed"
+        detail = f": {remark}" if (self.action == "hold" and remark) else "."
+        base_msg = (
+            f"Task {task.task_no} on “{task.lead.company_name} — "
+            f"{task.lead.project_name}” was {verb}"
+        )
+        # Notify the task's assignee when someone else changes its hold state…
+        if task.assigned_to_id not in (None, request.user.id):
             events.notify(
                 task.assigned_to,
                 Notification.Type.TASK_HELD,
-                f"Task {task.task_no} on “{task.lead.company_name} — "
-                f"{task.lead.project_name}” was put on hold.",
+                base_msg + detail,
                 events.lead_link(task.lead),
             )
+        # …and always keep the Lead Manager informed of the change (Phase 13).
+        _notify_lead_managers(
+            task.lead, request.user, Notification.Type.TASK_HELD, base_msg + detail
+        )
         task.refresh_from_db()
         defs = engine.task_defs_for(task.lead.lead_type)
         return Response(
@@ -639,8 +697,8 @@ class ProjectClosureListView(generics.ListAPIView):
         qs = ProjectDetails.objects.select_related(
             "lead", "lead__assigned_to", "resource_allocation",
             "resource_allocation__execution_red",
+            "resource_allocation__execution_brown",
         ).prefetch_related(
-            "resource_allocation__execution_browns",
             "resource_allocation__whites",
         ).order_by("lead", "extension_no")
         lead_id = self.request.query_params.get("lead")
@@ -686,7 +744,9 @@ class FollowupScopeMixin:
     Lead Admin sees every follow-up; everyone else sees follow-ups assigned to
     them or that they raised. ``?lead=`` narrows to one lead (the Lead Detail
     follow-up tab / "View all follow-up history"); ``?assigned_to_me=`` narrows
-    to the caller's own follow-ups (the "Other Tasks" screen).
+    to the caller's own follow-ups (the "Other Tasks" screen) — those assigned
+    to them **or** raised by them, so a creator still sees a follow-up they
+    assigned to someone else.
     """
 
     def _scoped_followups(self, base_qs=None):
@@ -700,7 +760,9 @@ class FollowupScopeMixin:
         if lead_id:
             qs = qs.filter(lead_id=lead_id)
         if self.request.query_params.get("assigned_to_me"):
-            qs = qs.filter(assigned_to=user)
+            # "Mine" = assigned to me or created by me (the creator keeps sight
+            # of follow-ups they raised for others, per the user).
+            qs = qs.filter(Q(assigned_to=user) | Q(created_by=user))
         return qs.distinct()
 
 
@@ -716,6 +778,11 @@ class FollowupListCreateView(FollowupScopeMixin, generics.ListCreateAPIView):
         return self._scoped_followups()
 
     def perform_create(self, serializer):
+        # A follow-up may only be raised on a lead the caller can see (Phase 12
+        # opened creation beyond Lead Managers, so this is now the real guard).
+        lead = serializer.validated_data["lead"]
+        if not user_can_view_lead(self.request.user, lead):
+            raise PermissionDenied("You cannot raise a follow-up on this lead.")
         followup = serializer.save(created_by=self.request.user)
         events.log_activity(
             followup.lead,

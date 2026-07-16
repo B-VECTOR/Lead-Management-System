@@ -285,6 +285,10 @@ class HoldRecord(models.Model):
         related_name="+",
         verbose_name=_("hold by"),
     )
+    # Why this pause was taken — captured at hold time and kept on the interval
+    # itself (not only the activity log) so the hold trail carries its own
+    # reason across repeated hold→unhold cycles (Phase 13).
+    reason = models.TextField(_("reason"), blank=True)
     unhold_at = models.DateTimeField(_("unhold at"), null=True, blank=True)
     unhold_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -356,11 +360,12 @@ class ResourceAllocation(models.Model):
     """
 
     # Single-holder resource slots (one user each), in form order. Execution
-    # Red drives the next task's assignee (``latest_execution_red``). Browns and
-    # White are multi-select instead (``MULTI_RESOURCE_FIELDS``) — a stage can
-    # need several of each (e.g. "3 Brown, 1 White").
+    # Red drives the next task's assignee (``latest_execution_red``). Execution
+    # Brown is a single holder too (Phase 12, per the user — one Brown per
+    # stage). Only White is multi-select (``MULTI_RESOURCE_FIELDS``).
     SINGLE_RESOURCE_FIELDS = (
         "execution_red",
+        "execution_brown",
         "auditor1",
         "auditor2",
         "auditor3",
@@ -371,10 +376,9 @@ class ResourceAllocation(models.Model):
         "project_member4",
         "project_member5",
     )
-    # Multi-holder slots (many users each) — Browns and White. White may be left
+    # Multi-holder slots (many users each) — only White now. White may be left
     # empty ("TBD allowed", PRD §5.7).
     MULTI_RESOURCE_FIELDS = (
-        "execution_browns",
         "whites",
     )
     # All resource-holding field names (kept for callers that iterate every slot).
@@ -413,12 +417,12 @@ class ResourceAllocation(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="+", verbose_name=_("execution red"),
     )
-    # Browns and White are multi-select: a stage can need several of each, and
-    # the Resource Manager assigns however many the upstream man-power figure
-    # calls for. White may be left empty — TBD is allowed (PRD §5.7).
-    execution_browns = models.ManyToManyField(
-        settings.AUTH_USER_MODEL, related_name="+", blank=True,
-        verbose_name=_("execution browns"),
+    # Execution Brown is a single holder (Phase 12). White is multi-select: a
+    # stage can need several, and White may be left empty — TBD is allowed
+    # (PRD §5.7).
+    execution_brown = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("execution brown"),
     )
     whites = models.ManyToManyField(
         settings.AUTH_USER_MODEL, related_name="+", blank=True,
@@ -489,7 +493,7 @@ class ResourceAllocation(models.Model):
 
     @property
     def brown_count(self):
-        return self.execution_browns.count()
+        return 1 if self.execution_brown_id else 0
 
     @property
     def white_count(self):
@@ -497,18 +501,19 @@ class ResourceAllocation(models.Model):
 
     @property
     def allocated_count(self):
-        """Total resources the Resource Manager has assigned (singles + multis)."""
+        """Total resources the Resource Manager has assigned (single slots incl.
+        Execution Brown, plus the White multi-select members)."""
         singles = sum(
             1 for f in self.SINGLE_RESOURCE_FIELDS if getattr(self, f"{f}_id") is not None
         )
-        return singles + self.brown_count + self.white_count
+        return singles + self.white_count
 
     @property
     def is_over_allocated(self):
-        """Red exceeded-indicator (§4.7): more Browns or Whites assigned than the
-        upstream man-power figure calls for. Checked per belt now that the
-        Brown/White split is preserved; a required figure of 0 means "not
-        captured", so it never flags.
+        """Red exceeded-indicator (§4.7): more Whites assigned than the upstream
+        man-power figure calls for (Brown is a single holder now, capped at 1).
+        Checked per belt; a required figure of 0 means "not captured", so it
+        never flags.
         """
         brown_over = self.man_power_brown > 0 and self.brown_count > self.man_power_brown
         white_over = self.man_power_white > 0 and self.white_count > self.man_power_white
@@ -756,6 +761,7 @@ class Notification(models.Model):
         LEAD_ASSIGNED = "lead_assigned", _("lead assigned")
         TASK_OPENED = "task_opened", _("task opened")
         TASK_REASSIGNED = "task_reassigned", _("task reassigned")
+        TASK_COMPLETED = "task_completed", _("task completed")
         FOLLOWUP = "followup", _("follow-up")
         LEAD_HELD = "lead_held", _("lead put on hold")
         TASK_HELD = "task_held", _("task put on hold")

@@ -32,7 +32,7 @@ export default function OtherTasks() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Follow up</h1>
-          <p className="text-sm text-muted-foreground">Follow-ups assigned to you, separate from a lead's checklist.</p>
+          <p className="text-sm text-muted-foreground">Follow-ups assigned to you or that you raised, separate from a lead's checklist.</p>
         </div>
         {canManage && <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" /> New follow-up</Button>}
       </div>
@@ -52,7 +52,7 @@ export default function OtherTasks() {
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>}
               {!isLoading && followups.length === 0 && (
-                <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">No follow-ups assigned to you.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">No follow-ups assigned to or raised by you.</TableCell></TableRow>
               )}
               {followups.map((f) => {
                 const overdue = f.status !== 'done' && isOverdue(f.followup_date)
