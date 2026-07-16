@@ -253,13 +253,34 @@ export function LeadTaskTab({ leadId }) {
                 )}
               </div>
             )}
-            {activeTask.is_allocation_task && (
+            {activeTask.status === 'hold' && (() => {
+              const activeHold = (activeTask.holds || []).find((h) => !h.unhold_at)
+              return activeHold ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                  <p className="font-medium">
+                    On hold{activeHold.hold_by_name ? ` — by ${activeHold.hold_by_name}` : ''}
+                  </p>
+                  {activeHold.reason && <p className="mt-0.5">{activeHold.reason}</p>}
+                </div>
+              ) : null
+            })()}
+            {activeTask.status === 'skipped' && (
+              <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
+                Skipped — the workflow branched around this step, so it never opened.
+              </p>
+            )}
+            {activeTask.status === 'dropped' && (
+              <p className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+                Dropped — this task was open when the lead was dropped.
+              </p>
+            )}
+            {activeTask.is_allocation_task && activeTask.status !== 'skipped' && (
               <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
                 Resource-allocation step — the Resource Manager fills the allocation
                 form here (built in Phase 6). It carries no checklist.
               </p>
             )}
-            {items.length === 0 && !activeTask.is_allocation_task && (
+            {items.length === 0 && !activeTask.is_allocation_task && !['skipped', 'dropped'].includes(activeTask.status) && (
               <p className="text-sm text-muted-foreground">No checklist items for this task.</p>
             )}
             {items.map((item) => (

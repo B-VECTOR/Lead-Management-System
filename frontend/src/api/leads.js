@@ -31,7 +31,11 @@ function fromApiLead(l) {
     id: l.id,
     lead_display_id: l.lead_display_id,
     progress: l.progress ?? 0,
+    task_progress: l.task_progress || { total: 0, closed: 0, percent: 0 },
+    current_task: l.current_task || null,
     has_held_task: l.has_held_task ?? false,
+    drop_remark: l.drop_remark || '',
+    active_hold: l.active_hold || null,
     name: l.project_name,
     project_name: l.project_name,
     company_name: l.company_name,
@@ -128,9 +132,12 @@ export async function updateLead(id, patch) {
   }
 }
 
-export async function updateLeadStatus(id, status) {
+// Drop (cancel) a lead via the dedicated endpoint (Phase 14d — a plain
+// `status = "Dropped"` PATCH is rejected by the backend). The optional remark
+// is stored on the lead and shown as a banner while it is Dropped.
+export async function dropLead(id, remark) {
   try {
-    const { data } = await client.patch(`/api/leads/${id}/`, { status })
+    const { data } = await client.post(`/api/leads/${id}/drop/`, { remark: remark || '' })
     return fromApiLead(data)
   } catch (err) {
     throwApiError(err)

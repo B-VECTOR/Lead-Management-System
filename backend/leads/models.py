@@ -77,6 +77,11 @@ class Lead(models.Model):
         default=Status.IN_PROGRESS,
     )
 
+    # Optional reason captured by the drop popup (Tech Req §4.3 v16) — shown
+    # as a red banner on the detail page while the lead is Dropped. Written
+    # only by the drop action, never by a plain status PATCH.
+    drop_remark = models.TextField(_("drop remark"), blank=True)
+
     # Project-ID fields — placeholders in Phase 3; populated by the workflow
     # engine at Task 12 / Task 16 (Tech Req §4.3, §13; Phase 6).
     project_id = models.CharField(_("project ID"), max_length=50, blank=True, default="")
@@ -166,6 +171,11 @@ class Task(models.Model):
         OPEN = "open", _("open")
         HOLD = "hold", _("hold")  # Phase 5 hold/unhold
         CLOSED = "closed", _("closed")
+        # Routed around by a branch so it can never open (Tech Req §4.4 v14) —
+        # or still pending when the lead completed. Excluded from progress.
+        SKIPPED = "skipped", _("skipped")
+        # The lead was dropped while this task was open/held (Tech Req §4.3.2 v16).
+        DROPPED = "dropped", _("dropped")
 
     lead = models.ForeignKey(
         Lead,
@@ -298,6 +308,9 @@ class HoldRecord(models.Model):
         related_name="+",
         verbose_name=_("unhold by"),
     )
+    # Why the pause was lifted — captured by the unhold popup (optional), so the
+    # trail carries both sides of every cycle (Tech Req §4.9 v16).
+    unhold_reason = models.TextField(_("unhold reason"), blank=True)
 
     class Meta:
         abstract = True
@@ -375,6 +388,11 @@ class ResourceAllocation(models.Model):
         "project_member3",
         "project_member4",
         "project_member5",
+        "project_member6",
+        "project_member7",
+        "project_member8",
+        "project_member9",
+        "project_member10",
     )
     # Multi-holder slots (many users each) — only White now. White may be left
     # empty ("TBD allowed", PRD §5.7).
@@ -465,6 +483,27 @@ class ResourceAllocation(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="+", verbose_name=_("project member 5"),
     )
+    # Project Member slots 6–10 (Tech Req §4.7 v13 — 10 slots total).
+    project_member6 = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("project member 6"),
+    )
+    project_member7 = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("project member 7"),
+    )
+    project_member8 = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("project member 8"),
+    )
+    project_member9 = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("project member 9"),
+    )
+    project_member10 = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name=_("project member 10"),
+    )
 
     remark = models.TextField(_("remark"), blank=True)
     status = models.CharField(
@@ -518,6 +557,16 @@ class ResourceAllocation(models.Model):
         brown_over = self.man_power_brown > 0 and self.brown_count > self.man_power_brown
         white_over = self.man_power_white > 0 and self.white_count > self.man_power_white
         return brown_over or white_over
+
+    @property
+    def is_under_allocated(self):
+        """Amber below-required indicator (§4.7 v14): fewer Browns/Whites
+        assigned than the upstream man-power figure calls for. Like the over
+        check, a required figure of 0 means "not captured" and never flags.
+        """
+        brown_under = self.man_power_brown > 0 and self.brown_count < self.man_power_brown
+        white_under = self.man_power_white > 0 and self.white_count < self.man_power_white
+        return brown_under or white_under
 
 
 class ProjectDetails(models.Model):

@@ -56,9 +56,8 @@ def can_view_task(user, task):
 
     Lead Admin sees every task; a user always sees a task assigned to them; a
     Lead Manager sees tasks under leads they created or own; the lead's owner
-    gets view-only access; and (Phase 13) anyone on any of the lead's allocation
-    rows — the Execution Red overseer and the wider allocated team — gets
-    view-only access to every step.
+    gets view-only access. *(The Phase-13 allocation-people view rule was
+    rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
     """
     if not user or not user.is_authenticated:
         return False
@@ -70,37 +69,23 @@ def can_view_task(user, task):
     lead = task.lead
     if LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id):
         return True
-    if lead.assigned_to_id == user.id:
-        return True
-    # Allocated resources (Execution Red overseer, auditors, project members,
-    # Whites) follow every step in view-only mode.
-    from . import resources
-
-    return user.id in resources.lead_allocation_people_ids(lead)
+    return lead.assigned_to_id == user.id
 
 
 def can_edit_task(user, task):
-    """Editable while open by the allocated editor(s) of the step (§6 rules 2, 4).
+    """Editable while open by its assignee only (§6 rules 2, 4), with Lead Admin
+    retained as an administrative override (Phase 11, per the user).
 
-    Phase 13 (per the user): an execution step is edited by the allocated
-    Execution **Brown + White(s)**, not the Execution Red (who is a view-only
-    overseer). The task's ``assigned_to`` is the Brown (or first White); every
-    other White of the *current* allocation may co-edit it. A ``default_bd_person``
-    step (Tasks 1/5/10) is still edited by its assignee alone — the White co-edit
-    only applies when the step itself is assigned to an allocation member, so a
-    resource can never edit a BD step. A self-assigned Lead Manager edits because
-    they are the assignee; Lead Admin is retained as an administrative override.
+    Execution tasks open assigned to the allocated **Execution Red** (§7.5), so
+    the Red edits them. *(The Phase-13 Brown/White co-editor rule was rescinded
+    per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)* A self-assigned Lead
+    Manager edits because they are the assignee.
     """
     if not user or not user.is_authenticated:
         return False
     if task.status != Task.Status.OPEN:
         return False
     if task.assigned_to_id == user.id:
-        return True
-    from . import resources
-
-    editor_ids = resources.current_allocation_editor_ids(task.lead)
-    if user.id in editor_ids and task.assigned_to_id in editor_ids:
         return True
     return LEAD_ADMIN in user_role_names(user)
 
@@ -127,6 +112,17 @@ def can_hold_lead(user, lead):
     if LEAD_ADMIN in roles:
         return True
     return LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id)
+
+
+def can_drop_lead(user, lead):
+    """Who may drop (cancel) a lead — the same actors who could previously set
+    ``status = Dropped`` via a plain edit: the managing Lead Manager / Lead
+    Admin (:func:`can_hold_lead`) plus a Marketing creator, who may edit every
+    field of the leads they sourced (PRD §5.2).
+    """
+    if can_hold_lead(user, lead):
+        return True
+    return MARKETING in user_role_names(user) and lead.created_by_id == user.id
 
 
 def can_hold_task(user, task):

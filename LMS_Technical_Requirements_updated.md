@@ -1,8 +1,47 @@
 # Lead Management System (LMS) — Technical Requirements Document
 
-**Version:** 12.0
+**Version:** 16.0
 **Status:** Draft for build
 **Related document:** `LMS_PRD.docx` (business-facing PRD)
+
+**Changelog v16.0:**
+- **Hold / Unhold / Drop remark capture (§4.3, §4.9, §6):** putting a lead on hold, unholding it, dropping it, and holding/unholding a task now each open a **popup that asks the acting user for a remark**. The remark is **optional** — the action proceeds with or without one.
+  - New columns: `lead_hold.remark`, `lead_hold.unhold_remark`, `task_hold.remark`, `task_hold.unhold_remark`, and `leads.drop_remark`.
+  - A **lead-level** hold/unhold copies its remark onto the `task_hold` rows it creates/releases (the ones flagged as held via the lead), so task history stays self-explanatory.
+  - Remarks are appended to the activity-log description (e.g. `Lead put on hold — client budget freeze`).
+  - Display: the active hold remark is shown as an amber banner on the Lead Detail and Task Detail pages while the item is on hold; the drop remark is shown as a red banner on dropped leads. The lead hold-history API also returns both remarks per hold cycle.
+  - API: the existing `POST /leads/{id}/hold|unhold|drop/` and `POST /tasks/{id}/hold|unhold/` actions accept an optional `{"remark": "..."}` body.
+- **Lead Tracker column (§4.3.3):** the Leads list gains a **"Tracker"** column showing per-lead workflow progress driven by task closure — `closed/total` task instances, a percentage, and a progress bar colored by lead status (green = In Progress/Complete, amber = On Hold, red = Dropped). `skipped` tasks are excluded from the total; extension/repeat cycles add instances. Exposed by the API as `task_progress {total, closed, percent}` on each lead.
+- **Filterable Leads-table headers (§4.3.3):** every column of the Leads list is filterable from a filter row under the headers — free-text search for Company/Project and Project ID; dropdowns (populated from the loaded data) for Industry, Domain, Owner (incl. "Not Assigned"), Current Task (sorted numerically by task number), and Status. Filters combine with AND semantics; a "Clear filters" action resets them. This replaces the previous single status-filter dropdown above the table.
+
+**Changelog v15.0:**
+- **Task 7 & 8 — "Has project moved to the next stage?" field added (§5):** both Solution Blueprint (Task 7) and Solution Blueprint Repeat Presentation (Task 8) now capture a new **Yes/No field** `moved_to_next_stage` ("Has project moved to the next stage?") that is shown and required only when re-presentation is **not** required (i.e. when `re_presentation_required` / `re_presentation_required_again` = "No").
+- **Task 7 & 8 — branching logic extended to three paths (§5):**
+  - **Re-presentation required = Yes** → opens Task 8 (unchanged).
+  - **Re-presentation required = No AND moved to next stage = Yes** → opens **Task 9 (Solution Blueprint Payment) AND Task 10 (Project Proposal Submission) simultaneously**. Previously only Task 9 was opened in this scenario.
+  - **Re-presentation required = No AND moved to next stage = No** → opens **Task 17 (Project Closure) directly**, short-circuiting the remaining workflow. Previously this path did not exist; a "No" answer always proceeded to Task 9.
+- **Workflow engine — multi-condition branch support (§4.11):** the workflow JSON's `on_close.branches` array now supports a `conditions` key (an array of `{field, equals}` objects, all of which must be satisfied — AND semantics) in addition to the existing single `field`/`equals` keys. Both formats are evaluated correctly by the task engine.
+
+**Changelog v14.0:**
+- **`users.employee_id` is unique** — enforced at both the form/serializer and DB level, with a user-friendly duplicate message.
+- **Users can hold multiple roles** — the user form's role control is now a multi-select; each selected role is a Django Group membership. Permission checks are any-match across a user's roles; where scopes differ (e.g. Lead Admin sees all leads, Lead Manager sees own), the user gets the union of their roles' scopes.
+- **New task status `skipped` (§4.4):** when a branch condition routes around tasks so they can never open (Solution Blueprint = No skips Tasks 6–9; Re-presentation = No skips Task 8; Extension approved = No skips Tasks 14–16), their status flips from `pending` to `skipped` so the path taken is explicit. On lead completion, any still-pending tasks also become `skipped`.
+- **Pending tasks are not listed** — task lists (My Tasks, the lead's workflow view) only show tasks that have actually opened (`open` / `hold` / `closed`) plus `skipped` ones; `pending` rows are hidden.
+- **Resource allocation — extension handover (§4.7):** when Task 16 (Extension Implementation) closes, the **superseded previous cycle's allocation row auto-closes** (the Implementation row on the first extension, the previous Extension row on later ones) instead of staying open until final closure. The **new Extension allocation row is prefilled with the previous cycle's allocated resources** when it is created at Task 15, so the Resource Manager only adjusts what changed.
+- **Under-allocation indicator (§4.7):** alongside the red "exceeded" flag, an **amber indicator** shows when the Resource Manager allocates **fewer** resources than the required man-power.
+- **User-friendly validation errors:** task-field errors reference the field's display label (e.g. `"Expected start date of next stage" is required.`) — never internal field keys.
+- **UX:** Save as Draft and Save & Complete both return the user to the My Tasks page; checklist tickmarks toggle instantly on click (optimistic update, larger touch target).
+
+**Changelog v13.0:**
+- **Audit columns on every table (§4.0):** `created_by`, `created_on`, `updated_by`, `updated_on` — `updated_by`/`updated_on` are nullable and filled on every update; timestamps are stored automatically. Existing `created_at`/`updated_at` fields are renamed to `created_on`/`updated_on`.
+- **Reference tables (§4.2):** `countries`, `industries`, `areas`, and `belts` each gain a `status` column (`active`/`inactive`, default `active`); dropdowns offer only active rows.
+- **`belts` gains an `order` column** used to sort the Acting Belt Level / Belt dropdowns.
+- **`users.role` removed (§4.1):** role management now uses Django's default auth **Groups** table — one group per role; the effective role is derived from group membership in code.
+- **`leads.assigned_to` (§4.3):** confirmed as a plain **nullable FK** — no "Not Assigned" placeholder value is ever stored; unassigned leads have `NULL` and the "Not Assigned" label is presentation-only (handled in backend/frontend code).
+- **Data-model tables:** rows previously grouped with "/" (e.g. `created_at / updated_at`, `opened_at / closed_at`, `lead_id / task_id`) are now listed as separate rows; `lead_hold` and `task_hold` are documented as two separate tables (§4.9).
+- **Resource allocation (§4.7):** the "TBD allowed" note on `white` is removed; `project_member6`–`project_member10` added (10 project-member slots total), on the table and the allocation form.
+- **Checklists (§6):** a checklist item can be checked/unchecked directly by clicking its tickmark (in addition to the edit-popup flow).
+- **Menu naming (§6):** the hold review menu is named **"Hold Items"** (with Hold Leads and Hold Tasks views).
 
 **Changelog v12.0:**
 - Confirmed: the lead's **Domain/Area field is single-select** (a plain FK into `areas`), matching how it's used for Project ID generation. This resolves the last open question — no many-to-many join table is needed. No open items remain.
@@ -87,6 +126,8 @@
 6. Finance
 7. Employee (default — applies to all users in addition to their specific role)
 
+> **Role storage (v13):** roles are stored as **Django auth Groups** (one group per role above) — there is no role column on the user table. See §4.1.
+
 > **Role clarification (v2):**
 > - Everywhere the earlier draft said **"Finance"** performs resource allocation, receives allocation records, or owns the Project Closure screen ("Shailesh"), that functionality belongs to the **Resource Manager** role. This has been corrected throughout this document.
 > - The **Finance** role itself has no defined screens or permissions in this phase — its scope is **future work** and is not part of this build.
@@ -106,14 +147,25 @@ Apply these rules to every numeric and date field across the system (lead form, 
 
 This is the minimum table set implied by the requirements. Exact field types/constraints should be finalized during schema design, but the entities and relationships below are load-bearing for the workflow engine.
 
+### 4.0 Audit columns (every table)
+Every table in this data model carries the following audit columns (not repeated in each table below):
+
+| Field | Type | Notes |
+|---|---|---|
+| created_by | FK → users, nullable | set on insert (nullable for system-generated rows, e.g. trigger-job task opens) |
+| created_on | timestamp | set automatically on insert |
+| updated_by | FK → users, **nullable** | filled on update |
+| updated_on | timestamp, **nullable** | filled automatically on every update; NULL until first update |
+
+Where a table needs a *semantic* creator (e.g. `leads.created_by` records whether the lead came from Marketing or a Lead Manager), that column is required rather than nullable and is called out in the table.
+
 ### 4.1 `users` (Django auth-extended)
 | Field | Type | Notes |
 |---|---|---|
 | username | string | |
 | password | hashed | |
-| role | FK / choice | one of the 7 roles in §2 |
 | name | text | |
-| employee_id | number | ≥ 0 |
+| employee_id | number | ≥ 0, **unique** — duplicate IDs are rejected with a friendly message |
 | email | text | |
 | mobile_no | number | ≥ 0 |
 | acting_belt_level | FK → `belts` | see §4.2 |
@@ -121,7 +173,9 @@ This is the minimum table set implied by the requirements. Exact field types/con
 | domain | FK → `areas` | user's competency Domain — sources its dropdown from the **same `areas` reference table** used by the lead's `domain`/Area field (§4.2). One shared table, two independent fields on two different forms. |
 | date_of_joining | date | **exempt from the global "no past dates" rule** — past dates are allowed, since joining dates are inherently historical |
 
-CRUD fully owned by **User Management** role. Managed via Django Admin (role & user management panel).
+**Role management (v13, updated v14):** there is **no `role` column** on the user table. Roles are stored using Django's **default auth Groups table** — one group per role in §2, named with the role's display name (e.g. "Lead Admin"). **A user can hold multiple roles at once (v14)** — the user form's role control is a multi-select writing one group membership per selected role. Permission checks are any-match across the user's roles, and data scopes are the union of each role's scope.
+
+CRUD fully owned by **User Management** role. Managed via Django Admin (role & user management panel — groups appear under the standard Permissions section).
 
 ### 4.2 Reference Tables — `countries`, `industries`, `areas`, `belts`
 Country, Industry, Area (Domain), and Belt are each maintained as their **own reference table**, rather than hardcoded choice lists, so the business can add, rename, or recode entries without a code deployment.
@@ -133,6 +187,7 @@ Country, Industry, Area (Domain), and Belt are each maintained as their **own re
 | id | auto (PK) | |
 | name | text, unique | display value shown in the lead form's dropdown |
 | code | text, unique | short code used when building the Project ID (§13) |
+| status | dropdown (`active` / `inactive`) | **default `active`.** Only `active` rows are offered in dropdowns; inactivating a row retires it without breaking existing FKs. |
 
 - `countries` — seeded with the two rows in §13.2.
 - `industries` — seeded with the 16 rows in §13.3.
@@ -146,8 +201,10 @@ Country, Industry, Area (Domain), and Belt are each maintained as their **own re
 |---|---|---|
 | id | auto (PK) | |
 | name | text, unique | display value shown in the Acting Belt Level / Belt dropdowns |
+| order | integer | sort order for the dropdowns (`ORDER BY order, name`) |
+| status | dropdown (`active` / `inactive`) | **default `active`.** Only `active` rows are offered in dropdowns. |
 
-- `belts` — seeded with: `Potential Black`, `Black`, `White`, `Brown`, `Red`, `Potential Brown`, `Potential White`, `Potential Red`, `NA`.
+- `belts` — seeded with (in `order` 1–9): `Potential Black`, `Black`, `White`, `Brown`, `Red`, `Potential Brown`, `Potential White`, `Potential Red`, `NA`.
 - Backs **both** `users.acting_belt_level` and `users.belt` — one shared table, two independent FK fields on the user.
 
 All four tables (`countries`, `industries`, `areas`, `belts`) are managed from the **Django admin panel**.
@@ -162,18 +219,21 @@ All four tables (`countries`, `industries`, `areas`, `belts`) are managed from t
 | domain | FK → `areas` | Yes | **Single-select, confirmed.** See §4.2. Called "Domain" on the lead form and "Area" in the source workflow/Project ID sheet — same concept, same table. |
 | division | text | No | |
 | scope | text | No | |
-| assigned_to | FK → users, **nullable** | Yes for Lead Manager-created leads; system-set to `Not Assigned` for Marketing-created leads | "Default BD Person" referenced throughout workflow = this field. `NULL` / `Not Assigned` when the lead is created by **Marketing** (see §4.3.1). Required for leads created by **Lead Manager**. |
+| assigned_to | FK → users, **nullable** | Yes for Lead Manager-created leads; left `NULL` for Marketing-created leads | "Default BD Person" referenced throughout workflow = this field. **Plain nullable FK — no "Not Assigned" value is ever stored**; `NULL` means unassigned and the "Not Assigned" label is rendered by the frontend/backend code (see §4.3.1). Required for leads created by **Lead Manager**. |
 | lead_type | dropdown (`BD` / `Mining`) | Yes | Mining = future scope |
 | status | system-managed | Auto | See Status Flow table (§4.3.2) |
 | lead_id | auto | Auto | |
 | project_id | text, nullable | Auto | populated after Task 12 (Implementation) closes, and **regenerated** after each Task 16 (Extension Implementation) closure — see §13. Always mirrors the `is_current = true` row in `project_details` (§4.8); the full history of every Project ID this lead has had lives there, not here. |
 | project_id_base | text, nullable | Auto | the locked non-extension portion (country+industry+area+year+sequence), set once at Task 12 and never recomputed — see §13.1 |
 | extension | text (2-digit, zero-padded) | Auto | **Default `00`.** Increments by one (`00` → `01` → `02` ...) every time Task 16 (Extension Implementation) closes. Used directly as the extension-marker component when building/rebuilding `project_id` (§13). |
-| created_by | FK → users | Auto | records whether the lead originated from Marketing or Lead Manager |
-| created_at / updated_at | timestamp | Auto | |
+| drop_remark | text | No | **(v16)** Optional reason captured via popup when the lead is dropped; shown on the Lead Detail page while the lead is `Dropped`. |
+| created_by | FK → users | Auto | records whether the lead originated from Marketing or Lead Manager (required — semantic creator, see §4.0) |
+| created_on | timestamp | Auto | |
+| updated_by | FK → users, nullable | Auto | |
+| updated_on | timestamp, nullable | Auto | |
 
 #### 4.3.1 Marketing-sourced leads & workflow start condition
-- **Marketing** can add a lead but has **no control over `assigned_to`** — the field is hidden/disabled on their form. On save, `assigned_to` is set to `Not Assigned` and the lead sits in a pre-workflow state (no Task 1 yet).
+- **Marketing** can add a lead but has **no control over `assigned_to`** — the field is hidden/disabled on their form. On save, `assigned_to` is left `NULL` (displayed as "Not Assigned" by the UI) and the lead sits in a pre-workflow state (no Task 1 yet).
 - **Marketing can view and edit the leads they created** (all fields except `assigned_to`) at any point — this is not limited to the initial add. They do not gain the ability to assign an owner themselves.
 - **Lead Admin** can edit any `Not Assigned` lead and assign it to a user. The act of assigning an owner is what **starts the BD workflow** (opens Task 1) for that lead.
 - **Lead Manager**-created leads continue to work as before: the Lead Manager selects the owner (themself or another BD person) at creation time, and the workflow starts immediately on save.
@@ -183,10 +243,14 @@ All four tables (`countries`, `industries`, `areas`, `belts`) are managed from t
 | Status | How set | Notes |
 |---|---|---|
 | In Progress | System — on creation | Default. Active workflow. |
-| On Hold | User — manual | Pauses the workflow and all its open tasks (§6, Hold/Unhold). |
-| Dropped | User — manual | Cancels the lead. |
+| On Hold | User — manual | Pauses the workflow and all its open tasks (§6, Hold/Unhold). **(v16)** Set via a popup that captures an optional hold remark (`lead_hold.remark`). |
+| Dropped | User — manual | Cancels the lead. **(v16)** Set via a popup that captures an optional drop remark (`leads.drop_remark`); all open/hold tasks move to `dropped`. |
 | Hybernation | System — automatic | Set when Task 12 (Implementation) closes. Cannot be set manually. |
 | Complete | System — automatic | Set when the final task (Task 17, Project Closure) closes. Cannot be set manually. |
+
+#### 4.3.3 Leads list — Tracker column & header filters (v16)
+- **Tracker column:** each lead row shows a workflow-progress tracker computed from task closure — `closed/total` task instances, a percentage, and a progress bar. `skipped` tasks (routed around by branching) are excluded from the total; extension/repeat cycles add instances, so the tracker reflects real remaining work. Bar color follows lead status: green (In Progress; darker on Complete), amber (On Hold), red (Dropped). Leads whose workflow hasn't started show "Not started". The API exposes this as `task_progress {total, closed, percent}` on the lead serializer.
+- **Header filters:** a filter row sits directly under the table headers. Company/Project and Project ID filter by free-text search; Industry, Domain, Owner (including "Not Assigned"), Current Task (options sorted numerically by task number), and Status filter via dropdowns whose options are built from the loaded data. All filters combine (AND); a "Clear filters" button in the page header resets them; an empty result keeps the filter row visible with a "No leads match the filters" message.
 
 ### 4.4 `tasks`
 | Field | Type | Notes |
@@ -195,9 +259,10 @@ All four tables (`countries`, `industries`, `areas`, `belts`) are managed from t
 | task_no | integer | sequence position in workflow (1–17 for BD) |
 | task_name | text | pulled from workflow JSON |
 | assigned_to | FK → users | |
-| status | dropdown | `pending`, `open`, `hold`, `closed` |
+| status | dropdown | `pending`, `open`, `hold`, `closed`, `skipped` — `skipped` is set automatically when a branch condition routes around the task so it can never open (5 = No → 6–9; 7 = No → 8; 13 = No → 14–16; lead completion → any remaining `pending`). Task lists show only tasks that have opened (plus `skipped`); `pending` rows are hidden. |
 | is_allocation_task | boolean | true for tasks 2, 6, 11, 15 |
-| opened_at / closed_at | timestamp | |
+| opened_at | timestamp | |
+| closed_at | timestamp | |
 | elapsed_time | duration | total active (non-hold) time — see §6 |
 
 ### 4.5 `checklists`
@@ -223,32 +288,45 @@ Task-specific fields (dates, numeric fields, fee blocks, stakeholder contact row
 | type | dropdown | `2HR`, `SNT` (Solution Blueprint), `Implementation`, `Extension` — driven by which allocation task triggered the row (2→2HR, 6→SNT, 11→Implementation, 15→Extension) |
 | execution_red | FK → users, nullable | |
 | execution_brown | FK → users, nullable | |
-| white | FK → users, nullable | TBD allowed |
+| white | FK → users, nullable | |
 | auditor1 | FK → users, nullable | |
 | auditor2 | FK → users, nullable | |
 | auditor3 | FK → users, nullable | |
 | auditor4 | FK → users, nullable | |
-| project_member1..5 | FK → users, nullable | |
+| project_member1 | FK → users, nullable | |
+| project_member2 | FK → users, nullable | |
+| project_member3 | FK → users, nullable | |
+| project_member4 | FK → users, nullable | |
+| project_member5 | FK → users, nullable | |
+| project_member6 | FK → users, nullable | |
+| project_member7 | FK → users, nullable | |
+| project_member8 | FK → users, nullable | |
+| project_member9 | FK → users, nullable | |
+| project_member10 | FK → users, nullable | |
 | remark | text | |
 | status | dropdown | `Pending` (row created, not yet filled by Resource Manager) → `Open` (form submitted, resources actively allocated) → `Closed` (resources freed — see auto-close rules below) |
 | man_power_required | integer | ≥ 0, captured from the triggering task's manpower fields, used for the over-allocation check |
-| created_at | timestamp | row is created the moment the allocation task opens |
+| created_on | timestamp | row is created the moment the allocation task opens (audit column, §4.0) |
 | closed_at | timestamp, nullable | set automatically when status transitions to `Closed` |
 
 **Owned and edited by: Resource Manager** (see role clarification in §2). The `project_id` for a given allocation cycle is no longer stored directly on this table — it lives on the linked `project_details` row (§4.8), which references this table via `resource_allocation_id`.
 
 **Business rule (over-allocation flag):** when the count of resources the Resource Manager allocates exceeds `man_power_required` captured upstream, flag the row with a red "exceeded" indicator on the reporting screen next to the Edit button.
 
-**Business rule (auto-close — resources freed up):** `status` is set to `Closed` automatically — no manual action — as follows:
+**Business rule (under-allocation flag, v14):** when the Resource Manager allocates **fewer** resources than `man_power_required`, show an **amber "below required man-power" indicator** — on the reporting screen (for submitted rows) and live inside the allocation form while editing.
+
+**Business rule (extension prefill, v14):** when an `Extension` allocation row is created (Task 15 opens), its resource fields are **prefilled with the previous cycle's allocated resources** (the `Implementation` row for the first extension, the previous `Extension` row afterwards) — the Resource Manager only adjusts what changed.
+
+**Business rule (auto-close — resources freed up, updated v14):** `status` is set to `Closed` automatically — no manual action — as follows:
 
 | Allocation type | Created at | Auto-closes when |
 |---|---|---|
 | `2HR` | Task 2 | **Task 4** (2Hr Study Reimbursement) closes |
 | `SNT` (Solution Blueprint) | Task 6 | **Task 9** (Solution Blueprint Payment) closes |
-| `Implementation` | Task 11 | **Lead status becomes `Complete`** (i.e. Task 17 closes) |
-| `Extension` (each cycle) | Task 15 | **Lead status becomes `Complete`** (i.e. Task 17 closes) |
+| `Implementation` | Task 11 | The **first Task 16 (Extension Implementation) closes** (superseded by the extension) — or **lead status becomes `Complete`** if the lead never extends |
+| `Extension` (each cycle) | Task 15 | The **next cycle's Task 16 closes** (superseded) — or, for the final cycle, **lead status becomes `Complete`** (Task 17 closes) |
 
-Note the asymmetry: `2HR` and `SNT` free up as soon as their own short engagement's final task closes, but `Implementation` and every `Extension` cycle's allocation stays `Open` for the life of the whole engagement — they only close together, all at once, when the lead finally completes. This means a lead with two extension cycles will have three resource_allocation rows (`Implementation`, `Extension`, `Extension`) that all flip to `Closed` simultaneously at final closure, not incrementally as each extension cycle is superseded by the next.
+Each cycle hands over to the next: when Task 16 closes, the superseded previous cycle's allocation closes and the new Extension allocation carries the engagement forward. Only the current cycle's allocation is ever `Open`; it closes when the lead finally completes.
 
 ### 4.8 `project_details` (Project ID history — one row per implementation/extension cycle)
 Every time a Project ID is generated or regenerated (Task 12, and each Task 16 closure), the *previous* Project ID must not be lost — the business needs to see every Project ID a lead has ever had, and how many times it went into extension. `leads.project_id` and `resource_allocation` only ever hold the *current* value, so a dedicated history table is required.
@@ -273,14 +351,30 @@ Every time a Project ID is generated or regenerated (Task 12, and each Task 16 c
 
 **Screen impact — Resource Allocation & Project Closure:** both screens should list **one line per `project_details` row**, not one line per lead — so a lead that went through two extensions shows three rows (its original implementation plus two extensions), each with its own Project ID, extension number, status, and generation date, all clearly grouped under the same lead/company. The Project Closure short-close action always operates on the `is_current = true` row.
 
-### 4.9 `lead_hold` / `task_hold`
+### 4.9 Hold tables — `lead_hold` and `task_hold`
+Two separate tables, one row per hold/unhold cycle.
+
+#### 4.9.1 `lead_hold`
 | Field | Type | Notes |
 |---|---|---|
-| lead_id / task_id | FK | |
+| lead_id | FK → leads | |
 | hold_at | timestamp | |
 | hold_by | FK → users | |
+| remark | text | **(v16)** optional reason captured via popup when the lead is put on hold |
 | unhold_at | timestamp, nullable | |
 | unhold_by | FK → users, nullable | |
+| unhold_remark | text | **(v16)** optional reason captured via popup when the lead is unheld |
+
+#### 4.9.2 `task_hold`
+| Field | Type | Notes |
+|---|---|---|
+| task_id | FK → tasks | |
+| hold_at | timestamp | |
+| hold_by | FK → users | |
+| remark | text | **(v16)** optional reason captured via popup when the task is put on hold; carries the lead-level remark when the hold came from a lead-level hold |
+| unhold_at | timestamp, nullable | |
+| unhold_by | FK → users, nullable | |
+| unhold_remark | text | **(v16)** optional reason captured via popup when the task is unheld; carries the lead-level remark when released by a lead-level unhold |
 
 Used to compute elapsed/active time: `elapsed_time = (closed_at - opened_at) - Σ(unhold_at - hold_at)`.
 
@@ -329,13 +423,13 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 | # | Task Name | Assigned To | Checklist | Extra Fields | Notes |
 |---|---|---|---|---|---|
 | 1 | Introduction and First Meeting | Default BD Person | 1.1 Vector's Intro Email · 1.2 Intro presentation to decision maker · 1.3 Area of work/objective agreed · 1.4 Email sent to initiate study · 1.5 First meeting completed | Expected start date of next stage; Manpower required (Brown — number, White — number); Key stakeholder contact form (Name, Role — 3 rows default + "add more") | First task; opens when the lead gets an assigned owner (see §4.3.1) |
-| 2 | 2Hr Study & Presentation Team Allocation | Resource Manager by default | *None — allocation task* | Status only (pending until closed) | Opens per `workflow_trigger_config` offset before the expected start date from Task 1. On open, inserts a `resource_allocation` row (type = `2HR`) with fields: execution_red, execution_brown, white, auditor1, auditor2 (TBD allowed for white) |
+| 2 | 2Hr Study & Presentation Team Allocation | Resource Manager by default | *None — allocation task* | Status only (pending until closed) | Opens per `workflow_trigger_config` offset before the expected start date from Task 1. On open, inserts a `resource_allocation` row (type = `2HR`) with fields: execution_red, execution_brown, white, auditor1, auditor2 |
 | 3 | 2Hr Study & Presentation | User assigned by Resource Manager in Task 2 | 3.1 Study plan done · 3.2 NDA formality completed · 3.3 Study interactions done · 3.4 Data received · 3.5 2Hr presentation date confirmed · 3.6 2Hr presentation done | Date of 2Hr presentation (date); Key stakeholders mapped form (Name, Role — 3 rows + add more) | |
 | 4 | 2Hr Study Reimbursement | User assigned by Resource Manager in Task 2 | 4.1 Reimbursement expenses invoiced · 4.2 Reimbursement expenses received | Delay reasons if any (text); Expected date of receipt (date) | Opens after 3.6. **On close: the `2HR`-type `resource_allocation` row (from Task 2) auto-closes — resources freed up.** |
 | 5 | Solution Blueprint Proposal | Default BD Person | 5.1 Proposal submitted · 5.2 Proposal terms agreed | Is Solution Blueprint required? (Yes/No). **If Yes:** Fee for engagement (allow zero, no negative); Manpower (Brown — number, White — number); Expected start date of next stage; Number of tranches of payment (number) | Opens after 3.6. **If No → skip to Task 10** (Project Proposal Submission) |
 | 6 | Solution Blueprint Team Allocation | Resource Manager by default | *None — allocation task* | Status only | Opens per `workflow_trigger_config` offset before the expected start date from Task 5. Creates `resource_allocation` row (type = `SNT`): execution_red, execution_brown, white, auditor1, auditor2 |
-| 7 | Solution Blueprint | User assigned by Resource Manager (Solution Blueprint block) | 7.1 Engagement start · 7.2 Initial invoice raised · 7.3 Data receipt · 7.4 Presentation dates locked · 7.5 SnT workshop done · 7.6 Completion invoice | Presentation date (date); Invoices raised block (Invoice Number, Value, Date — 3 rows + add more); Re-presentation required? (Yes/No) | If re-presentation required → Yes opens Task 8; No → opens Task 9 |
-| 8 | Solution Blueprint Repeat Presentation | Same execution red/BD/brown as Task 7 (default) | 8.1 Presentation dates locked · 8.2 SnT workshop done | Presentation date (linked to 8.1); Re-presentation required again? (Yes/No) | Loops back to itself if Yes, else opens Task 9 |
+| 7 | Solution Blueprint | User assigned by Resource Manager (Solution Blueprint block) | 7.1 Engagement start · 7.2 Initial invoice raised · 7.3 Data receipt · 7.4 Presentation dates locked · 7.5 SnT workshop done · 7.6 Completion invoice | Presentation date (date); Invoices raised block (Invoice Number, Value, Date — 3 rows + add more); Re-presentation required? (Yes/No); **Has project moved to the next stage? (Yes/No — shown & required only when Re-presentation required = No)** | Three paths on close: **(1)** Re-presentation required = Yes → opens Task 8. **(2)** Re-presentation required = No AND moved to next stage = Yes → opens Task 9 (Solution Blueprint Payment) AND Task 10 (Project Proposal Submission) simultaneously. **(3)** Re-presentation required = No AND moved to next stage = No → opens Task 17 (Project Closure) directly. |
+| 8 | Solution Blueprint Repeat Presentation | Same execution red/BD/brown as Task 7 (default) | 8.1 Presentation dates locked · 8.2 SnT workshop done | Presentation date (date); Re-presentation required again? (Yes/No); **Has project moved to the next stage? (Yes/No — shown & required only when Re-presentation required again = No)** | Three paths on close: **(1)** Re-presentation required again = Yes → loops back to Task 8 (new instance). **(2)** Re-presentation required again = No AND moved to next stage = Yes → opens Task 9 AND Task 10 simultaneously. **(3)** Re-presentation required again = No AND moved to next stage = No → opens Task 17 (Project Closure) directly. |
 | 9 | Solution Blueprint Payment | User assigned by Resource Manager (Solution Blueprint block) | 9.1 Fixed fee invoices received · 9.2 Reimbursement expenses invoiced · 9.3 Reimbursement expenses received | Delay reasons if any (text); Expected date of receipt (date) | **On close: the `SNT`-type `resource_allocation` row (from Task 6) auto-closes — resources freed up.** |
 | 10 | Project Proposal Submission | Default BD Person | 10.1 Proposal submission · 10.2 Terms agreed | Planned engagement start date; Planned engagement end date; Period (months); Fixed fee (blocks generated based on period months, capturing fee + manpower per block); Total variable fee cap; Variable milestone fee cap; Variable performance fee cap; Manpower (Brown — number, White — number) | Entry point when Solution Blueprint was skipped |
 | 11 | Project Team Allocation | Resource Manager by default | *None — allocation task* | Status only | Opens per `workflow_trigger_config` offset before Planned Engagement Start Date (Task 10). Creates `resource_allocation` row (type = project/implementation): execution_red, execution_brown, white, auditor1, auditor2 |
@@ -343,8 +437,8 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 | 13 | Extension Proposal | View: same BD; Edit: execution red | 13.1 Discuss next set of problems with client · 13.2 Identify area of extension · 13.3 Solution design & preparation · 13.4 Pitch extension proposal | Extension approved? (Yes/No) | Opens per `workflow_trigger_config` offset (2 months) before engagement end date (Task 12). If No → opens Task 17 (Project Closure). If Yes → opens Task 14 |
 | 14 | Extension Detail | View: same BD; Edit: execution red | 13.8 Addendum agreement · 13.9 Expected variable fee over eligible period submitted | Engagement start date; Engagement end date; Period (months); Actual fixed fee invoice date; Variable fee start date; Manpower (Brown, White) | Opens only if Task 13 approved = Yes |
 | 15 | Project Extension Team Allocation | Resource Manager by default | *None — allocation task* | Status only | Opens if Task 13 approved = Yes. Creates `resource_allocation` row (type = `Extension`) |
-| 16 | Extension Implementation | Execution red (assigned by Resource Manager via Task 15) | Same checklist set as Task 12 (12.1–12.8) | Engagement start date; Engagement end date; Period (months); Actual fixed fee invoice date; Variable fee start date | **On close: `leads.extension` increments by one (e.g. `00`→`01`, `01`→`02`). `project_id` is regenerated using the new extension value and updated on `leads`. The previous `project_details` row flips to `status = Extended`; a new `project_details` row is inserted for the new extension_no, linked to this cycle's Task 15 `resource_allocation` row. That `Extension`-type `resource_allocation` row stays `Open` — it does not auto-close here.** Then loops back to Task 13 (new extension cycle). Repeats until Task 13 = No |
-| 17 | Project Closure | Execution red | 16.1 All fixed fee received · 16.2 All variable fee received · 16.3 All reimbursements received | Final closed (Yes/No) | Opens when **any** of: engagement end date (from Task 12) is reached, **or** Task 13's "Extension approved" = No, **or** the Resource Manager short-closes the project from the Project Closure screen. **On close: lead status → `Complete`; the current `project_details` row's status → `Complete`; every `Implementation`- and `Extension`-type `resource_allocation` row for this lead auto-closes (resources freed up) — all at once, regardless of how many extension cycles ran.** |
+| 16 | Extension Implementation | Execution red (assigned by Resource Manager via Task 15) | Same checklist set as Task 12 (12.1–12.8) | Engagement start date; Engagement end date; Period (months); Actual fixed fee invoice date; Variable fee start date | **On close: `leads.extension` increments by one (e.g. `00`→`01`, `01`→`02`). `project_id` is regenerated using the new extension value and updated on `leads`. The previous `project_details` row flips to `status = Extended`; a new `project_details` row is inserted for the new extension_no, linked to this cycle's Task 15 `resource_allocation` row. The superseded previous cycle's `resource_allocation` row (Implementation, or the prior Extension) auto-closes — this cycle's `Extension` row stays `Open` (v14).** Then loops back to Task 13 (new extension cycle). Repeats until Task 13 = No |
+| 17 | Project Closure | Execution red | 16.1 All fixed fee received · 16.2 All variable fee received · 16.3 All reimbursements received | Final closed (Yes/No) | Opens when **any** of: engagement end date (from Task 12) is reached, **or** Task 13's "Extension approved" = No, **or** the Resource Manager short-closes the project from the Project Closure screen. **On close: lead status → `Complete`; the current `project_details` row's status → `Complete`; the current cycle's still-open `Implementation`/`Extension` `resource_allocation` row auto-closes (earlier cycles already closed when they were superseded, v14); any still-pending tasks become `skipped`.** |
 
 **Cross-cutting rules:**
 - "Default BD Person" = the user the lead is assigned to on the lead form (`leads.assigned_to`).
@@ -359,6 +453,7 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 ### Checklist rules
 - Two fields per checklist item: `status` (`not_started` / `inprogress` / `complete`) and `remark`.
 - Edited via an edit icon per checklist row → opens a popup with `status` + `remark`.
+- **A checklist item can also be checked/unchecked directly by clicking its tickmark** — clicking toggles between `complete` and `not_started` without opening the popup (the popup remains available for `inprogress` and remarks).
 - Every save persists immediately and independently of task closure, and records the edit timestamp.
 - Un-checking a previously checked item is allowed.
 
@@ -368,9 +463,9 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 3. If a task isn't assigned to a user but the parent lead is, that user gets **view-only** access to the task.
 4. Closed tasks are non-editable.
 5. Allocation tasks (2, 6, 11, 15) show status only (no checklist/extra fields) until closed by the Resource Manager.
-6. Every task has **Save as Draft** (persists without closing) and **Save & Complete** (validates + closes + opens next task per workflow).
-
-> **Phase 13 override (2026-07-15, confirmed with the user):** for post-allocation execution tasks (3, 4, 7, 8, 9, 12, 13, 14, 16, 17) the *editor* is the allocated **Execution Brown + White(s)**; **Execution Red is a view-only overseer** across all steps (as are the BD owner / Lead Manager). `Task.assigned_to` resolves to the current allocation's Execution Brown (or its first White when Brown is empty); the other Whites of that allocation co-edit. This supersedes the "Execution red" / "Edit: execution red" assignee cells in the workflow table above (Tasks 12/13/14/16/17) and the "assigned to the Execution Red" wording in §4.7 / PRD §5.7. Every person on any of the lead's allocation rows (Red, auditors, project members, Whites) additionally gets view-only access to every step.
+6. Every task has **Save as Draft** (persists without closing) and **Save & Complete** (validates + closes + opens next task per workflow). *(The v14 "return to the My Tasks page" clause is void — confirmed with the user 2026-07-16 that no My Tasks screen exists or will be built; tasks are worked from the lead's task stepper, and both actions keep the user there.)*
+7. Validation errors always reference the field's **display label**, never internal field keys (v14).
+8. Task lists show only tasks that have opened (`open` / `hold` / `closed`) plus `skipped` ones — `pending` tasks are hidden (v14).
 
 ### Task Reassignment
 - Any task can be reassigned to a different user.
@@ -381,24 +476,27 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 - **Lead-level:** holding a lead puts all its open tasks on hold; unholding restores them to unhold state.
 - **Task-level:** a held task is non-editable; unholding restores normal edit behavior.
 - Every hold/unhold transition records timestamp + acting user (`lead_hold`, `task_hold` tables) so **elapsed/active time** can be computed by subtracting held duration from total duration.
-- Dedicated menus required: **"Held Tasks"** (all tasks currently on hold) and **"Held Leads"** (all leads currently on hold).
+- **Remark popups (v16):** every hold, unhold, and drop action (lead-level and task-level) opens a popup asking the acting user for a **remark — optional**; the action proceeds with or without one. Remarks are stored per hold/unhold cycle (`remark` / `unhold_remark` on `lead_hold` and `task_hold`; `leads.drop_remark` for drops), appended to the activity-log description, and displayed as a banner on the Lead/Task Detail pages while the item is on hold (or dropped). A lead-level hold/unhold copies its remark onto the task holds it creates/releases.
+- A dedicated **"Hold Items"** menu is required, with two views: **"Hold Tasks"** (all tasks currently on hold) and **"Hold Leads"** (all leads currently on hold).
 
 ---
 
 ## 7. Resource Allocation Flow (Detail)
 
 1. An allocation task (2 / 6 / 11 / 15) opens per the `workflow_trigger_config` offset rules (§4.12).
-2. A `resource_allocation` row is inserted immediately: `lead_id`, `type` (`2HR` / `SNT` / `Extension`/ implementation), all resource fields empty, plus `remark`, `status`.
+2. A `resource_allocation` row is inserted immediately: `lead_id`, `type` (`2HR` / `SNT` / `Extension`/ implementation), all resource fields empty, plus `remark`, `status`. **Exception (v14): `Extension` rows are prefilled with the previous cycle's allocated resources.**
 3. The row becomes visible to the **Resource Manager** role with an **Edit** action.
 4. The Resource Manager opens the edit form. The screen shows an **accordion with the lead's details** (including the man-power figure captured upstream) above the resource allocation form itself, so allocation happens against the required headcount.
 5. On submit:
    - The allocation task closes.
    - The next workflow task opens and is assigned to the `execution_red` selected by the Resource Manager.
-6. Reporting screen: shows all resource allocation rows with an Edit button; if allocated resource count > required man-power, show a **red exceeded-indicator icon** next to Edit.
+6. Reporting screen: shows all resource allocation rows with an Edit button; if allocated resource count > required man-power, show a **red exceeded-indicator icon** next to Edit; if the allocated count is **below** the required man-power (on a submitted row), show an **amber under-allocation icon** (v14).
 
 ---
 
 ## 8. Follow-Up Requests
+
+> **Phase 12 override (confirmed with the user 2026-07-16):** follow-up creation is broadened beyond Lead Managers — **anyone who can view a lead** (its owner, a task assignee, the Resource Manager, …) may raise a follow-up on it, from both the lead's Follow-up tab and the standalone Other Tasks screen. This supersedes the LM-only wording below and the "Add follow-up task" row in §12.
 
 - Lead Manager can add a follow-up against a lead (button on the lead row, or a global "Add Follow-up" button with a lead dropdown).
 - Fields: Lead (dropdown, if not launched from the lead row), assignee (dropdown of Employee-role users, including the Lead Manager themself), follow-up date (must not be a past date), remark.
@@ -439,7 +537,7 @@ The **Finance** role is defined in the role list but has **no screens, permissio
 ## 10. Marketing Role
 
 - Can **add** a lead (all standard lead fields) but the `assigned_to` field is hidden/disabled on their form.
-- On save, `assigned_to` is forced to `Not Assigned`; the lead is created but the BD workflow does **not** start yet (no Task 1).
+- On save, `assigned_to` is left `NULL` (shown as "Not Assigned" in the UI); the lead is created but the BD workflow does **not** start yet (no Task 1).
 - **Can view and edit the leads they created** at any time (all fields except `assigned_to`) — this is not limited to the initial add screen. They cannot assign an owner themselves; only Lead Admin can do that.
 - Once Lead Admin assigns an owner and the workflow starts, Marketing retains view/edit rights to the lead's own fields (not workflow tasks) — task-level access continues to follow the standard assignment/visibility rules in §6.
 

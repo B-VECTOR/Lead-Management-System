@@ -57,19 +57,16 @@ def task_defs_for(lead_type):
 def _resolve_assignee(lead, tdef):
     """Who the step opens assigned to.
 
-    ``default_bd_person`` → the lead's owner. ``execution_brown`` → the allocated
-    editor of the current block (Execution Brown, or its first White if Brown is
-    empty); None until an allocation is filled (Phase 13 — Brown/White edit, Red
-    is a view-only overseer). ``resource_manager`` allocation tasks stay
-    unassigned — the Resource Manager reaches them via the role-scoped allocation
-    screen. ``execution_red`` is retained for any admin-edited workflow that
-    still names it.
+    ``default_bd_person`` → the lead's owner. ``execution_red`` → the Execution
+    Red the Resource Manager allocated for the current block (§7.5); None until
+    an allocation is filled. *(The Phase-13 Brown/White-editor override was
+    rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
+    ``resource_manager`` allocation tasks stay unassigned — the Resource Manager
+    reaches them via the role-scoped allocation screen.
     """
     assignee = tdef.get("assignee")
     if assignee == "default_bd_person":
         return lead.assigned_to
-    if assignee == "execution_brown":
-        return resources.latest_task_assignee(lead)
     if assignee == "execution_red":
         return resources.latest_execution_red(lead)
     return None
@@ -226,6 +223,10 @@ def validate_extra_fields(tdef, values, *, require_mandatory, lead_created_date=
     errors = {}
     for field in tdef.get("extra_fields", []):
         key = field["key"]
+        # Error text always references the display label, never the internal
+        # key (Tech Req §6 rule 7 v14); the dict stays keyed by field name so
+        # the frontend can still attach each error to its input.
+        label = field.get("label", key)
         value = values.get(key)
         if field.get("type") == "rowgroup":
             row_errors = _validate_rowgroup(field, value)
@@ -233,11 +234,11 @@ def validate_extra_fields(tdef, values, *, require_mandatory, lead_created_date=
                 errors[key] = row_errors
             continue
         if require_mandatory and _field_required(field, values) and _is_empty(value):
-            errors[key] = "This field is required to complete the task."
+            errors[key] = f"“{label}” is required to complete the task."
             continue
         msg = _validate_scalar(field, value, lead_created_date=lead_created_date)
         if msg:
-            errors[key] = msg
+            errors[key] = f"“{label}”: {msg}"
     if errors:
         # Keyed by field name; callers decide whether to nest under a key.
         raise serializers.ValidationError(errors)
@@ -285,13 +286,45 @@ def assert_closable(task, tdef):
     )
 
 
-def _route_targets(tdef, values):
-    """The successor ``task_no``\\s per the first matching routing rule."""
+def _matched_route(tdef, values):
+    """The first matching routing rule — ``{"open": [...], "skip": [...]}``.
+
+    A rule's ``when`` is a single ``{field, equals}`` condition or a list of
+    them — a list must match in full (AND semantics, Tech Req §4.11 v15).
+    """
     for rule in tdef.get("routing", []):
         when = rule.get("when")
-        if when is None or values.get(when["field"]) == when["equals"]:
-            return rule.get("open", [])
-    return []
+        conditions = [] if when is None else (when if isinstance(when, list) else [when])
+        if all(values.get(c["field"]) == c["equals"] for c in conditions):
+            return rule
+    return {}
+
+
+def _materialize_skips(lead, defs, task_nos):
+    """Create ``skipped`` task rows for branch-routed-around steps (§4.4 v14).
+
+    Tasks are otherwise created lazily, so a step a branch routes around would
+    simply never exist — the ``skipped`` row makes the path taken explicit in
+    task lists and the stepper. Only materialized when the lead has **no**
+    instance of that ``task_no`` yet (a repeat/extension cycle that already ran
+    the step keeps its closed rows rather than gaining a confusing skipped one).
+    No checklist is instantiated — a skipped step is never worked.
+    """
+    skipped = []
+    for no in task_nos:
+        tdef = defs.get(no)
+        if tdef is None or lead.tasks.filter(task_no=no).exists():
+            continue
+        skipped.append(
+            Task.objects.create(
+                lead=lead,
+                task_no=no,
+                task_name=tdef["name"],
+                status=Task.Status.SKIPPED,
+                is_allocation_task=tdef.get("is_allocation_task", False),
+            )
+        )
+    return skipped
 
 
 def _apply_on_close(task, tdef, user):
@@ -308,6 +341,12 @@ def _apply_on_close(task, tdef, user):
 
     if oc.get("close_allocations"):
         resources.close_allocations(lead, oc["close_allocations"])
+    # Cycle handover (§4.7 v14): closing Task 16 frees the superseded previous
+    # cycle's Implementation/Extension row; only the current cycle stays Open.
+    if oc.get("close_superseded_allocations"):
+        resources.close_superseded_allocations(
+            lead, oc["close_superseded_allocations"]
+        )
 
     pid = oc.get("project_id")
     pd = oc.get("project_details")
@@ -323,6 +362,12 @@ def _apply_on_close(task, tdef, user):
     if oc.get("lead_status"):
         lead.status = oc["lead_status"]
         lead.save(update_fields=["status", "updated_at"])
+        # On lead completion any still-pending (trigger-gated) tasks can never
+        # open — mark them skipped so the path taken stays explicit (§4.4 v14).
+        if lead.status == Lead.Status.COMPLETE:
+            lead.tasks.filter(status=Task.Status.PENDING).update(
+                status=Task.Status.SKIPPED
+            )
 
 
 @transaction.atomic
@@ -358,8 +403,13 @@ def complete_task(task, user):
     # the successor's assignee resolution / trigger checks see the new state.
     _apply_on_close(task, tdef, user)
 
+    rule = _matched_route(tdef, task.extra_fields or {})
+    # Steps the chosen branch routes around become explicit `skipped` rows
+    # (§4.4 v14) — the rule's `skip` list is data in the workflow JSON.
+    _materialize_skips(task.lead, defs, rule.get("skip", []))
+
     opened = []
-    for target_no in _route_targets(tdef, task.extra_fields or {}):
+    for target_no in rule.get("open", []):
         target_def = defs.get(target_no)
         if target_def is None:
             continue

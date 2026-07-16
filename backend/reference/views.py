@@ -4,25 +4,28 @@ from .models import Area, Country, Industry
 from .serializers import AreaSerializer, CountrySerializer, IndustrySerializer
 
 
-class CountryListView(ListAPIView):
-    """Read-only list of countries, for the lead form's Country select."""
+# Dropdowns offer only active rows (§4.2 v13) — an inactivated entry is
+# retired from new selections but keeps existing FKs valid.
 
-    queryset = Country.objects.all()  # ordered by name (Meta.ordering)
+class CountryListView(ListAPIView):
+    """Read-only list of active countries, for the lead form's Country select."""
+
+    queryset = Country.objects.filter(status=Country.Status.ACTIVE)  # ordered by name
     serializer_class = CountrySerializer
     pagination_class = None
 
 
 class IndustryListView(ListAPIView):
-    """Read-only list of industries, for the lead form's Industry select."""
+    """Read-only list of active industries, for the lead form's Industry select."""
 
-    queryset = Industry.objects.all()
+    queryset = Industry.objects.filter(status=Industry.Status.ACTIVE)
     serializer_class = IndustrySerializer
     pagination_class = None
 
 
 class AreaListView(ListAPIView):
-    """Read-only list of areas, for the lead/user forms' Domain select."""
+    """Read-only list of active areas, for the lead/user forms' Domain select."""
 
-    queryset = Area.objects.all()
+    queryset = Area.objects.filter(status=Area.Status.ACTIVE)
     serializer_class = AreaSerializer
     pagination_class = None

@@ -15,6 +15,7 @@ from .views import (
     LeadActivityListView,
     LeadAttachmentListCreateView,
     LeadDetailView,
+    LeadDropView,
     LeadHoldView,
     LeadListCreateView,
     LeadResourceAllocationListView,
@@ -55,6 +56,12 @@ urlpatterns = [
         "api/leads/<int:pk>/unhold/",
         LeadHoldView.as_view(action="unhold"),
         name="api-lead-unhold",
+    ),
+    # Drop (Phase 14d — Tech Req §4.3.2 v16: popup + remark + task cascade)
+    path(
+        "api/leads/<int:pk>/drop/",
+        LeadDropView.as_view(),
+        name="api-lead-drop",
     ),
     path(
         "api/tasks/<int:pk>/hold/",

@@ -12,13 +12,11 @@ Each task is a dict:
 - ``task_no`` int, ``name`` str.
 - ``assignee``: how the engine resolves ``Task.assigned_to`` when it opens the
   step — ``default_bd_person`` (the lead's ``assigned_to``), ``resource_manager``
-  or ``execution_brown``. The latter two are resolved by the Resource-Manager
-  allocation flow in **Phase 6**; until then the engine opens those steps
-  unassigned (Tech Req §6 gives the lead owner view-only access).
-  ``execution_brown`` resolves to the current allocation's Execution Brown (or
-  its first White if Brown is empty) — the allocated resource who *edits* the
-  step. The Execution Red is a view-only overseer across all steps and is not an
-  assignee (Phase 13 override of PRD §5.7, confirmed with the user 2026-07-15).
+  or ``execution_red``. The latter two are resolved by the Resource-Manager
+  allocation flow (Phase 6); ``execution_red`` resolves to the Execution Red the
+  Resource Manager picked on the current allocation — the successor of every
+  allocation task is assigned to them (§7.5). *(The Phase-13 Brown/White-editor
+  override was rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
 - ``is_allocation_task`` / ``allocation_type``: tasks 2/6/11/15 carry no
   checklist or fields — they show status only until the Resource Manager
   submits the allocation form (Phase 6). ``allocation_type`` drives which
@@ -29,7 +27,9 @@ Each task is a dict:
 - ``on_close``: Phase-6 side effects applied by the engine after this task
   closes, keyed generically so no task number is hardcoded:
   ``close_allocations`` (list of allocation types to auto-close — resources
-  freed), ``lead_status`` (system-only status to set on the lead),
+  freed), ``close_superseded_allocations`` (cycle handover, §4.7 v14 — close
+  every non-closed row of the listed types except the most recent one),
+  ``lead_status`` (system-only status to set on the lead),
   ``project_id`` (``"generate"`` at Task 12 / ``"regenerate"`` at Task 16), and
   ``project_details`` (``{"allocation_type"}`` to open/cycle a history row, or
   the string ``"complete"`` to mark the current cycle Complete). See
@@ -46,10 +46,15 @@ Each task is a dict:
   and for ``rowgroup`` a ``columns`` list + ``min_rows``. Numeric/date values
   obey the global rules (§3): number ≥ 0, no past dates.
 - ``routing``: ordered rules the engine evaluates on closure to decide which
-  task(s) open next. Each rule: optional ``when`` (``{"field", "equals"}``
-  matched against this task's submitted ``extra_fields``) and ``open`` (list of
-  successor ``task_no``\\s). First matching rule wins; a rule with no ``when``
-  is the default. ``"open": []`` (or no matching rule) means terminal.
+  task(s) open next. Each rule: optional ``when`` — either a single
+  ``{"field", "equals"}`` condition or a **list** of them, all of which must
+  match (AND, Tech Req §4.11 v15) — matched against this task's submitted
+  ``extra_fields``, and ``open`` (list of successor ``task_no``\\s). First
+  matching rule wins; a rule with no ``when`` is the default. ``"open": []``
+  (or no matching rule) means terminal. A rule may also carry ``skip`` — the
+  ``task_no``\\s this branch routes around, materialized as ``skipped`` task
+  rows so the path taken is explicit (Tech Req §4.4 v14); only steps the lead
+  has never instantiated are materialized.
 """
 
 
@@ -103,7 +108,7 @@ BD_WORKFLOW = {
         {
             "task_no": 3,
             "name": "2Hr Study & Presentation",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("3.1", "Study plan done"),
                 ("3.2", "NDA formality completed"),
@@ -123,7 +128,7 @@ BD_WORKFLOW = {
         {
             "task_no": 4,
             "name": "2Hr Study Reimbursement",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("4.1", "Reimbursement expenses invoiced"),
                 ("4.2", "Reimbursement expenses received"),
@@ -153,8 +158,10 @@ BD_WORKFLOW = {
                 {"key": "expected_start_date", "label": "Expected start date of next stage", "type": "date", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
                 {"key": "payment_tranches", "label": "Number of tranches of payment", "type": "number", "required_when": {"field": "solution_blueprint_required", "equals": "Yes"}},
             ],
+            # Blueprint = No routes around the whole Solution-Blueprint block
+            # (6–9) — those steps are materialized `skipped` (§4.4 v14).
             "routing": [
-                {"when": {"field": "solution_blueprint_required", "equals": "No"}, "open": [10]},
+                {"when": {"field": "solution_blueprint_required", "equals": "No"}, "open": [10], "skip": [6, 7, 8, 9]},
                 {"open": [6]},
             ],
         },
@@ -173,7 +180,7 @@ BD_WORKFLOW = {
         {
             "task_no": 7,
             "name": "Solution Blueprint",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("7.1", "Engagement start"),
                 ("7.2", "Initial invoice raised"),
@@ -197,16 +204,32 @@ BD_WORKFLOW = {
                     ],
                 },
                 {"key": "re_presentation_required", "label": "Re-presentation required?", "type": "boolean", "required": True},
+                {
+                    "key": "moved_to_next_stage",
+                    "label": "Has project moved to the next stage?",
+                    "type": "boolean",
+                    "required_when": {"field": "re_presentation_required", "equals": "No"},
+                },
             ],
+            # Three paths (PRD v3 / Tech Req v15): re-presentation loops to 8;
+            # otherwise "moved to next stage" decides between payment + proposal
+            # in parallel (9, 10) and a direct short-circuit to closure (17).
             "routing": [
                 {"when": {"field": "re_presentation_required", "equals": "Yes"}, "open": [8]},
-                {"open": [9]},
+                {"when": [
+                    {"field": "re_presentation_required", "equals": "No"},
+                    {"field": "moved_to_next_stage", "equals": "Yes"},
+                ], "open": [9, 10], "skip": [8]},
+                {"when": [
+                    {"field": "re_presentation_required", "equals": "No"},
+                    {"field": "moved_to_next_stage", "equals": "No"},
+                ], "open": [17], "skip": [8]},
             ],
         },
         {
             "task_no": 8,
             "name": "Solution Blueprint Repeat Presentation",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("8.1", "Presentation dates locked"),
                 ("8.2", "SnT workshop done"),
@@ -214,17 +237,31 @@ BD_WORKFLOW = {
             "extra_fields": [
                 {"key": "presentation_date", "label": "Presentation date", "type": "date", "required": True},
                 {"key": "re_presentation_required_again", "label": "Re-presentation required again?", "type": "boolean", "required": True},
+                {
+                    "key": "moved_to_next_stage",
+                    "label": "Has project moved to the next stage?",
+                    "type": "boolean",
+                    "required_when": {"field": "re_presentation_required_again", "equals": "No"},
+                },
             ],
-            # Loops back to itself while Yes, else proceeds to payment (9).
+            # Loops back to itself while Yes; otherwise the same three-path fork
+            # as Task 7 (PRD v3 / Tech Req v15): 9 + 10 in parallel, or 17.
             "routing": [
                 {"when": {"field": "re_presentation_required_again", "equals": "Yes"}, "open": [8]},
-                {"open": [9]},
+                {"when": [
+                    {"field": "re_presentation_required_again", "equals": "No"},
+                    {"field": "moved_to_next_stage", "equals": "Yes"},
+                ], "open": [9, 10]},
+                {"when": [
+                    {"field": "re_presentation_required_again", "equals": "No"},
+                    {"field": "moved_to_next_stage", "equals": "No"},
+                ], "open": [17]},
             ],
         },
         {
             "task_no": 9,
             "name": "Solution Blueprint Payment",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("9.1", "Fixed fee invoices received"),
                 ("9.2", "Reimbursement expenses invoiced"),
@@ -234,10 +271,11 @@ BD_WORKFLOW = {
                 {"key": "delay_reasons", "label": "Delay reasons if any", "type": "text", "required": False},
                 {"key": "expected_receipt_date", "label": "Expected date of receipt", "type": "date", "required": True},
             ],
-            # SNT allocation frees up on close (§4.7); flow converges on the
-            # project proposal (10), same entry point as the "skip" branch.
+            # SNT allocation frees up on close (§4.7). Terminal since PRD v3:
+            # Task 10 now opens in parallel with 9 from Task 7/8's "moved to
+            # next stage = Yes" path, so 9 no longer routes anywhere itself.
             "on_close": {"close_allocations": ["SNT"]},
-            "routing": [{"open": [10]}],
+            "routing": [{"open": []}],
         },
         {
             "task_no": 10,
@@ -285,7 +323,7 @@ BD_WORKFLOW = {
         {
             "task_no": 12,
             "name": "Implementation",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("12.1", "Handover & engagement start"),
                 ("12.2", "PO from customer"),
@@ -317,7 +355,7 @@ BD_WORKFLOW = {
         {
             "task_no": 13,
             "name": "Extension Proposal",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("13.1", "Discuss next set of problems with client"),
                 ("13.2", "Identify area of extension"),
@@ -328,15 +366,17 @@ BD_WORKFLOW = {
                 {"key": "extension_approved", "label": "Extension approved?", "type": "boolean", "required": True},
             ],
             "trigger": {"reference_task_no": 12, "reference_field_key": "modified_planned_end_date", "offset_days": 60},
+            # Extension declined skips the extension block (14–16) — first
+            # cycle only; a lead whose earlier cycle ran them keeps those rows.
             "routing": [
-                {"when": {"field": "extension_approved", "equals": "No"}, "open": [17]},
+                {"when": {"field": "extension_approved", "equals": "No"}, "open": [17], "skip": [14, 15, 16]},
                 {"open": [14]},
             ],
         },
         {
             "task_no": 14,
             "name": "Extension Detail",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("13.8", "Addendum agreement"),
                 ("13.9", "Expected variable fee over eligible period submitted"),
@@ -367,7 +407,7 @@ BD_WORKFLOW = {
         {
             "task_no": 16,
             "name": "Extension Implementation",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("12.1", "Handover & engagement start"),
                 ("12.2", "PO from customer"),
@@ -388,18 +428,21 @@ BD_WORKFLOW = {
             # On close (§13.1 / §4.8): extension counter increments, Project ID
             # regenerated off the locked base, the previous project_details row
             # → Extended and a new one inserted linked to this cycle's Extension
-            # allocation. Loops back to Extension Proposal (13) — repeats until
-            # Task 13 = No.
+            # allocation. Cycle handover (§4.7 v14): the superseded previous
+            # cycle's Implementation/Extension allocation auto-closes — this
+            # cycle's row stays Open. Loops back to Extension Proposal (13) —
+            # repeats until Task 13 = No.
             "on_close": {
                 "project_id": "regenerate",
                 "project_details": {"allocation_type": "Extension"},
+                "close_superseded_allocations": ["Implementation", "Extension"],
             },
             "routing": [{"open": [13]}],
         },
         {
             "task_no": 17,
             "name": "Project Closure",
-            "assignee": "execution_brown",
+            "assignee": "execution_red",
             "checklist": _cl(
                 ("16.1", "All fixed fee received"),
                 ("16.2", "All variable fee received"),
@@ -409,8 +452,9 @@ BD_WORKFLOW = {
                 {"key": "final_closed", "label": "Final closed?", "type": "boolean", "required": True},
             ],
             # Terminal. On close (§4.7 / §4.8): lead → Complete, current
-            # project_details → Complete, every Implementation/Extension
-            # allocation auto-closes at once.
+            # project_details → Complete, and the current cycle's still-open
+            # Implementation/Extension allocation auto-closes (earlier cycles
+            # already closed when superseded at each Task 16, §4.7 v14).
             "on_close": {
                 "lead_status": "Complete",
                 "project_details": "complete",

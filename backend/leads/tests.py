@@ -253,11 +253,25 @@ class LeadUpdateTests(LeadApiTestBase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("status", res.data)
 
-    def test_user_can_drop_lead(self):
+    def test_direct_dropped_status_patch_rejected(self):
+        # Phase 14d (Tech Req §4.3.2 v16): dropping goes through the drop
+        # endpoint (popup + remark + task cascade), never a plain status write.
         self.client.force_authenticate(self.lead_manager)
         res = self.client.patch(detail_url(self.own_lead.id), {"status": "Dropped"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", res.data)
+
+    def test_user_can_drop_lead_via_drop_endpoint(self):
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.post(
+            f"/api/leads/{self.own_lead.id}/drop/", {"remark": "Client backed out"}, format="json"
+        )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
         self.assertEqual(res.data["status"], "Dropped")
+        self.assertEqual(res.data["drop_remark"], "Client backed out")
+        # Dropping twice is a no-op → 400.
+        res = self.client.post(f"/api/leads/{self.own_lead.id}/drop/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_no_delete_endpoint(self):
         self.client.force_authenticate(self.lead_manager)
@@ -338,8 +352,10 @@ _VALUES = {
     4: {"expected_receipt_date": _future()},
     5: {"solution_blueprint_required": "No"},
     6: {},
-    7: {"presentation_date": _future(), "re_presentation_required": "No"},
-    8: {"presentation_date": _future(), "re_presentation_required_again": "No"},
+    7: {"presentation_date": _future(), "re_presentation_required": "No",
+        "moved_to_next_stage": "Yes"},
+    8: {"presentation_date": _future(), "re_presentation_required_again": "No",
+        "moved_to_next_stage": "Yes"},
     9: {"expected_receipt_date": _future()},
     10: {"planned_start_date": _future(), "planned_end_date": _future(90),
          "period_months": 3, "manpower_brown": 1, "manpower_white": 1},
@@ -495,8 +511,44 @@ class RoutingBranchTests(WorkflowEngineTestBase):
         self.assertEqual([t.task_no for t in opened], [8])
         opened = self.drive(self.open_task(8), values={
             "presentation_date": _future(), "re_presentation_required_again": "No",
+            "moved_to_next_stage": "Yes",
         })
-        self.assertEqual([t.task_no for t in opened], [9])
+        # PRD v3: moved-to-next-stage = Yes opens payment + proposal in parallel.
+        self.assertEqual(sorted(t.task_no for t in opened), [9, 10])
+
+    def test_task7_moved_no_short_circuits_to_17(self):
+        # PRD v3: re-presentation No + moved No → Project Closure directly.
+        task5 = self._advance_to(5)
+        self.drive(task5, values={
+            "solution_blueprint_required": "Yes", "fee": 0, "manpower_brown": 1,
+            "manpower_white": 1, "expected_start_date": _future(), "payment_tranches": 1,
+        })  # → 6
+        self.drive(self.open_task(6))  # → 7
+        opened = self.drive(self.open_task(7), values={
+            "presentation_date": _future(), "re_presentation_required": "No",
+            "moved_to_next_stage": "No",
+        })
+        self.assertEqual([t.task_no for t in opened], [17])
+
+    def test_task7_moved_field_required_only_when_no_re_presentation(self):
+        # "Has project moved to the next stage?" is mandatory when
+        # re-presentation = No (required_when) — and not when it's Yes.
+        task5 = self._advance_to(5)
+        self.drive(task5, values={
+            "solution_blueprint_required": "Yes", "fee": 0, "manpower_brown": 1,
+            "manpower_white": 1, "expected_start_date": _future(), "payment_tranches": 1,
+        })  # → 6
+        self.drive(self.open_task(6))  # → 7
+        task7 = self.open_task(7)
+        task7.extra_fields = {
+            "presentation_date": _future(), "re_presentation_required": "No",
+        }
+        task7.save()
+        task7.checklist_items.update(status=Checklist.Status.COMPLETE)
+        with self.assertRaises(Exception):
+            engine.complete_task(task7, user=self.lead_manager)
+        task7.refresh_from_db()
+        self.assertEqual(task7.status, Task.Status.OPEN)
 
     def test_extension_cycle_loops_13_to_16_then_closes(self):
         task13 = self._advance_to(13)
@@ -517,6 +569,91 @@ class RoutingBranchTests(WorkflowEngineTestBase):
     def test_full_default_path_reaches_17(self):
         task17 = self._advance_to(17)
         self.assertIsNotNone(task17)
+
+    # --- Phase 14c: skipped-status materialization (Tech Req §4.4 v14) ------
+
+    def test_task5_no_materializes_skipped_blueprint_block(self):
+        task5 = self._advance_to(5)
+        self.drive(task5, values={"solution_blueprint_required": "No"})
+        skipped = self.lead.tasks.filter(status=Task.Status.SKIPPED)
+        self.assertEqual(sorted(t.task_no for t in skipped), [6, 7, 8, 9])
+        # Skipped rows carry no checklist and never opened.
+        for t in skipped:
+            self.assertIsNone(t.opened_at)
+            self.assertEqual(t.checklist_items.count(), 0)
+
+    def test_task7_no_re_presentation_marks_8_skipped(self):
+        task5 = self._advance_to(5)
+        self.drive(task5, values={
+            "solution_blueprint_required": "Yes", "fee": 0, "manpower_brown": 1,
+            "manpower_white": 1, "expected_start_date": _future(), "payment_tranches": 1,
+        })  # → 6
+        self.drive(self.open_task(6))  # → 7
+        self.drive(self.open_task(7))  # default: No + moved Yes → 9, 10
+        self.assertTrue(
+            self.lead.tasks.filter(task_no=8, status=Task.Status.SKIPPED).exists()
+        )
+
+    def test_task13_no_materializes_skipped_extension_block_first_cycle_only(self):
+        task13 = self._advance_to(13)
+        self.drive(task13, values={"extension_approved": "No"})  # → 17
+        skipped = self.lead.tasks.filter(
+            status=Task.Status.SKIPPED, task_no__gte=14
+        )
+        self.assertEqual(sorted(t.task_no for t in skipped), [14, 15, 16])
+
+    def test_extension_second_cycle_decline_does_not_skip_ran_steps(self):
+        # Cycle 1 runs 14–16; declining cycle 2 must not add skipped 14–16 rows.
+        task13 = self._advance_to(13)
+        self.drive(task13, values={"extension_approved": "Yes"})  # → 14
+        self.drive(self.open_task(14))  # → 15
+        self.drive(self.open_task(15))  # → 16
+        self.drive(self.open_task(16))  # → 13 (new cycle)
+        self.drive(self.open_task(13), values={"extension_approved": "No"})  # → 17
+        self.assertFalse(
+            self.lead.tasks.filter(
+                task_no__in=[14, 15, 16], status=Task.Status.SKIPPED
+            ).exists()
+        )
+
+    def test_lead_completion_sweeps_pending_to_skipped(self):
+        # A trigger-gated pending task still waiting when the lead completes
+        # can never open — it flips to skipped (§4.4 v14).
+        task17 = self._advance_to(17)
+        Task.objects.create(
+            lead=self.lead, task_no=13, task_name="Extension Proposal",
+            status=Task.Status.PENDING,
+        )
+        self.drive(task17)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.COMPLETE)
+        self.assertFalse(self.lead.tasks.filter(status=Task.Status.PENDING).exists())
+        self.assertTrue(
+            self.lead.tasks.filter(task_no=13, status=Task.Status.SKIPPED).exists()
+        )
+
+    def test_pending_tasks_hidden_from_task_list_and_skipped_shown(self):
+        task5 = self._advance_to(5)
+        self.drive(task5, values={"solution_blueprint_required": "No"})  # skips 6–9
+        Task.objects.create(
+            lead=self.lead, task_no=11, task_name="Project Team Allocation",
+            status=Task.Status.PENDING,
+        )
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/tasks/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        statuses = {t["status"] for t in res.data}
+        self.assertNotIn("pending", statuses)
+        self.assertIn("skipped", statuses)
+
+    def test_progress_excludes_skipped_tasks(self):
+        task5 = self._advance_to(5)
+        self.drive(task5, values={"solution_blueprint_required": "No"})  # skips 6–9
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        # 6 real instances so far (1,2,3,5 closed; 4 + 10 open) — the 4 skipped
+        # rows are excluded: 4/6 ≈ 67, not 4/10 = 40.
+        self.assertEqual(res.data["progress"], 67)
 
 
 class TaskApiTests(WorkflowEngineTestBase):
@@ -780,8 +917,9 @@ class TriggerSchedulerTests(WorkflowEngineTestBase):
         self.assertEqual(second, [])  # already opened → not re-opened
 
     def test_pending_task_serializer_exposes_scheduled_open(self):
-        # Phase 13: a pending trigger task carries its scheduled open date + the
-        # days-from-now so the frontend can show the offset.
+        # Phase 13: a pending trigger task carries its scheduled open date.
+        # Phase 14c (Tech Req §6 rule 8 v14): pending rows are hidden from the
+        # lead's task list; the field remains on the task detail payload.
         self._config(task_no=2, offset_days=2)
         today = timezone.now().date()
         self.drive(
@@ -791,7 +929,11 @@ class TriggerSchedulerTests(WorkflowEngineTestBase):
         )
         self.client.force_authenticate(self.lead_manager)
         res = self.client.get(f"/api/leads/{self.lead.id}/tasks/")
-        task2 = next(t for t in res.data if t["task_no"] == 2)
+        self.assertFalse(any(t["task_no"] == 2 for t in res.data))  # pending hidden
+        pending2 = self.lead.tasks.get(task_no=2)
+        res = self.client.get(f"/api/tasks/{pending2.id}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task2 = res.data
         self.assertEqual(task2["status"], "pending")
         so = task2["scheduled_open"]
         self.assertIsNotNone(so)
@@ -872,6 +1014,37 @@ class HoldServiceTests(WorkflowEngineTestBase):
         opened = self.drive(self.open_task(1))
         closed = self.lead.tasks.get(task_no=1)
         self.assertIsNotNone(closed.elapsed_time)
+
+    # --- Phase 14d: unhold remarks + drop cascade (Tech Req §4.9/§4.3.2 v16) --
+
+    def test_unhold_reason_stored_and_cascaded(self):
+        task1 = self.open_task(1)
+        holds.hold_lead(self.lead, self.lead_manager, reason="budget freeze")
+        holds.unhold_lead(self.lead, self.lead_manager, reason="budget approved")
+        lead_hold = LeadHold.objects.get(lead=self.lead)
+        self.assertEqual(lead_hold.unhold_reason, "budget approved")
+        task_hold = TaskHold.objects.get(task=task1)
+        self.assertEqual(task_hold.reason, "budget freeze")  # cascaded on hold
+        self.assertEqual(task_hold.unhold_reason, "budget approved")  # and on unhold
+
+    def test_drop_lead_stores_remark_and_drops_open_tasks(self):
+        task1 = self.open_task(1)
+        dropped = holds.drop_lead(self.lead, self.lead_manager, remark="lost to competitor")
+        self.assertIsNotNone(dropped)
+        self.lead.refresh_from_db()
+        task1.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.DROPPED)
+        self.assertEqual(self.lead.drop_remark, "lost to competitor")
+        self.assertEqual(task1.status, Task.Status.DROPPED)
+        # Dropping again (or dropping a completed lead) is a no-op.
+        self.assertIsNone(holds.drop_lead(self.lead, self.lead_manager))
+
+    def test_drop_lead_also_drops_held_tasks(self):
+        task1 = self.open_task(1)
+        holds.hold_task(task1, self.lead_manager, reason="pause")
+        holds.drop_lead(self.lead, self.lead_manager)
+        task1.refresh_from_db()
+        self.assertEqual(task1.status, Task.Status.DROPPED)
 
 
 class HoldApiTests(WorkflowEngineTestBase):
@@ -1054,13 +1227,13 @@ class Phase6TestBase(WorkflowEngineTestBase):
     def setUp(self):
         super().setUp()
         self.exec_red = self._make_user("employee")
-        # Phase 13: the allocated Execution Brown is the task *editor* (the
-        # successor's assignee); Red is a view-only overseer.
+        # Phase 14a (PRD v3): the Execution Red executes — the successor opens
+        # assigned to them. Brown is a plain allocation slot.
         self.exec_brown = self._make_user("employee")
 
     def drive_alloc(self, task, red, brown=None):
-        """Fill an allocation's Execution Red (overseer) + Brown (editor) and
-        submit it (RM flow). The successor opens assigned to the Brown."""
+        """Fill an allocation's Execution Red (+ a Brown slot) and submit it
+        (RM flow). The successor opens assigned to the Red (§7.5)."""
         alloc = task.resource_allocations.first()
         alloc.execution_red = red
         alloc.execution_brown = brown or self.exec_brown
@@ -1090,13 +1263,13 @@ class AllocationEngineTests(Phase6TestBase):
         # man_power_required = Task 1 brown(1) + white(1) (Phase 12: Brown capped at 1)
         self.assertEqual(alloc.man_power_required, 2)
 
-    def test_submit_allocation_opens_successor_assigned_to_execution_brown(self):
-        # Phase 13: the successor is assigned to the allocated Brown (editor),
-        # not the Red (view-only overseer).
+    def test_submit_allocation_opens_successor_assigned_to_execution_red(self):
+        # Phase 14a (PRD v3): the successor is assigned to the chosen Execution
+        # Red (§7.5).
         self.drive(self.open_task(1))  # → 2
         opened = self.drive_alloc(self.open_task(2), self.exec_red)  # → 3
         self.assertEqual([t.task_no for t in opened], [3])
-        self.assertEqual(opened[0].assigned_to, self.exec_brown)
+        self.assertEqual(opened[0].assigned_to, self.exec_red)
         alloc = self.lead.resource_allocations.get(type="2HR")
         self.assertEqual(alloc.status, ResourceAllocation.Status.OPEN)
 
@@ -1114,7 +1287,7 @@ class AllocationEngineTests(Phase6TestBase):
         self.drive(self.open_task(4))                        # 2HR closes
         self.drive(self.open_task(5), values=blueprint)      # → 6 (SNT alloc)
         self.drive_alloc(self.open_task(6), self.exec_red)   # → 7
-        self.drive(self.open_task(7))                        # 7 No → 9
+        self.drive(self.open_task(7))                        # 7 No+moved → 9, 10
         snt = self.lead.resource_allocations.get(type="SNT")
         self.assertEqual(snt.status, ResourceAllocation.Status.OPEN)
         self.assertEqual(snt.man_power_brown, 1)  # split preserved (Brown capped at 1)
@@ -1211,6 +1384,66 @@ class ProjectIdTests(Phase6TestBase):
         )
         impl = self.lead.resource_allocations.get(type="Implementation")
         self.assertEqual(impl.status, ResourceAllocation.Status.CLOSED)
+
+    # --- Phase 14e: extension prefill + cycle-handover auto-close (§4.7 v14) --
+
+    def test_extension_row_prefilled_from_previous_cycle(self):
+        self.drive(self.walk_to_task12())  # Implementation row staffed
+        impl = self.lead.resource_allocations.get(type="Implementation")
+        impl.auditor1 = self.lead_admin
+        impl.save(update_fields=["auditor1"])
+        impl.whites.add(self.other_manager)
+        self.drive(self.open_task(13), values={"extension_approved": "Yes"})  # → 14
+        self.drive(self.open_task(14))                                        # → 15
+        ext = self.lead.resource_allocations.get(type="Extension")
+        # Prefilled with the previous cycle's people — RM adjusts only changes.
+        self.assertEqual(ext.execution_red, impl.execution_red)
+        self.assertEqual(ext.execution_brown, impl.execution_brown)
+        self.assertEqual(ext.auditor1, self.lead_admin)
+        self.assertEqual(list(ext.whites.all()), [self.other_manager])
+        self.assertEqual(ext.status, ResourceAllocation.Status.PENDING)
+
+    def test_task16_closes_superseded_implementation_row(self):
+        self.drive(self.walk_to_task12())
+        self.drive(self.open_task(13), values={"extension_approved": "Yes"})  # → 14
+        self.drive(self.open_task(14))                                        # → 15
+        self.drive_alloc(self.open_task(15), self.exec_red)                   # → 16
+        self.drive(self.open_task(16))                                        # handover
+        impl = self.lead.resource_allocations.get(type="Implementation")
+        ext = self.lead.resource_allocations.get(type="Extension")
+        self.assertEqual(impl.status, ResourceAllocation.Status.CLOSED)  # superseded
+        self.assertEqual(ext.status, ResourceAllocation.Status.OPEN)    # carries on
+
+    def test_second_extension_supersedes_first(self):
+        self.drive(self.walk_to_task12())
+        for _ in range(2):  # two extension cycles
+            self.drive(self.open_task(13), values={"extension_approved": "Yes"})
+            self.drive(self.open_task(14))
+            self.drive_alloc(self.open_task(15), self.exec_red)
+            self.drive(self.open_task(16))
+        exts = list(
+            self.lead.resource_allocations.filter(type="Extension").order_by("id")
+        )
+        self.assertEqual(len(exts), 2)
+        self.assertEqual(exts[0].status, ResourceAllocation.Status.CLOSED)  # superseded
+        self.assertEqual(exts[1].status, ResourceAllocation.Status.OPEN)    # current
+        # Final closure closes the last remaining row.
+        self.drive(self.open_task(13), values={"extension_approved": "No"})  # → 17
+        self.drive(self.open_task(17), values={"final_closed": "Yes"})
+        exts[1].refresh_from_db()
+        self.assertEqual(exts[1].status, ResourceAllocation.Status.CLOSED)
+
+    def test_under_allocation_flag(self):
+        self.drive(self.open_task(1))  # Task 1 captured 1 Brown + 1 White
+        alloc = self.open_task(2).resource_allocations.first()
+        alloc.execution_red = self.exec_red
+        alloc.save()
+        self.assertTrue(alloc.is_under_allocated)   # 0/1 Brown, 0/1 White
+        self.assertFalse(alloc.is_over_allocated)
+        alloc.execution_brown = self.exec_brown
+        alloc.save()
+        alloc.whites.add(self.lead_admin)
+        self.assertFalse(alloc.is_under_allocated)  # 1/1 and 1/1
 
     def test_sequence_increments_across_leads(self):
         self.drive(self.walk_to_task12())
@@ -1776,36 +2009,28 @@ class Phase12AccessTests(Phase6TestBase):
         self.drive_alloc(self.open_task(2), self.exec_red)  # → Task 3 (execution_brown)
         return self.open_task(3)
 
-    def test_successor_assigned_to_chosen_brown(self):
-        # Phase 13: the successor is assigned to the allocated Brown (editor).
+    def test_successor_assigned_to_chosen_red(self):
+        # Phase 14a (PRD v3): the successor is assigned to the chosen Execution Red.
         task3 = self._open_task3()
-        self.assertEqual(task3.assigned_to, self.exec_brown)
+        self.assertEqual(task3.assigned_to, self.exec_red)
 
-    def test_brown_edits_red_views(self):
+    def test_red_edits_task_but_lead_stays_view_only(self):
         task3 = self._open_task3()
-        # The allocated Brown edits their task…
-        self.client.force_authenticate(self.exec_brown)
+        # The Execution Red is the assignee: they edit their task…
+        self.client.force_authenticate(self.exec_red)
         res = self.client.patch(
             f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        # The Execution Red can open the lead + follow every step, but view-only…
-        self.client.force_authenticate(self.exec_red)
+        # …can open the lead they're working (Phase 12 task-worker visibility)…
         res = self.client.get(f"/api/leads/{self.lead.id}/")
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        res = self.client.get(f"/api/tasks/{task3.id}/")
-        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        self.assertFalse(res.data["can_edit"])  # Red is view-only on the step
-        # …and cannot edit the task or the lead.
-        res = self.client.patch(
-            f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
-        )
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+        # …but cannot edit the lead itself.
         res = self.client.patch(
             f"/api/leads/{self.lead.id}/", {"division": "X"}, format="json"
         )
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
-        # …but can raise a follow-up on the lead.
+        # …and can raise a follow-up on the lead.
         res = self.client.post(
             "/api/followups/",
             {
@@ -1817,9 +2042,9 @@ class Phase12AccessTests(Phase6TestBase):
         )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
 
-    def test_white_co_edits_execution_task(self):
-        # Phase 13: a White of the current allocation co-edits the step alongside
-        # the Brown assignee.
+    def test_allocated_brown_and_white_cannot_edit_or_view_task(self):
+        # Phase 14a (PRD v3): being on the allocation row no longer grants task
+        # access — only the assignee (the Red) works the step.
         self.drive(self.open_task(1))                       # → Task 2 (2HR alloc)
         alloc = self.open_task(2).resource_allocations.first()
         alloc.execution_red = self.exec_red
@@ -1829,11 +2054,14 @@ class Phase12AccessTests(Phase6TestBase):
         alloc.whites.add(white)
         resources.submit_allocation(alloc, self.resource_manager)  # → Task 3
         task3 = self.open_task(3)
-        self.client.force_authenticate(white)
-        res = self.client.patch(
-            f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
-        )
-        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        for outsider in (self.exec_brown, white):
+            self.client.force_authenticate(outsider)
+            res = self.client.get(f"/api/tasks/{task3.id}/")
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, res.data)
+            res = self.client.patch(
+                f"/api/tasks/{task3.id}/", {"extra_fields": {}}, format="json"
+            )
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, res.data)
 
     def test_rm_can_view_lead_with_allocation(self):
         self.drive(self.open_task(1))  # creates the 2HR allocation row
@@ -1852,20 +2080,15 @@ class Phase12AccessTests(Phase6TestBase):
         res = self.client.get(f"/api/leads/{self.lead.id}/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_red_and_editor_required_to_submit(self):
+    def test_red_required_to_submit(self):
         self.drive(self.open_task(1))  # → Task 2 (2HR alloc), nothing set yet
         alloc = self.open_task(2).resource_allocations.first()
         self.client.force_authenticate(self.resource_manager)
-        # Nothing set → blocked (needs an Execution Red overseer).
+        # No Execution Red → blocked (the successor is assigned to them).
         res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
-        # Red alone still blocked (Phase 13 — needs an editor: Brown or a White).
+        # Red alone unblocks it (Phase 14a — no separate editor requirement).
         alloc.execution_red = self.exec_red
         alloc.save(update_fields=["execution_red"])
-        res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
-        # Adding an Execution Brown (the editor) unblocks it.
-        alloc.execution_brown = self.exec_brown
-        alloc.save(update_fields=["execution_brown"])
         res = self.client.post(f"/api/resource-allocations/{alloc.id}/submit/")
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)

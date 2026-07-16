@@ -67,6 +67,11 @@ export const PERMISSIONS = {
   holdLead: (user, lead) =>
     hasRole(user, 'Lead Admin') ||
     (hasRole(user, 'Lead Manager') && (lead?.created_by === user?.id || lead?.assigned_to === user?.id)),
+  // Drop (cancel) a lead — mirrors the backend's can_drop_lead: the hold-lead
+  // actors plus a Marketing creator (who may edit every field of their leads).
+  dropLead: (user, lead) =>
+    PERMISSIONS.holdLead(user, lead) ||
+    (hasRole(user, 'Marketing') && lead?.created_by === user?.id),
   // Delete a lead attachment — mirrors the backend's can_hold_lead delete gate.
   deleteAttachment: (user, lead) =>
     hasRole(user, 'Lead Admin') ||

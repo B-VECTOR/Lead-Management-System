@@ -17,11 +17,20 @@ class Belt(models.Model):
     without a code change or migration.
     """
 
+    class Status(models.TextChoices):
+        ACTIVE = "active", _("active")
+        INACTIVE = "inactive", _("inactive")
+
     name = models.CharField(_("name"), max_length=50, unique=True)
     order = models.PositiveIntegerField(
         _("order"),
         default=0,
         help_text=_("Controls sort order; lower numbers rank first."),
+    )
+    # §4.2 v13: only active belts are offered in the user-form dropdowns;
+    # inactivating retires a belt without breaking existing user FKs.
+    status = models.CharField(
+        _("status"), max_length=10, choices=Status.choices, default=Status.ACTIVE
     )
 
     class Meta:
@@ -55,7 +64,15 @@ class User(AbstractUser):
     # both carry a MinValueValidator(0) by default; mobile numbers need the
     # 64-bit range (a 10-digit number overflows a 32-bit int). Per Decision #7,
     # this means no leading "+" or formatting can be stored.
-    employee_id = models.PositiveIntegerField(_("employee ID"), unique=True)
+    employee_id = models.PositiveIntegerField(
+        _("employee ID"),
+        unique=True,
+        # §5.1 v14: duplicates are rejected with a friendly message (surfaced
+        # by both the DRF serializer's UniqueValidator and the admin forms).
+        error_messages={
+            "unique": _("This Employee ID is already in use by another user.")
+        },
+    )
     mobile_no = models.PositiveBigIntegerField(_("mobile number"))
     belt = models.ForeignKey(
         Belt,

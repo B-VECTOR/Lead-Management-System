@@ -4,7 +4,9 @@ from .models import Area, Country, Industry
 
 
 class ReferenceEntryAdmin(admin.ModelAdmin):
-    list_display = ("name", "code")
+    list_display = ("name", "code", "status")
+    list_editable = ("status",)
+    list_filter = ("status",)
     search_fields = ("name", "code")
     ordering = ("name",)
 

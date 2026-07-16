@@ -33,6 +33,11 @@ const SINGLE_FIELDS = [
   ['project_member3', 'Project Member 3'],
   ['project_member4', 'Project Member 4'],
   ['project_member5', 'Project Member 5'],
+  ['project_member6', 'Project Member 6'],
+  ['project_member7', 'Project Member 7'],
+  ['project_member8', 'Project Member 8'],
+  ['project_member9', 'Project Member 9'],
+  ['project_member10', 'Project Member 10'],
 ]
 
 const NONE = '__none__'
@@ -214,13 +219,14 @@ function AllocationDialog({ allocation, users, onClose }) {
   const overBrown = allocation.man_power_brown > 0 && brownCount > allocation.man_power_brown
   const overWhite = allocation.man_power_white > 0 && whites.length > allocation.man_power_white
   const over = overBrown || overWhite
-  // Execution Red is the mandatory view-only overseer of the block (#2). The
-  // next task is assigned to the allocated *editor* — Execution Brown, or a
-  // White if there's no Brown — so at least one of those is required too
-  // (Phase 13: Brown/White edit, Red is view-only).
+  // Live under-allocation hint (§4.7 v14) — amber, mirrors the backend flag.
+  const underBrown = allocation.man_power_brown > 0 && brownCount < allocation.man_power_brown
+  const underWhite = allocation.man_power_white > 0 && whites.length < allocation.man_power_white
+  const under = underBrown || underWhite
+  // Execution Red is mandatory — the next workflow task is assigned to them
+  // (§7.5; the Phase-13 Brown/White-editor rule was rescinded in Phase 14a).
   const redMissing = !singles.execution_red
-  const editorMissing = !singles.execution_brown && whites.length === 0
-  const cannotAllocate = redMissing || editorMissing
+  const cannotAllocate = redMissing
 
   async function handleAllocate() {
     // Single CTA: save the form, then submit — which closes the allocation
@@ -274,18 +280,23 @@ function AllocationDialog({ allocation, users, onClose }) {
               {overBrown && overWhite ? 'Brown and White exceed' : overBrown ? 'Brown exceeds' : 'White exceeds'} the required man-power.
             </p>
           )}
+          {!over && under && (
+            <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-600">
+              <AlertTriangle className="size-3.5" />
+              {underBrown && underWhite ? 'Brown and White are below' : underBrown ? 'Brown is below' : 'White is below'} the required man-power.
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Execution Red <span className="text-red-500">*</span> <span className="text-muted-foreground">(view-only overseer)</span></Label>
+            <Label className="text-xs">Execution Red <span className="text-red-500">*</span> <span className="text-muted-foreground">(next task is assigned to them)</span></Label>
             <UserSelect value={singles.execution_red} users={users} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_red: v }))} />
             {!readOnly && redMissing && <p className="text-xs text-red-600">Execution Red is required to allocate.</p>}
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Execution Brown <span className="text-red-500">*</span> {allocation.man_power_brown > 0 && <span className="text-muted-foreground">(need {allocation.man_power_brown})</span>}</Label>
+            <Label className="text-xs">Execution Brown {allocation.man_power_brown > 0 && <span className="text-muted-foreground">(need {allocation.man_power_brown})</span>}</Label>
             <UserSelect value={singles.execution_brown} users={users} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_brown: v }))} />
-            {!readOnly && editorMissing && <p className="text-xs text-red-600">Select an Execution Brown or a White — the next task is assigned to them.</p>}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">White {allocation.man_power_white > 0 && <span className="text-muted-foreground">(need {allocation.man_power_white})</span>}</Label>
@@ -307,7 +318,7 @@ function AllocationDialog({ allocation, users, onClose }) {
           <Button variant="outline" onClick={onClose}>Close</Button>
           {!readOnly && (
             isPending ? (
-              <Button onClick={handleAllocate} disabled={busy || cannotAllocate} title={redMissing ? 'Select an Execution Red first' : editorMissing ? 'Select an Execution Brown or a White first' : undefined}>Allocate resources</Button>
+              <Button onClick={handleAllocate} disabled={busy || cannotAllocate} title={redMissing ? 'Select an Execution Red first' : undefined}>Allocate resources</Button>
             ) : (
               <Button onClick={handleUpdate} disabled={busy}>Update allocation</Button>
             )
@@ -381,6 +392,14 @@ export default function Resources() {
                             <AlertTriangle className="size-4 text-red-600" />
                           </TooltipTrigger>
                           <TooltipContent>Over-allocated: more resources than required</TooltipContent>
+                        </Tooltip>
+                      )}
+                      {!a.is_over_allocated && a.is_under_allocated && a.status === 'Open' && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <AlertTriangle className="size-4 text-amber-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>Under-allocated: fewer resources than the required man-power</TooltipContent>
                         </Tooltip>
                       )}
                       <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setEditing(a) }}>

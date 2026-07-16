@@ -29,14 +29,17 @@ const CHECKLIST_STATUS_STYLES = {
 }
 const CHECKLIST_STATUS_LABELS = { open: 'Not Started', in_progress: 'In Progress', done: 'Completed', na: 'N/A' }
 
-// Backend task-instance status (Phase 4 engine): pending / open / hold / closed.
+// Backend task-instance status (Phase 4 engine + Phase 14c):
+// pending / open / hold / closed / skipped / dropped.
 const TASK_STATE_STYLES = {
   pending: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
   open: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
   hold: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  skipped: 'bg-neutral-100 text-neutral-500 line-through dark:bg-neutral-800 dark:text-neutral-400',
+  dropped: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
 }
-const TASK_STATE_LABELS = { pending: 'Pending', open: 'Open', hold: 'On Hold', closed: 'Completed' }
+const TASK_STATE_LABELS = { pending: 'Pending', open: 'Open', hold: 'On Hold', closed: 'Completed', skipped: 'Skipped', dropped: 'Dropped' }
 
 // Backend checklist-item status (Tech Req §4.5): not_started / inprogress / complete.
 const CHECKLIST_ITEM_STYLES = {

@@ -36,6 +36,7 @@ from .permissions import (
     TaskPermission,
     can_edit_followup,
     can_edit_task,
+    can_drop_lead,
     can_hold_lead,
     can_hold_task,
     can_reassign_task,
@@ -79,10 +80,9 @@ def lead_scope_q(user):
     working:
 
     - **Lead Admin** — all leads (``None``).
-    - **Anyone** — leads they own (``assigned_to``), are actively working a task
-      on (``tasks__assigned_to``), or are allocated to on any resource row
-      (Phase 13 — the Execution Red overseer / Whites / auditors open the lead to
-      follow every step, view-only).
+    - **Anyone** — leads they own (``assigned_to``) or are actively working a
+      task on (``tasks__assigned_to``). *(The Phase-13 any-allocation-slot rule
+      was rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
     - **Lead Manager / Marketing** — additionally the leads they created.
     - **Resource Manager** — additionally any lead with a ``resource_allocation``
       row (it has reached an allocation stage they staff).
@@ -91,7 +91,6 @@ def lead_scope_q(user):
     if LEAD_ADMIN in roles:
         return None
     scope = Q(assigned_to=user) | Q(tasks__assigned_to=user)
-    scope |= resources.user_allocation_q(user)
     if roles & {LEAD_MANAGER, MARKETING}:
         scope |= Q(created_by=user)
     if RESOURCE_MANAGER in roles:
@@ -279,7 +278,7 @@ class LeadHoldView(LeadQuerysetMixin, APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            if holds.unhold_lead(lead, request.user) is None:
+            if holds.unhold_lead(lead, request.user, reason=remark) is None:
                 return Response(
                     {"detail": "This lead is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -304,6 +303,35 @@ class LeadHoldView(LeadQuerysetMixin, APIView):
         return Response(LeadSerializer(lead, context={"request": request}).data)
 
 
+class LeadDropView(LeadQuerysetMixin, APIView):
+    """Drop (cancel) a lead via the drop popup (Tech Req §4.3.2 v16 / PRD §4.2).
+
+    Captures an optional remark (stored as ``leads.drop_remark`` and shown as a
+    red banner on the detail page) and moves every open/held task to the
+    ``dropped`` status. A plain ``status = Dropped`` PATCH is rejected by the
+    serializer so this path cannot be bypassed.
+    """
+
+    permission_classes = [LeadPermission]
+
+    def post(self, request, pk):
+        lead = get_object_or_404(self.get_queryset(), pk=pk)
+        if not can_drop_lead(request.user, lead):
+            return Response(
+                {"detail": "You cannot drop this lead."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        remark = (request.data.get("remark") or "").strip()
+        if holds.drop_lead(lead, request.user, remark=remark) is None:
+            return Response(
+                {"detail": "Only an in-progress or on-hold lead can be dropped."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        events.log_activity(lead, request.user, "status", "Lead dropped", remark)
+        lead.refresh_from_db()
+        return Response(LeadSerializer(lead, context={"request": request}).data)
+
+
 # --- Tasks & checklists (Phase 4) ------------------------------------------
 
 class TaskScopeMixin:
@@ -318,16 +346,18 @@ class TaskScopeMixin:
         if LEAD_ADMIN in roles:
             return qs
         conds = Q(assigned_to=user) | Q(lead__assigned_to=user)
-        # Allocated people (Execution Red overseer + the wider team) see every
-        # step under a lead they're staffed on (Phase 13).
-        conds |= resources.user_allocation_q(user, prefix="lead__")
         if LEAD_MANAGER in roles:
             conds |= Q(lead__created_by=user)
         return qs.filter(conds).distinct()
 
 
 class LeadTaskListView(TaskScopeMixin, generics.ListAPIView):
-    """All tasks the caller may see under one lead — the stepper's data source."""
+    """All tasks the caller may see under one lead — the stepper's data source.
+
+    ``pending`` (trigger-gated, not yet due) rows are hidden: task lists show
+    only steps that have actually opened, plus ``skipped``/``dropped`` ones
+    (Tech Req §6 rule 8 v14 — supersedes the Phase-13e pending banner).
+    """
 
     serializer_class = TaskSerializer
     permission_classes = [TaskPermission]
@@ -335,7 +365,9 @@ class LeadTaskListView(TaskScopeMixin, generics.ListAPIView):
 
     def get_queryset(self):
         return self._scoped_tasks(
-            Task.objects.filter(lead_id=self.kwargs["lead_id"])
+            Task.objects.filter(lead_id=self.kwargs["lead_id"]).exclude(
+                status=Task.Status.PENDING
+            )
         )
 
     def get_serializer_context(self):
@@ -517,7 +549,7 @@ class TaskHoldView(TaskScopeMixin, APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            if holds.unhold_task(task, request.user) is None:
+            if holds.unhold_task(task, request.user, reason=remark) is None:
                 return Response(
                     {"detail": "This task is not on hold."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -530,7 +562,7 @@ class TaskHoldView(TaskScopeMixin, APIView):
             remark,
         )
         verb = "put on hold" if self.action == "hold" else "resumed"
-        detail = f": {remark}" if (self.action == "hold" and remark) else "."
+        detail = f": {remark}" if remark else "."
         base_msg = (
             f"Task {task.task_no} on “{task.lead.company_name} — "
             f"{task.lead.project_name}” was {verb}"
@@ -1044,7 +1076,9 @@ class DashboardView(LeadQuerysetMixin, APIView):
         ).prefetch_related("tasks")
         active_leads = []
         for lead in active_qs:
-            tasks = list(lead.tasks.all())
+            tasks = [
+                t for t in lead.tasks.all() if t.status != Task.Status.SKIPPED
+            ]
             total = len(tasks)
             closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
             progress = round(closed / total * 100) if total else 0

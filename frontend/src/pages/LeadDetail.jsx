@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowLeft, Download, Eye, Paperclip, Pencil, Trash2, UserCog } from 'lucide-react'
+import { ArrowLeft, Download, Eye, Paperclip, PauseCircle, Pencil, Trash2, UserCog, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -17,7 +17,7 @@ import { HoldActionButton } from '@/components/leads/HoldActionButton'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
-import { useLead, useUpdateLeadStatus, useAssignLeadOwner } from '@/hooks/useLeads'
+import { useLead, useDropLead, useAssignLeadOwner } from '@/hooks/useLeads'
 import { useHoldLead, useUnholdLead } from '@/hooks/useHolds'
 import { useActivitiesForLead } from '@/hooks/useActivities'
 import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hooks/useAttachments'
@@ -26,10 +26,10 @@ import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
 import { formatDate, formatDateTime } from '@/lib/format'
 
-// Directly user-settable statuses (Tech Req §4.3.2). Hybernation/Complete are
-// system-only; "On Hold" is reached via the Hold button (Phase 5), which
-// cascades to the lead's tasks and records the hold — so it isn't offered here.
-const USER_STATUSES = ['In Progress', 'Dropped']
+// Every status transition now goes through a dedicated action (Tech Req §4.3.2
+// v16): Hybernation/Complete are system-only, On Hold via the Hold button, and
+// Dropped via the Drop button's popup (which captures the drop remark) — so
+// the old status dropdown is gone.
 
 function InfoRow({ label, value }) {
   return (
@@ -49,7 +49,7 @@ export default function LeadDetail() {
   const { data: activities = [] } = useActivitiesForLead(id)
   const { data: attachments = [] } = useAttachments('lead', id)
 
-  const updateStatus = useUpdateLeadStatus()
+  const dropLead = useDropLead()
   const assignOwner = useAssignLeadOwner()
   const holdLead = useHoldLead()
   const unholdLead = useUnholdLead()
@@ -63,6 +63,8 @@ export default function LeadDetail() {
   const [reassignOwnerOpen, setReassignOwnerOpen] = useState(false)
   const [newOwner, setNewOwner] = useState('')
   const [reassignRemark, setReassignRemark] = useState('')
+  const [dropOpen, setDropOpen] = useState(false)
+  const [dropRemark, setDropRemark] = useState('')
 
   if (isLoading) return <div className="text-sm text-muted-foreground">Loading lead…</div>
   if (isError || !lead) {
@@ -78,7 +80,9 @@ export default function LeadDetail() {
 
   const canEdit = PERMISSIONS.editLead(user, lead)
   const canHold = PERMISSIONS.holdLead(user, lead)
+  const canDrop = PERMISSIONS.dropLead(user, lead)
   const isHeld = lead.status === 'On Hold'
+  const isDropped = lead.status === 'Dropped'
 
   function handleHoldToggle(remark) {
     const action = isHeld ? unholdLead : holdLead
@@ -91,12 +95,11 @@ export default function LeadDetail() {
     )
   }
 
-  function handleStatusChange(status) {
-    if (!status || status === lead.status) return
-    updateStatus.mutate(
-      { id, status },
+  function handleDrop() {
+    dropLead.mutate(
+      { id, remark: dropRemark.trim() },
       {
-        onSuccess: () => toast.success(`Status updated to ${status}`),
+        onSuccess: () => { toast.success('Lead dropped'); setDropOpen(false); setDropRemark('') },
         onError: (err) => toast.error(err.message),
       },
     )
@@ -137,13 +140,10 @@ export default function LeadDetail() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {canEdit && !isHeld && (
-            <Select value={USER_STATUSES.includes(lead.status) ? lead.status : ''} onValueChange={handleStatusChange}>
-              <SelectTrigger className="w-40"><SelectValue placeholder={lead.status} /></SelectTrigger>
-              <SelectContent>
-                {USER_STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-              </SelectContent>
-            </Select>
+          {canDrop && ['In Progress', 'On Hold'].includes(lead.status) && (
+            <Button variant="outline" className="text-red-600 hover:text-red-700" onClick={() => setDropOpen(true)}>
+              <XCircle className="size-4" /> Drop
+            </Button>
           )}
           {canHold && (isHeld || lead.status === 'In Progress') && (
             <HoldActionButton
@@ -163,6 +163,28 @@ export default function LeadDetail() {
           )}
         </div>
       </div>
+
+      {isHeld && lead.active_hold && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          <PauseCircle className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p className="font-medium">
+              On hold{lead.active_hold.hold_by_name ? ` — by ${lead.active_hold.hold_by_name}` : ''}
+              {lead.active_hold.hold_at ? ` on ${formatDateTime(lead.active_hold.hold_at)}` : ''}
+            </p>
+            {lead.active_hold.reason && <p className="mt-0.5">{lead.active_hold.reason}</p>}
+          </div>
+        </div>
+      )}
+      {isDropped && lead.drop_remark && (
+        <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          <XCircle className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p className="font-medium">Dropped</p>
+            <p className="mt-0.5">{lead.drop_remark}</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card><CardContent className="flex items-center justify-between gap-3 p-4">
@@ -308,6 +330,33 @@ export default function LeadDetail() {
           <LeadResourcesTab leadId={id} />
         </TabsContent>
       </Tabs>
+
+      <Dialog open={dropOpen} onOpenChange={setDropOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Drop lead</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Dropping cancels the lead — its open tasks are marked dropped and the workflow stops. This cannot be undone from the app.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="drop-remark">Remark (optional)</Label>
+            <Textarea
+              id="drop-remark"
+              value={dropRemark}
+              onChange={(e) => setDropRemark(e.target.value)}
+              placeholder="Reason for dropping…"
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDropOpen(false)}>Cancel</Button>
+            <Button type="button" variant="destructive" onClick={handleDrop} disabled={dropLead.isPending}>
+              {dropLead.isPending ? 'Dropping…' : 'Drop lead'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={reassignOwnerOpen} onOpenChange={setReassignOwnerOpen}>
         <DialogContent>

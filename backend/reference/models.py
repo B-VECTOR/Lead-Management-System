@@ -11,8 +11,17 @@ class ReferenceEntry(models.Model):
     generation (§13) and is read via the lead's FK, never re-typed elsewhere.
     """
 
+    class Status(models.TextChoices):
+        ACTIVE = "active", _("active")
+        INACTIVE = "inactive", _("inactive")
+
     name = models.CharField(_("name"), max_length=100, unique=True)
     code = models.CharField(_("code"), max_length=20, unique=True)
+    # §4.2 v13: inactivating a row retires it from dropdowns without breaking
+    # the existing (PROTECTed) FKs that reference it.
+    status = models.CharField(
+        _("status"), max_length=10, choices=Status.choices, default=Status.ACTIVE
+    )
 
     class Meta:
         abstract = True

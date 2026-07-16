@@ -17,8 +17,9 @@ class PasswordResetTokenAdmin(admin.ModelAdmin):
 
 @admin.register(Belt)
 class BeltAdmin(admin.ModelAdmin):
-    list_display = ("name", "order")
-    list_editable = ("order",)
+    list_display = ("name", "order", "status")
+    list_editable = ("order", "status")
+    list_filter = ("status",)
     ordering = ("order", "name")
     search_fields = ("name",)
 

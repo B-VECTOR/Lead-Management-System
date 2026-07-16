@@ -50,8 +50,12 @@ def hold_task(task, user, *, when=None, reason=""):
 
 
 @transaction.atomic
-def unhold_task(task, user, *, when=None):
-    """Resume one held task. Returns the closed ``TaskHold`` or None (no-op)."""
+def unhold_task(task, user, *, when=None, reason=""):
+    """Resume one held task. Returns the closed ``TaskHold`` or None (no-op).
+
+    ``reason`` (optional, from the unhold popup — Tech Req §4.9 v16) is stored
+    on the interval alongside the hold-side reason.
+    """
     if task.status != Task.Status.HOLD:
         return None
     when = when or timezone.now()
@@ -59,7 +63,8 @@ def unhold_task(task, user, *, when=None):
     if hold is not None:
         hold.unhold_at = when
         hold.unhold_by = user
-        hold.save(update_fields=["unhold_at", "unhold_by"])
+        hold.unhold_reason = reason or ""
+        hold.save(update_fields=["unhold_at", "unhold_by", "unhold_reason"])
     task.status = Task.Status.OPEN
     task.save(update_fields=["status", "updated_at"])
     return hold
@@ -87,12 +92,14 @@ def hold_lead(lead, user, *, when=None, reason=""):
 
 
 @transaction.atomic
-def unhold_lead(lead, user, *, when=None):
+def unhold_lead(lead, user, *, when=None, reason=""):
     """Take a lead off hold and reactivate the tasks it left on hold.
 
     Restores the lead to ``In Progress`` and unholds every task currently on
     hold under it (matching "unholding the lead restores those tasks", PRD §5.8).
-    Idempotent. Returns the closed ``LeadHold`` or None.
+    ``reason`` (optional, v16) is stored on the lead's interval and copied onto
+    every task unhold the cascade releases. Idempotent. Returns the closed
+    ``LeadHold`` or None.
     """
     if lead.status != Lead.Status.ON_HOLD:
         return None
@@ -101,12 +108,33 @@ def unhold_lead(lead, user, *, when=None):
     if lead_hold is not None:
         lead_hold.unhold_at = when
         lead_hold.unhold_by = user
-        lead_hold.save(update_fields=["unhold_at", "unhold_by"])
+        lead_hold.unhold_reason = reason or ""
+        lead_hold.save(update_fields=["unhold_at", "unhold_by", "unhold_reason"])
     lead.status = Lead.Status.IN_PROGRESS
     lead.save(update_fields=["status", "updated_at"])
     for task in lead.tasks.filter(status=Task.Status.HOLD):
-        unhold_task(task, user, when=when)
+        unhold_task(task, user, when=when, reason=reason)
     return lead_hold
+
+
+@transaction.atomic
+def drop_lead(lead, user, *, remark=""):
+    """Drop (cancel) a lead via the drop popup (Tech Req §4.3.2 v16).
+
+    Stores the optional ``remark`` on the lead and moves every open/held task
+    to the ``dropped`` status. Only an In Progress / On Hold lead can be
+    dropped; returns the lead, or None when the drop is a no-op (already
+    dropped, or a system-final status).
+    """
+    if lead.status not in (Lead.Status.IN_PROGRESS, Lead.Status.ON_HOLD):
+        return None
+    lead.status = Lead.Status.DROPPED
+    lead.drop_remark = remark or ""
+    lead.save(update_fields=["status", "drop_remark", "updated_at"])
+    lead.tasks.filter(status__in=[Task.Status.OPEN, Task.Status.HOLD]).update(
+        status=Task.Status.DROPPED
+    )
+    return lead
 
 
 def compute_elapsed_time(task, *, closed_at=None):

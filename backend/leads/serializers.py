@@ -65,6 +65,10 @@ class LeadSerializer(serializers.ModelSerializer):
     # Computed the same way the dashboard does (closed tasks / total tasks);
     # read-only and additive — uses the prefetched ``tasks`` when available.
     progress = serializers.SerializerMethodField()
+    # The §4.3.3 v16 tracker payload ({total, closed, percent}) + the lead's
+    # current active task, feeding the Tracker column and Current-Task filter.
+    task_progress = serializers.SerializerMethodField()
+    current_task = serializers.SerializerMethodField()
     # True when any task under the lead is currently on hold — drives a "Task on
     # hold" flag in the leads list even while the lead itself is In Progress
     # (Phase 13; a single held task doesn't change lead.status).
@@ -74,6 +78,9 @@ class LeadSerializer(serializers.ModelSerializer):
     # ("IN-PHNPD26001-I00") so the two are never confused before a lead has
     # actually generated one.
     lead_display_id = serializers.SerializerMethodField()
+    # The still-open hold interval while the lead is On Hold (Tech Req §5.8/§4.9
+    # v16) — drives the amber "on hold" banner (reason + who/when) on detail.
+    active_hold = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -94,8 +101,12 @@ class LeadSerializer(serializers.ModelSerializer):
             "lead_type",
             "status",
             "progress",
+            "task_progress",
+            "current_task",
             "has_held_task",
             "lead_display_id",
+            "drop_remark",
+            "active_hold",
             "project_id",
             "project_id_base",
             "extension",
@@ -107,8 +118,12 @@ class LeadSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "progress",
+            "task_progress",
+            "current_task",
             "has_held_task",
             "lead_display_id",
+            "drop_remark",
+            "active_hold",
             "project_id",
             "project_id_base",
             "extension",
@@ -117,19 +132,65 @@ class LeadSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def _real_tasks(self, obj):
+        # Skipped steps (branch-routed-around) are not real work — excluded
+        # from the tracker denominator so it reflects remaining work (§5.18).
+        return [
+            t for t in obj.tasks.all()  # uses the prefetch cache when prefetched
+            if t.status != Task.Status.SKIPPED
+        ]
+
     def get_progress(self, obj):
-        tasks = obj.tasks.all()  # uses the prefetch cache when prefetched
+        tasks = self._real_tasks(obj)
         total = len(tasks)
         if total == 0:
             return 0
         closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
         return round(closed / total * 100)
 
+    def get_task_progress(self, obj):
+        # The §4.3.3 v16 tracker shape: closed/total task instances + percent.
+        tasks = self._real_tasks(obj)
+        total = len(tasks)
+        closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
+        percent = round(closed / total * 100) if total else 0
+        return {"total": total, "closed": closed, "percent": percent}
+
+    def get_current_task(self, obj):
+        # The lowest-numbered task currently being worked (open/hold) — feeds
+        # the leads-table "Current Task" filter (§4.3.3 v16). None when nothing
+        # is active (not started, dropped, or complete).
+        active = [
+            t for t in obj.tasks.all()
+            if t.status in (Task.Status.OPEN, Task.Status.HOLD)
+        ]
+        if not active:
+            return None
+        current = min(active, key=lambda t: (t.task_no, t.id))
+        return {"task_no": current.task_no, "task_name": current.task_name}
+
     def get_has_held_task(self, obj):
         return any(t.status == Task.Status.HOLD for t in obj.tasks.all())
 
     def get_lead_display_id(self, obj):
         return f"LD-{obj.created_at.year}-{obj.id:05d}"
+
+    def get_active_hold(self, obj):
+        if obj.status != Lead.Status.ON_HOLD:
+            return None
+        hold = (
+            obj.holds.filter(unhold_at__isnull=True)
+            .select_related("hold_by")
+            .order_by("-hold_at")
+            .first()
+        )
+        if hold is None:
+            return None
+        return {
+            "reason": hold.reason,
+            "hold_at": hold.hold_at,
+            "hold_by_name": hold.hold_by.name if hold.hold_by else None,
+        }
 
     def validate_status(self, value):
         if value in Lead.SYSTEM_ONLY_STATUSES:
@@ -142,6 +203,13 @@ class LeadSerializer(serializers.ModelSerializer):
         if value == Lead.Status.ON_HOLD:
             raise serializers.ValidationError(
                 "Use the hold endpoint to put a lead on hold."
+            )
+        # Dropped likewise goes through the drop endpoint (Phase 14d, Tech Req
+        # §4.3.2 v16) so the drop remark is captured and open/held tasks are
+        # moved to `dropped`.
+        if value == Lead.Status.DROPPED:
+            raise serializers.ValidationError(
+                "Use the drop endpoint to drop a lead."
             )
         return value
 
@@ -226,6 +294,7 @@ class HoldIntervalSerializer(serializers.ModelSerializer):
             "unhold_at",
             "unhold_by",
             "unhold_by_name",
+            "unhold_reason",
         ]
         read_only_fields = fields
 
@@ -403,6 +472,7 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
     resource_names = serializers.SerializerMethodField()
     allocated_count = serializers.IntegerField(read_only=True)
     is_over_allocated = serializers.BooleanField(read_only=True)
+    is_under_allocated = serializers.BooleanField(read_only=True)
     brown_count = serializers.IntegerField(read_only=True)
     white_count = serializers.IntegerField(read_only=True)
     # Execution Brown is a single FK (auto-generated from RESOURCE_FIELDS, like
@@ -439,6 +509,7 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "brown_count",
             "white_count",
             "is_over_allocated",
+            "is_under_allocated",
             "remark",
             "resource_names",
             "created_at",

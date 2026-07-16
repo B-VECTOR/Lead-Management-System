@@ -37,14 +37,14 @@ export function useUpdateLead() {
   })
 }
 
-export function useUpdateLeadStatus() {
+export function useDropLead() {
   const qc = useQueryClient()
-  const { user } = useAuth()
   return useMutation({
-    mutationFn: ({ id, status }) => leadsApi.updateLeadStatus(id, status, user),
+    mutationFn: ({ id, remark }) => leadsApi.dropLead(id, remark),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['lead', id] })
+      qc.invalidateQueries({ queryKey: ['lead-tasks', String(id)] })
       qc.invalidateQueries({ queryKey: ['activities', 'lead', id] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
     },
@@ -67,4 +67,4 @@ export function useAssignLeadOwner() {
 
 // Note: the old owner/rep split and archive action are gone in the v12 model —
 // a lead has a single `assigned_to` owner (use useAssignLeadOwner), and it is
-// cancelled via status = "Dropped" (useUpdateLeadStatus), not archived.
+// cancelled via the drop action (useDropLead), not archived.

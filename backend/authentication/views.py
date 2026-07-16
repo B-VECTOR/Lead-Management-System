@@ -177,9 +177,10 @@ class GroupListView(ListAPIView):
 
 
 class BeltListView(ListAPIView):
-    """Read-only list of belts, for the belt / acting-belt-level selects."""
+    """Read-only list of active belts, for the belt / acting-belt-level selects
+    (§4.2 v13: inactive belts are retired from the dropdowns)."""
 
-    queryset = Belt.objects.all()  # Belt.Meta.ordering is ["order", "name"]
+    queryset = Belt.objects.filter(status=Belt.Status.ACTIVE)  # ordered by ["order", "name"]
     serializer_class = BeltSerializer
     pagination_class = None
 

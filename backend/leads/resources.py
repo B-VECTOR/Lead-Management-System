@@ -23,7 +23,6 @@ The engine imports this module; this module imports the engine lazily (inside
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from . import events
@@ -117,8 +116,38 @@ def ensure_allocation_row(task, tdef):
         man_power_brown=brown,
         man_power_white=white,
     )
+    _prefill_extension_row(row)
     _notify_resource_managers(row)
     return row
+
+
+def _prefill_extension_row(row):
+    """Prefill a new Extension row from the previous cycle (§4.7 v14).
+
+    The engagement hands over cycle to cycle, so a new Extension allocation
+    starts as a copy of the previous cycle's resources (the Implementation row
+    for the first extension, the prior Extension row afterwards) — the
+    Resource Manager only adjusts what changed.
+    """
+    if row.type != ResourceAllocation.Type.EXTENSION:
+        return
+    prev = (
+        row.lead.resource_allocations.filter(
+            type__in=[
+                ResourceAllocation.Type.IMPLEMENTATION,
+                ResourceAllocation.Type.EXTENSION,
+            ]
+        )
+        .exclude(pk=row.pk)
+        .order_by("-id")
+        .first()
+    )
+    if prev is None:
+        return
+    for field in ResourceAllocation.SINGLE_RESOURCE_FIELDS:
+        setattr(row, f"{field}_id", getattr(prev, f"{field}_id"))
+    row.save(update_fields=[f"{f}" for f in ResourceAllocation.SINGLE_RESOURCE_FIELDS])
+    row.whites.set(prev.whites.all())
 
 
 def latest_execution_red(lead):
@@ -135,81 +164,6 @@ def latest_execution_red(lead):
         .first()
     )
     return row.execution_red if row else None
-
-
-def current_allocation(lead):
-    """The lead's current active (non-closed) allocation row — most recent first.
-
-    The block a lead is currently being worked in (2HR / SNT / Implementation /
-    Extension). Drives who may edit the execution tasks of that block. None
-    before the first allocation task has run.
-    """
-    return (
-        lead.resource_allocations.exclude(status=ResourceAllocation.Status.CLOSED)
-        .order_by("-id")
-        .first()
-    )
-
-
-def latest_task_assignee(lead):
-    """Who the current execution step opens assigned to (Phase 13 override).
-
-    The allocated resource who *edits* the step: the current allocation's
-    Execution Brown, or — if Brown is empty (a White-only stage) — its first
-    White. None until the Resource Manager has staffed the current allocation.
-    The Execution Red is a view-only overseer and is never the assignee.
-    """
-    row = current_allocation(lead)
-    if row is None:
-        return None
-    if row.execution_brown_id:
-        return row.execution_brown
-    return row.whites.order_by("id").first()
-
-
-def current_allocation_editor_ids(lead):
-    """User ids allowed to edit the current block's execution tasks: the current
-    allocation's Execution Brown + every White (Phase 13). Empty set if none."""
-    row = current_allocation(lead)
-    if row is None:
-        return set()
-    ids = set(row.whites.values_list("id", flat=True))
-    if row.execution_brown_id:
-        ids.add(row.execution_brown_id)
-    return ids
-
-
-def lead_allocation_people_ids(lead):
-    """Every user referenced on any of the lead's allocation rows (all single
-    slots incl. Execution Red + auditors + project members, plus the White
-    members). These people get view-only access to the lead's tasks (Phase 13 —
-    Red and the wider team can follow every step)."""
-    rows = lead.resource_allocations.all()
-    ids = set()
-    for field in ResourceAllocation.SINGLE_RESOURCE_FIELDS:
-        ids.update(
-            rows.filter(**{f"{field}__isnull": False}).values_list(field, flat=True)
-        )
-    for field in ResourceAllocation.MULTI_RESOURCE_FIELDS:
-        ids.update(rows.values_list(f"{field}", flat=True))
-    ids.discard(None)
-    return ids
-
-
-def user_allocation_q(user, prefix=""):
-    """A ``Q`` matching rows whose ``{prefix}resource_allocations`` reference
-    ``user`` in any slot — used to scope lead/task querysets so an allocated
-    person (Execution Red included) can list and open the tasks they oversee.
-    ``prefix`` is ``""`` for a Lead queryset, ``"lead__"`` for a Task queryset.
-    """
-    base = f"{prefix}resource_allocations__"
-    q = Q()
-    for field in (
-        *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
-        *ResourceAllocation.MULTI_RESOURCE_FIELDS,
-    ):
-        q |= Q(**{f"{base}{field}": user})
-    return q
 
 
 def allocation_for_type(lead, alloc_type):
@@ -233,6 +187,27 @@ def close_allocations(lead, types):
 
 
 @transaction.atomic
+def close_superseded_allocations(lead, types):
+    """Cycle-handover auto-close (§4.7 v14, applied when Task 16 closes).
+
+    Every non-closed row of ``types`` except the **most recent** one (the cycle
+    that now carries the engagement forward) is superseded and freed — the
+    Implementation row on the first extension, the previous Extension row on
+    later ones. Only the current cycle's allocation stays Open; Task 17 closes
+    that final row via :func:`close_allocations`.
+    """
+    rows = lead.resource_allocations.filter(type__in=types).exclude(
+        status=ResourceAllocation.Status.CLOSED
+    )
+    current = rows.order_by("-id").first()
+    if current is None:
+        return
+    rows.exclude(pk=current.pk).update(
+        status=ResourceAllocation.Status.CLOSED, closed_at=timezone.now()
+    )
+
+
+@transaction.atomic
 def submit_allocation(allocation, user):
     """Resource Manager submits a filled allocation form (§7.5).
 
@@ -251,18 +226,12 @@ def submit_allocation(allocation, user):
         raise serializers.ValidationError(
             "This allocation has already been submitted or has no open task."
         )
-    # An Execution Red must be chosen as the view-only overseer of the block
-    # (Phase 12, #2).
+    # The next task is assigned to the chosen Execution Red (§7.5), so a Red is
+    # mandatory on every allocation (Phase 12, #2; Brown/White-editor rule
+    # rescinded in Phase 14a per PRD v3 / Tech Req v16).
     if allocation.execution_red_id is None:
         raise serializers.ValidationError(
-            "Select an Execution Red before allocating — they oversee the block."
-        )
-    # The next task is assigned to the allocated editor (Brown, or a White if no
-    # Brown), so at least one must be chosen before the allocation can be
-    # submitted (Phase 13 — Brown/White edit, Red is view-only).
-    if allocation.execution_brown_id is None and not allocation.whites.exists():
-        raise serializers.ValidationError(
-            "Select an Execution Brown (or at least one White) — the next task is assigned to them."
+            "Select an Execution Red before allocating — the next task is assigned to them."
         )
     # If the RM staffs it before its trigger date, open the pending task first
     # (a deliberate RM action) so it can be completed and open the next task.
