@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ExternalLink, Pencil, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, ExternalLink, Pencil, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -332,18 +332,92 @@ function AllocationDialog({ allocation, users, onClose }) {
   )
 }
 
-// Resource Manager reporting screen (Tech Req §9.1 / PRD §5.7) — every
-// allocation row with its status and an over-allocation indicator; Edit opens
+function AllocationRow({ a, leading, hint, muted, onRowClick, onEdit }) {
+  return (
+    <TableRow className="cursor-pointer" onClick={onRowClick}>
+      <TableCell>{leading}</TableCell>
+      <TableCell className={cn(muted && 'pl-6')}>
+        <Link
+          to={`/leads/${a.lead}`}
+          className={cn('inline-flex items-center gap-1 font-medium hover:underline', muted && 'font-normal text-muted-foreground')}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {a.lead_project_name}
+          <ExternalLink className="size-3 text-muted-foreground" />
+        </Link>
+        <div className="text-xs text-muted-foreground">
+          {a.lead_company_name} · {a.lead_display_id}
+          {hint}
+        </div>
+      </TableCell>
+      <TableCell className={cn(muted && 'text-muted-foreground')}>{a.type}</TableCell>
+      <TableCell><StatusBadge status={a.status} /></TableCell>
+      <TableCell>
+        <span className={a.is_over_allocated ? 'font-medium text-red-600' : muted ? 'text-muted-foreground' : ''}>
+          Brown {a.brown_count}/{a.man_power_brown} · White {a.white_count}/{a.man_power_white}
+        </span>
+      </TableCell>
+      <TableCell className="text-right">
+        <div className="flex items-center justify-end gap-1.5">
+          {a.is_over_allocated && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <AlertTriangle className="size-4 text-red-600" />
+              </TooltipTrigger>
+              <TooltipContent>Over-allocated: more resources than required</TooltipContent>
+            </Tooltip>
+          )}
+          {!a.is_over_allocated && a.is_under_allocated && a.status === 'Open' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <AlertTriangle className="size-4 text-amber-500" />
+              </TooltipTrigger>
+              <TooltipContent>Under-allocated: fewer resources than the required man-power</TooltipContent>
+            </Tooltip>
+          )}
+          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+            <Pencil className="size-4" /> {a.status === 'Closed' ? 'View' : 'Edit'}
+          </Button>
+        </div>
+      </TableCell>
+    </TableRow>
+  )
+}
+
+// Resource Manager reporting screen (Tech Req §9.1 / PRD §5.7). Allocations are
+// grouped by lead — a lead re-entering the workflow (e.g. a new Extension
+// cycle) reuses the same project row instead of piling up separate rows: the
+// latest allocation stays on top, older ones collapse underneath. Edit opens
 // the allocation form with the full lead/project + man-power context.
 export default function Resources() {
   const { data: allocations = [], isLoading } = useResourceAllocations()
   const { data: users = [] } = useAllocationUsers()
   const [editing, setEditing] = useState(null)
+  const [expanded, setExpanded] = useState(() => new Set())
 
-  const sorted = useMemo(
-    () => [...allocations].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
-    [allocations],
-  )
+  const projects = useMemo(() => {
+    const groups = new Map()
+    for (const a of allocations) {
+      if (!groups.has(a.lead)) groups.set(a.lead, [])
+      groups.get(a.lead).push(a)
+    }
+    return [...groups.values()]
+      .map((cycles) => {
+        const byRecency = [...cycles].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        const [current, ...history] = byRecency
+        return { key: current.lead, current, history }
+      })
+      .sort((a, b) => new Date(b.current.created_at) - new Date(a.current.created_at))
+  }, [allocations])
+
+  function toggle(key) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -351,6 +425,7 @@ export default function Resources() {
         <h1 className="text-2xl font-semibold tracking-tight">Resource Allocation</h1>
         <p className="text-sm text-muted-foreground">
           Allocate resources for each workflow stage. <b>Open</b> = resources tied up; <b>Freed</b> = released automatically as engagements finish.
+          Expand a project to see its earlier allocation cycles.
         </p>
       </div>
 
@@ -359,6 +434,7 @@ export default function Resources() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-8" />
                 <TableHead>Project</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
@@ -367,51 +443,30 @@ export default function Resources() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading && <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>}
-              {!isLoading && sorted.length === 0 && (
-                <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">No resource allocations yet.</TableCell></TableRow>
+              {isLoading && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>}
+              {!isLoading && projects.length === 0 && (
+                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No resource allocations yet.</TableCell></TableRow>
               )}
-              {sorted.map((a) => (
-                <TableRow key={a.id} className="cursor-pointer" onClick={() => setEditing(a)}>
-                  <TableCell>
-                    <Link to={`/leads/${a.lead}`} className="inline-flex items-center gap-1 font-medium hover:underline" onClick={(e) => e.stopPropagation()}>
-                      {a.lead_project_name}
-                      <ExternalLink className="size-3 text-muted-foreground" />
-                    </Link>
-                    <div className="text-xs text-muted-foreground">{a.lead_company_name} · {a.lead_display_id}</div>
-                  </TableCell>
-                  <TableCell>{a.type}</TableCell>
-                  <TableCell><StatusBadge status={a.status} /></TableCell>
-                  <TableCell>
-                    <span className={a.is_over_allocated ? 'font-medium text-red-600' : ''}>
-                      Brown {a.brown_count}/{a.man_power_brown} · White {a.white_count}/{a.man_power_white}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1.5">
-                      {a.is_over_allocated && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <AlertTriangle className="size-4 text-red-600" />
-                          </TooltipTrigger>
-                          <TooltipContent>Over-allocated: more resources than required</TooltipContent>
-                        </Tooltip>
+              {projects.map(({ key, current, history }) => {
+                const isOpen = expanded.has(key)
+                const hasHistory = history.length > 0
+                return (
+                  <Fragment key={key}>
+                    <AllocationRow
+                      a={current}
+                      leading={hasHistory && (
+                        <ChevronRight className={cn('size-4 text-muted-foreground transition-transform', isOpen && 'rotate-90')} />
                       )}
-                      {!a.is_over_allocated && a.is_under_allocated && a.status === 'Open' && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <AlertTriangle className="size-4 text-amber-500" />
-                          </TooltipTrigger>
-                          <TooltipContent>Under-allocated: fewer resources than the required man-power</TooltipContent>
-                        </Tooltip>
-                      )}
-                      <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setEditing(a) }}>
-                        <Pencil className="size-4" /> {a.status === 'Closed' ? 'View' : 'Edit'}
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+                      hint={hasHistory && <span> · {history.length} earlier cycle{history.length > 1 ? 's' : ''}</span>}
+                      onRowClick={hasHistory ? () => toggle(key) : () => setEditing(current)}
+                      onEdit={() => setEditing(current)}
+                    />
+                    {isOpen && history.map((a) => (
+                      <AllocationRow key={a.id} a={a} muted onRowClick={() => setEditing(a)} onEdit={() => setEditing(a)} />
+                    ))}
+                  </Fragment>
+                )
+              })}
             </TableBody>
           </Table>
         </CardContent>
