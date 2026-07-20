@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -9,13 +9,10 @@ import { useAuth } from '@/context/AuthContext'
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const location = useLocation()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-
-  const from = location.state?.from?.pathname || '/dashboard'
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -23,7 +20,10 @@ export default function Login() {
     setSubmitting(true)
     try {
       await login(username, password)
-      navigate(from, { replace: true })
+      // Always land on the dashboard — restoring the pre-logout page sent
+      // users to screens the new session may not be allowed to see (e.g. a
+      // lead detail showing "not assigned").
+      navigate('/dashboard', { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {

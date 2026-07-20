@@ -1,9 +1,10 @@
 """Trigger scheduler — opens pending tasks whose offset date has arrived.
 
 Implements the scheduled job of Tech Req §4.12 / PRD §5.6. Trigger tasks
-(2/6/11/13/15) are created ``pending`` when their predecessor closes; this
-command evaluates the active ``WorkflowTriggerConfig`` rules and opens each one
-where ``today >= reference_date - offset_days``.
+(2/6/11/13/15) are created ``pending`` when their predecessor closes — unless
+already due at that moment, in which case the engine opens them immediately.
+This command evaluates the active ``WorkflowTriggerConfig`` rules and opens
+each pending one where ``today >= reference_date - offset_days``.
 
 **Run it frequently enough that a task opens on the same calendar day its
 condition is met** — the docs require same-day (not next-day) opening. Wire it

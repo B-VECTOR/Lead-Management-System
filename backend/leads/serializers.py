@@ -416,13 +416,10 @@ class TaskSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Expected an object of field values.")
         tdef = self._task_def(self.instance) if self.instance else None
         if tdef is not None:
-            # Draft save: global rules only, no mandatory-field enforcement. The
-            # lead's creation date is the floor for the expected-start-date
-            # exemption (Phase 11).
-            lead_created = self.instance.lead.created_at.date() if self.instance else None
-            engine.validate_extra_fields(
-                tdef, value, require_mandatory=False, lead_created_date=lead_created
-            )
+            # Draft save: global numeric rules + date well-formedness only
+            # (past dates are allowed on task date fields, 2026-07-20 per the
+            # user), no mandatory-field enforcement.
+            engine.validate_extra_fields(tdef, value, require_mandatory=False)
         return value
 
 

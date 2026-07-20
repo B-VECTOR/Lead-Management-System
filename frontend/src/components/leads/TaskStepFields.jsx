@@ -7,17 +7,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSaveTaskDraft } from '@/hooks/useTasks'
-import { useLead } from '@/hooks/useLeads'
 
-const TODAY_ISO = new Date().toISOString().slice(0, 10)
-
-// Per-field past-date floor for the date picker's `min` (mirrors the backend
-// engine, Phase 11): the "expected start date of next stage" may go back to the
-// lead's creation date; every other date field is floored at today.
-function dateMinFor(field, leadCreatedDate) {
-  if (field.key === 'expected_start_date' && leadCreatedDate) return leadCreatedDate
-  return TODAY_ISO
-}
+// Task-step date pickers carry no `min` — past dates are allowed on every
+// date field (2026-07-20, per the user; e.g. an engagement start date is
+// often recorded after the fact), an explicit exemption from the global
+// "no past dates" rule. Mirrors the backend engine's validation.
 
 // Renders a task's dynamic extra fields from the backend `field_schema`
 // (Tech Req §4.6). Field types: text / number / date / boolean (Yes/No) /
@@ -30,7 +24,7 @@ function inputTypeFor(type) {
   return type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'
 }
 
-function ScalarInput({ field, value, disabled, onChange, dateMin }) {
+function ScalarInput({ field, value, disabled, onChange }) {
   if (field.type === 'boolean') {
     return (
       <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
@@ -42,7 +36,7 @@ function ScalarInput({ field, value, disabled, onChange, dateMin }) {
       </Select>
     )
   }
-  const min = field.type === 'number' ? 0 : field.type === 'date' ? dateMin : undefined
+  const min = field.type === 'number' ? 0 : undefined
   const max = field.type === 'number' ? field.max : undefined
   return (
     <Input
@@ -150,8 +144,6 @@ function initialValues(schema, saved) {
 export const TaskStepFields = forwardRef(function TaskStepFields({ task, leadId, canEdit }, ref) {
   const schema = task.field_schema || []
   const saveDraft = useSaveTaskDraft(leadId)
-  const { data: lead } = useLead(leadId)
-  const leadCreatedDate = lead?.created_at ? String(lead.created_at).slice(0, 10) : null
   const [values, setValues] = useState(() => initialValues(schema, task.extra_fields))
 
   // Re-seed whenever we switch to a different task or its saved values change.
@@ -227,7 +219,6 @@ export const TaskStepFields = forwardRef(function TaskStepFields({ task, leadId,
                 field={f}
                 value={values[f.key]}
                 disabled={!canEdit}
-                dateMin={dateMinFor(f, leadCreatedDate)}
                 onChange={(val) => setValues((v) => ({ ...v, [f.key]: val }))}
               />
             )}

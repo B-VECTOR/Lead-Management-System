@@ -232,7 +232,8 @@ class WorkflowTriggerConfig(models.Model):
     (e.g. Task 2 opens before the "expected start date" from Task 1). Rather
     than hardcoding those offsets, each rule is a row here, editable from Django
     admin. The predecessor's closure creates the trigger task in ``pending``
-    state; the scheduled job (``open_due_tasks`` management command) flips it to
+    state (or already ``open`` when the offset date has arrived by then); the
+    scheduled job (``open_due_tasks`` management command) flips a pending one to
     ``open`` once ``today >= reference_date - offset_days``.
     """
 

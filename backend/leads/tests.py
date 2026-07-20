@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.test import APITestCase
 
 from reference.models import Area, Country, Industry
@@ -674,12 +674,14 @@ class TaskApiTests(WorkflowEngineTestBase):
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_draft_save_rejects_past_date(self):
+    def test_draft_save_rejects_malformed_date(self):
+        # Past dates are allowed on task date fields (2026-07-20, per the
+        # user); only unparseable values are rejected.
         task1 = self.open_task(1)
         self.client.force_authenticate(self.lead_manager)
         res = self.client.patch(
             f"/api/tasks/{task1.id}/",
-            {"extra_fields": {"expected_start_date": "2000-01-01"}}, format="json",
+            {"extra_fields": {"expected_start_date": "01/01/2000"}}, format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -810,30 +812,40 @@ class TaskApiTests(WorkflowEngineTestBase):
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
 
-    def test_expected_start_date_floor_is_lead_creation(self):
-        # Phase 11 (#4): expected_start_date may be back-dated to the lead's
-        # creation date (relaxing the global "before today" rule for this field),
-        # but not earlier.
-        created = timezone.now() - timedelta(days=10)
-        Lead.objects.filter(pk=self.lead.id).update(created_at=created)
-        self.lead.refresh_from_db()
+    def test_past_dates_allowed_on_any_task_date_field(self):
+        # 2026-07-20 (per the user): every task date field in every step
+        # accepts past dates (e.g. an engagement start date recorded after the
+        # fact) — an explicit exemption from the global "no past dates" rule
+        # (Tech Req §3). Malformed dates are still rejected.
         task1 = self.open_task(1)
         self.client.force_authenticate(self.lead_manager)
-        # A date after creation but before today — allowed by the exemption.
-        between = (created.date() + timedelta(days=2)).isoformat()
+        yesterday = (timezone.now().date() - timedelta(days=1)).isoformat()
         res = self.client.patch(
             f"/api/tasks/{task1.id}/",
-            {"extra_fields": {"expected_start_date": between}}, format="json",
+            {"extra_fields": {"expected_start_date": yesterday}}, format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
-        # A date before the lead was created — rejected.
-        before = (created.date() - timedelta(days=1)).isoformat()
         res = self.client.patch(
             f"/api/tasks/{task1.id}/",
-            {"extra_fields": {"expected_start_date": before}}, format="json",
+            {"extra_fields": {"expected_start_date": "not-a-date"}}, format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
         self.assertIn("extra_fields", res.data)
+
+    def test_rowgroup_date_cells_allow_past_dates(self):
+        # Rowgroup date columns (e.g. Task 7's invoice dates) share the
+        # past-dates-allowed exemption; malformed cells are still rejected.
+        tdef = next(t for t in BD_WORKFLOW["tasks"] if t["task_no"] == 7)
+        row = {"invoice_number": "I-1", "value": 5,
+               "date": (timezone.now().date() - timedelta(days=30)).isoformat()}
+        engine.validate_extra_fields(
+            tdef, {"invoices_raised": [row]}, require_mandatory=False,
+        )  # a month ago → no error
+        row["date"] = "not-a-date"
+        with self.assertRaises(serializers.ValidationError):
+            engine.validate_extra_fields(
+                tdef, {"invoices_raised": [row]}, require_mandatory=False,
+            )
 
 
 # --- Phase 5: trigger scheduler --------------------------------------------
@@ -893,26 +905,48 @@ class TriggerSchedulerTests(WorkflowEngineTestBase):
         today = timezone.now().date()
         opened = self.drive(
             self.open_task(1),
+            values={"expected_start_date": (today + timedelta(days=15)).isoformat(),
+                    "manpower_brown": 1, "manpower_white": 1},
+        )
+        task2 = opened[0]
+        self.assertEqual(task2.status, Task.Status.PENDING)
+        # Reference is 15 days out; the 10-day offset makes it due on day 5.
+        self.assertEqual(engine.run_due_triggers(today=today + timedelta(days=4)), [])
+        fired = engine.run_due_triggers(today=today + timedelta(days=5))
+        self.assertEqual([t.id for t in fired], [task2.id])
+
+    def test_already_due_trigger_opens_immediately(self):
+        # The Task-13 edge case: a 60-day offset whose reference date is
+        # captured *inside* the window (engagement end under 2 months out)
+        # must open right away, not sit pending until the next cron run.
+        self._config(task_no=2, offset_days=60)
+        today = timezone.now().date()
+        opened = self.drive(
+            self.open_task(1),
             values={"expected_start_date": (today + timedelta(days=8)).isoformat(),
                     "manpower_brown": 1, "manpower_white": 1},
         )
-        # Reference is 8 days out but the 10-day offset means it is already due.
-        fired = engine.run_due_triggers(today=today)
-        self.assertEqual([t.id for t in fired], [opened[0].id])
+        task2 = opened[0]
+        self.assertEqual(task2.status, Task.Status.OPEN)
+        self.assertIsNotNone(task2.opened_at)
+        # Nothing left for the scheduler to pick up.
+        self.assertEqual(engine.run_due_triggers(today=today), [])
 
     def test_scheduler_skips_held_lead(self):
-        self._config(task_no=2, offset_days=30)
-        opened = self.drive(self.open_task(1))  # task 2 pending
+        self._config(task_no=2, offset_days=5)
+        opened = self.drive(self.open_task(1))  # ref 30 days out → task 2 pending
         holds.hold_lead(self.lead, self.lead_manager)
-        self.assertEqual(engine.run_due_triggers(), [])
+        due_day = timezone.now().date() + timedelta(days=30)
+        self.assertEqual(engine.run_due_triggers(today=due_day), [])
         opened[0].refresh_from_db()
         self.assertEqual(opened[0].status, Task.Status.PENDING)
 
     def test_scheduler_is_idempotent(self):
-        self._config(task_no=2, offset_days=30)
+        self._config(task_no=2, offset_days=5)
         self.drive(self.open_task(1))
-        first = engine.run_due_triggers()
-        second = engine.run_due_triggers()
+        due_day = timezone.now().date() + timedelta(days=30)
+        first = engine.run_due_triggers(today=due_day)
+        second = engine.run_due_triggers(today=due_day)
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])  # already opened → not re-opened
 

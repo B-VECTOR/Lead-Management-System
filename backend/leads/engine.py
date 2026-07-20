@@ -14,6 +14,10 @@ Phase 5 adds the date-offset trigger behaviour: tasks with an active
 ``WorkflowTriggerConfig`` (2/6/11/13/15) are created ``pending`` when their
 predecessor closes and opened later by the scheduler (``run_due_triggers``, run
 from the ``open_due_tasks`` management command) once the offset date is reached.
+If the offset date has *already* arrived when the predecessor closes (the
+reference date falls inside the offset window — e.g. an engagement end date
+under 2 months out for Task 13), the successor opens immediately instead of
+sitting pending until the next scheduler run.
 
 Explicitly **out of scope here** (deferred to later phases, per PLAN §3):
 - ``resource_allocation`` row creation on allocation-task open, and resolving
@@ -118,13 +122,26 @@ def open_pending_task(task):
     return task
 
 
-def _has_active_trigger(workflow, task_no):
-    """True if ``task_no`` opens on a date offset rather than immediately."""
+def _active_trigger_config(workflow, task_no):
+    """The active :class:`WorkflowTriggerConfig` gating ``task_no``, or None."""
     if workflow is None:
-        return False
+        return None
     return WorkflowTriggerConfig.objects.filter(
         workflow=workflow, task_no=task_no, is_active=True
-    ).exists()
+    ).first()
+
+
+def _trigger_already_due(lead, config, *, today=None):
+    """True once ``today >= reference_date - offset_days`` for this trigger.
+
+    False while the reference date hasn't been captured yet — the safe default
+    is to stay ``pending`` until the scheduler can evaluate it.
+    """
+    ref = _reference_date(lead, config.reference_task_no, config.reference_field_key)
+    if ref is None:
+        return False
+    today = today or timezone.now().date()
+    return today >= ref - timezone.timedelta(days=config.offset_days)
 
 
 @transaction.atomic
@@ -165,21 +182,7 @@ def _field_required(field, values):
     return False
 
 
-# Field whose past-date floor is the lead's creation date rather than today
-# (Phase 11, per the user): the "expected start date of next stage" may be
-# back-dated as far as the lead was created — a stage can't start before the
-# lead existed, but earlier-than-today is allowed for it. Every other date field
-# keeps the global "no past dates" (before today) rule (Tech Req §3).
-LEAD_CREATED_FLOOR_FIELDS = {"expected_start_date"}
-
-
-def _date_floor(field, lead_created_date):
-    if field.get("key") in LEAD_CREATED_FLOOR_FIELDS and lead_created_date is not None:
-        return lead_created_date
-    return timezone.now().date()
-
-
-def _validate_scalar(field, value, *, lead_created_date=None):
+def _validate_scalar(field, value):
     """Global-rule check for one scalar value; returns an error string or None."""
     if _is_empty(value):
         return None
@@ -195,30 +198,29 @@ def _validate_scalar(field, value, *, lead_created_date=None):
         if max_val is not None and num > max_val:
             return f"Value cannot exceed {max_val}."
     elif ftype == "date":
+        # Task-step date fields accept past dates (2026-07-20, per the user —
+        # e.g. an engagement start date is often recorded after the fact), an
+        # explicit exemption from the global "no past dates" rule (Tech Req §3).
         try:
-            parsed = date.fromisoformat(str(value))
+            date.fromisoformat(str(value))
         except ValueError:
             return "Enter a valid date (YYYY-MM-DD)."
-        floor = _date_floor(field, lead_created_date)
-        if parsed < floor:
-            if floor < timezone.now().date():
-                return f"Date cannot be before the lead was created ({floor.isoformat()})."
-            return "Past dates are not allowed."
     elif ftype == "boolean":
         if value not in ("Yes", "No"):
             return "Select Yes or No."
     return None
 
 
-def validate_extra_fields(tdef, values, *, require_mandatory, lead_created_date=None):
+def validate_extra_fields(tdef, values, *, require_mandatory):
     """Validate submitted field ``values`` against a task's schema.
 
-    Always enforces the global numeric/date rules (§3) on any provided value.
-    When ``require_mandatory`` is True (task closure) also enforces that every
-    required / conditionally-required field is filled. ``lead_created_date`` (the
-    owning lead's creation date) is the floor for the per-field exemption in
-    :data:`LEAD_CREATED_FLOOR_FIELDS`. Raises DRF ``ValidationError`` keyed by
-    field so the API returns a 400 field map.
+    Always enforces the global numeric rules (§3) and date well-formedness on
+    any provided value. Date fields — scalar and rowgroup cells alike — accept
+    past dates (2026-07-20, per the user), an explicit exemption from the
+    global "no past dates" rule. When ``require_mandatory`` is True (task
+    closure) also enforces that every required / conditionally-required field
+    is filled. Raises DRF ``ValidationError`` keyed by field so the API
+    returns a 400 field map.
     """
     errors = {}
     for field in tdef.get("extra_fields", []):
@@ -236,7 +238,7 @@ def validate_extra_fields(tdef, values, *, require_mandatory, lead_created_date=
         if require_mandatory and _field_required(field, values) and _is_empty(value):
             errors[key] = f"“{label}” is required to complete the task."
             continue
-        msg = _validate_scalar(field, value, lead_created_date=lead_created_date)
+        msg = _validate_scalar(field, value)
         if msg:
             errors[key] = f"“{label}”: {msg}"
     if errors:
@@ -278,12 +280,7 @@ def assert_closable(task, tdef):
         raise serializers.ValidationError(
             "All checklist items must be complete before closing this task."
         )
-    validate_extra_fields(
-        tdef,
-        task.extra_fields or {},
-        require_mandatory=True,
-        lead_created_date=task.lead.created_at.date(),
-    )
+    validate_extra_fields(tdef, task.extra_fields or {}, require_mandatory=True)
 
 
 def _matched_route(tdef, values):
@@ -376,8 +373,9 @@ def complete_task(task, user):
     successor(s). Returns the opened tasks.
 
     A successor that has an active :class:`WorkflowTriggerConfig` is created
-    ``pending`` (the scheduler opens it on its offset date, Phase 5); every
-    other successor opens immediately. ``elapsed_time`` is stamped on close,
+    ``pending`` (the scheduler opens it on its offset date, Phase 5) unless
+    that offset date has already arrived, in which case it opens immediately;
+    every other successor opens immediately. ``elapsed_time`` is stamped on close,
     net of any hold intervals (§4.9). The Phase-6 side effects on Tasks
     4/9/12/16/17 (allocation auto-close, Project-ID generation, lead-status
     transitions) are applied via :func:`_apply_on_close`.
@@ -413,7 +411,12 @@ def complete_task(task, user):
         target_def = defs.get(target_no)
         if target_def is None:
             continue
-        pending = _has_active_trigger(wf, target_no)
+        # A trigger-gated successor whose offset date has already arrived (the
+        # reference date sits inside the offset window — e.g. an engagement end
+        # date under 2 months out for Task 13) opens right now rather than
+        # waiting for the scheduler; only a genuinely future open date pends.
+        config = _active_trigger_config(wf, target_no)
+        pending = config is not None and not _trigger_already_due(task.lead, config)
         status = Task.Status.PENDING if pending else Task.Status.OPEN
         opened.append(open_task(task.lead, target_def, status=status))
     return opened
@@ -527,10 +530,7 @@ def run_due_triggers(*, today=None):
             lead__status__in=active_statuses,
         ).select_related("lead")
         for task in pending:
-            ref = _reference_date(task.lead, config.reference_task_no, config.reference_field_key)
-            if ref is None:
-                continue
-            if today >= ref - timezone.timedelta(days=config.offset_days):
+            if _trigger_already_due(task.lead, config, today=today):
                 open_pending_task(task)
                 opened.append(task)
     return opened

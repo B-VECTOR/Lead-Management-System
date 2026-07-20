@@ -19,6 +19,12 @@ function fmtFee(v) {
   return Number.isFinite(n) ? n.toLocaleString() : String(v)
 }
 
+// Whites are multi-select on the allocation, so the cycle row carries a list.
+function names(list) {
+  if (!list || list.length === 0) return null
+  return list.map((u) => u?.name).filter(Boolean).join(', ')
+}
+
 // Resource Manager Project Closure screen (Tech Req §9.2 / PRD §5.12) — one row
 // per project cycle (first-time implementation + every extension), each with
 // its own Project No, extension number, and status. Short-close acts only on
@@ -61,7 +67,7 @@ export default function ProjectClosure() {
                 <TableHead>Lead Manager</TableHead>
                 <TableHead>Exec Red</TableHead>
                 <TableHead>Exec Brown</TableHead>
-                <TableHead>White</TableHead>
+                <TableHead>White(s)</TableHead>
                 <TableHead className="text-right">Fixed Fee</TableHead>
                 <TableHead className="text-right">Variable Fee</TableHead>
                 <TableHead className="text-right">Action</TableHead>
@@ -84,7 +90,7 @@ export default function ProjectClosure() {
                   <TableCell className="text-sm">{r.lead_manager?.name || '—'}</TableCell>
                   <TableCell className="text-sm">{r.execution_red?.name || '—'}</TableCell>
                   <TableCell className="text-sm">{r.execution_brown?.name || '—'}</TableCell>
-                  <TableCell className="text-sm">{r.white?.name || '—'}</TableCell>
+                  <TableCell className="text-sm">{names(r.whites) || '—'}</TableCell>
                   <TableCell className="text-right text-sm">{fmtFee(r.fixed_fee)}</TableCell>
                   <TableCell className="text-right text-sm">{fmtFee(r.variable_fee)}</TableCell>
                   <TableCell className="text-right">
