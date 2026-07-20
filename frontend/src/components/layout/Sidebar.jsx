@@ -16,9 +16,8 @@ const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/leads', label: 'Leads', icon: Users2, show: canSeeLeadModule },
   { to: '/other-tasks', label: 'Follow up', icon: ListTodo, show: canSeeFollowUps },
-  // One "Hold Items" menu with the two hold review views (Tech Req §6 v16).
-  { to: '/held-leads', label: 'Hold Leads', icon: PauseCircle, show: canSeeHeldLeads, group: 'Hold Items' },
-  { to: '/held-tasks', label: 'Hold Tasks', icon: ListChecks, show: canSeeHeldTasks, group: 'Hold Items' },
+  { to: '/held-leads', label: 'Hold Leads', icon: PauseCircle, show: canSeeHeldLeads },
+  { to: '/held-tasks', label: 'Hold Tasks', icon: ListChecks, show: canSeeHeldTasks },
   { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Resource Manager'] },
   { to: '/project-closure', label: 'Project Closure', icon: FileCheck2, roles: ['Resource Manager'] },
   { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Finance'] },
@@ -66,14 +65,8 @@ export function Sidebar({ className, collapsed = false, onToggle }) {
   return (
     <nav className={cn('flex h-full flex-col gap-1 p-3', collapsed && 'items-center px-2', className)}>
       <Logo collapsed={collapsed} />
-      {items.map((item, i) => (
-        <div key={item.to} className={cn('flex flex-col gap-1', item.group && 'pl-0')}>
-          {/* Group label appears once above its first item (e.g. "Hold Items"). */}
-          {!collapsed && item.group && items[i - 1]?.group !== item.group && (
-            <p className="mt-1 px-3 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{item.group}</p>
-          )}
-          <NavItem {...item} collapsed={collapsed} />
-        </div>
+      {items.map((item) => (
+        <NavItem key={item.to} {...item} collapsed={collapsed} />
       ))}
       <div className="flex-1" />
       {onToggle && (

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { AllocationStatusBadge } from '@/components/shared/StatusBadge'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -43,18 +44,20 @@ const SINGLE_FIELDS = [
 const NONE = '__none__'
 
 // Open = resources actively tied up; Closed = freed up (auto-close rules).
+// Colour is canonical (shared AllocationStatusBadge); this page shows Closed as
+// "Freed" and adds a hint tooltip.
 const STATUS_META = {
-  Pending: { cls: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', label: 'Pending', hint: 'Awaiting allocation' },
-  Open: { cls: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300', label: 'Open', hint: 'Resources tied up' },
-  Closed: { cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300', label: 'Freed', hint: 'Resources freed up' },
+  Pending: { label: 'Pending', hint: 'Awaiting allocation' },
+  Open: { label: 'Open', hint: 'Resources tied up' },
+  Closed: { label: 'Freed', hint: 'Resources freed up' },
 }
 
 function StatusBadge({ status }) {
-  const meta = STATUS_META[status] || { cls: '', label: status, hint: '' }
+  const meta = STATUS_META[status] || { label: status, hint: '' }
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant="secondary" className={meta.cls}>{meta.label}</Badge>
+        <span><AllocationStatusBadge status={status} label={meta.label} /></span>
       </TooltipTrigger>
       {meta.hint && <TooltipContent>{meta.hint}</TooltipContent>}
     </Tooltip>

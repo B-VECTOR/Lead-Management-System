@@ -49,6 +49,22 @@ const CHECKLIST_ITEM_STYLES = {
 }
 const CHECKLIST_ITEM_LABELS = { not_started: 'Not started', inprogress: 'In progress', complete: 'Complete' }
 
+// Resource-allocation status (§5.7): Pending (not yet allocated) / Open
+// (resources tied up) / Closed (freed/released). Callers may override the
+// displayed label — e.g. the RM's Resources page shows Closed as "Freed".
+const ALLOCATION_STATUS_STYLES = {
+  Pending: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  Open: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  Closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+}
+
+// Project-closure row status (§5.16): In Progress / Extended / Complete.
+const PROJECT_CLOSURE_STATUS_STYLES = {
+  'In Progress': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  Extended: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+  Complete: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+}
+
 const PRIORITY_STYLES = {
   Low: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
   Medium: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
@@ -94,9 +110,9 @@ const BELT_POTENTIAL_STYLES = {
 const BELT_POTENTIAL_FALLBACK = 'border border-dashed border-border bg-transparent text-muted-foreground'
 const BELT_NA_STYLES = 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
 
-function Pill({ className, children }) {
+function Pill({ className, children, title }) {
   return (
-    <span className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap', className)}>
+    <span title={title} className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap', className)}>
       {children}
     </span>
   )
@@ -120,6 +136,16 @@ export function TaskStateBadge({ status }) {
 
 export function ChecklistItemBadge({ status }) {
   return <Pill className={CHECKLIST_ITEM_STYLES[status] || 'bg-neutral-100 text-neutral-700'}>{CHECKLIST_ITEM_LABELS[status] || status}</Pill>
+}
+
+// `label` overrides the displayed text (defaults to the raw status); `title`
+// adds a native tooltip. Color stays canonical regardless of the label.
+export function AllocationStatusBadge({ status, label, title }) {
+  return <Pill title={title} className={ALLOCATION_STATUS_STYLES[status] || 'bg-neutral-100 text-neutral-700'}>{label || status}</Pill>
+}
+
+export function ProjectClosureStatusBadge({ status }) {
+  return <Pill className={PROJECT_CLOSURE_STATUS_STYLES[status] || 'bg-neutral-100 text-neutral-700'}>{status}</Pill>
 }
 
 export function PriorityBadge({ priority }) {

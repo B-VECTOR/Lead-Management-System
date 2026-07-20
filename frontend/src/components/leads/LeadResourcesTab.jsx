@@ -1,13 +1,7 @@
 import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { AllocationStatusBadge } from '@/components/shared/StatusBadge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useLeadResourceAllocations } from '@/hooks/useResources'
-
-const STATUS_STYLES = {
-  Pending: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  Open: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
-  Closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
-}
 
 // "Open" = resources tied up on this stage; "Closed" = freed/released (Phase 10d).
 const STATUS_TOOLTIP = { Open: 'Tied up', Closed: 'Freed / released', Pending: 'Not yet allocated' }
@@ -57,9 +51,7 @@ export function LeadResourcesTab({ leadId }) {
                   <TableRow key={a.id}>
                     <TableCell className="font-medium">{a.type}</TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className={STATUS_STYLES[a.status] || ''} title={STATUS_TOOLTIP[a.status] || ''}>
-                        {a.status}
-                      </Badge>
+                      <AllocationStatusBadge status={a.status} title={STATUS_TOOLTIP[a.status] || ''} />
                     </TableCell>
                     <TableCell className="text-sm">{rn.execution_red?.name || <span className="text-muted-foreground">Unassigned</span>}</TableCell>
                     <TableCell className="text-sm">{rn.execution_brown?.name || <span className="text-muted-foreground">—</span>}</TableCell>

@@ -9,6 +9,7 @@ Internal **Lead Management System (LMS)** for a B2B SaaS product company. Tracks
 - **Full product requirements:** `LMS_PRD_updated.md` — read before building any feature.
 - **Data model, workflow tables, field specs:** `LMS_Technical_Requirements_updated.md` — read before touching models, endpoints, or the workflow engine.
 - **Current build plan & progress:** `PLAN.md` — the phase breakdown and checklist. Update this file's checkboxes as work completes; do not treat it as documentation, treat it as a tracker.
+- **UI design system (colors, components, patterns):** `design.md` — read before building or restyling any screen or component; all status color goes through `frontend/src/components/shared/StatusBadge.jsx`.
 
 Always check `PLAN.md` for current phase/status before starting work, and confirm which phase you've been asked to execute if it isn't stated.
 
