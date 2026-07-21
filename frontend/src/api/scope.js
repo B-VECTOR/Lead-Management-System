@@ -37,11 +37,13 @@ export const canSeeFollowUps = (user) =>
 export const canSeeHeldLeads = (user) =>
   LEAD_MODULE_ROLES.some((r) => hasRole(user, r))
 
-// Held Tasks is open to every user (Phase 13, per the user): an assignee/Employee
-// needs to see the tasks of theirs that are on hold, a Lead Manager reviews the
-// hold reason + trail, and the API self-scopes each caller to only the held
-// tasks they can see.
-export const canSeeHeldTasks = (user) => !!user
+// Held Tasks is open to every user except User Management (Phase 13, per the
+// user, later narrowed): an assignee/Employee needs to see the tasks of theirs
+// that are on hold, a Lead Manager reviews the hold reason + trail, and the
+// API self-scopes each caller to only the held tasks they can see. User
+// Management is a pure back-office role with no tasks of its own, so it has
+// no use for this tab.
+export const canSeeHeldTasks = (user) => !!user && !hasRole(user, 'User Management')
 
 // Back-compat alias (older callers) — the stricter lead-facing gate.
 export const canSeeHeldQueues = canSeeHeldLeads

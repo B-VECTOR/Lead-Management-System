@@ -160,6 +160,7 @@ Available and in use: `button`, `input`, `textarea`, `select`, `checkbox`, `labe
 | `ProgressBar.jsx` | Horizontal progress for dense contexts (table rows). `min-w-[110px]`, 2px track, `%` label |
 | `ProgressRing.jsx` | Circular progress for cards/detail (default 40px). Same color logic as bar |
 | `UserChip.jsx` | Avatar (initials) + name. `size="sm"` (size-6) or larger. Falls back to muted "Unassigned" |
+| `ModeToggle.jsx` | Light/dark/system theme switcher (icon button + dropdown), backed by `next-themes`'s `ThemeProvider` (wired in `main.jsx`). Lives in `Topbar` next to `NotificationBell` |
 
 Build new cross-page composites here (not inside a page) when a pattern repeats.
 
