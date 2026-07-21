@@ -29,7 +29,7 @@ export function LeadFollowUpsTab({ leadId }) {
         {canManage && <Button size="sm" onClick={() => setCreateOpen(true)}><Plus className="size-4" /> New follow-up</Button>}
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="flex flex-col divide-y p-0">
           {followups.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">No follow-ups on this lead.</p>}
           {followups.map((f) => {

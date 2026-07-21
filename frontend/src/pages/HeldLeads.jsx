@@ -34,7 +34,7 @@ export default function HeldLeads() {
         <p className="text-sm text-muted-foreground">Leads currently on hold. Unholding a lead resumes its held tasks too.</p>
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>

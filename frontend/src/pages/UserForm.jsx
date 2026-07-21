@@ -70,6 +70,10 @@ export default function UserForm() {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  function setMobileNo(value) {
+    set('mobile_no', value.replace(/\D/g, '').slice(0, 10))
+  }
+
   function toggleRole(role, checked) {
     setForm((f) => ({
       ...f,
@@ -109,9 +113,10 @@ export default function UserForm() {
   // Date of joining is exempt from the no-past-dates rule, but a future joining
   // date is not allowed.
   const joiningDateOk = !!form.date_of_joining && form.date_of_joining <= TODAY
+  const mobileNoOk = /^\d{10}$/.test(form.mobile_no)
 
   const basicFieldsFilled = form.username.trim() && form.name.trim() && String(form.employee_id).trim()
-    && form.email.trim() && String(form.mobile_no).trim() && joiningDateOk && domainOk
+    && form.email.trim() && mobileNoOk && joiningDateOk && domainOk
 
   const newPasswordOk = isEdit
     ? !form.password || form.password.length >= 6
@@ -151,7 +156,16 @@ export default function UserForm() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Mobile no. *</Label>
-            <Input type="number" min="0" value={form.mobile_no} onChange={(e) => set('mobile_no', e.target.value)} placeholder="e.g. 9820011011" />
+            <Input
+              type="text"
+              inputMode="numeric"
+              value={form.mobile_no}
+              onChange={(e) => setMobileNo(e.target.value)}
+              placeholder="e.g. 9820011011"
+            />
+            {form.mobile_no && !mobileNoOk && (
+              <p className="text-xs text-destructive">Enter a valid 10-digit mobile number.</p>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Date of joining *</Label>

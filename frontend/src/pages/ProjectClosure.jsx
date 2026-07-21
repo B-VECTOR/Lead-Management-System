@@ -71,7 +71,7 @@ export default function ProjectClosure() {
         <p className="text-sm text-muted-foreground">One row per project. Expand a row to see its past extension cycles. Short-closing the current cycle opens its Project Closure task.</p>
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>

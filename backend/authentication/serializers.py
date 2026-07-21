@@ -70,6 +70,11 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Joining date can't be in the future.")
         return value
 
+    def validate_mobile_no(self, value):
+        if not str(value).isdigit() or len(str(value)) != 10:
+            raise serializers.ValidationError("Enter a valid 10-digit mobile number.")
+        return value
+
     def create(self, validated_data):
         groups = validated_data.pop("groups", [])
         password = validated_data.pop("password", None)

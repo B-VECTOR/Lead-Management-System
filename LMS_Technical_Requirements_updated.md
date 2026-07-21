@@ -140,6 +140,7 @@ Apply these rules to every numeric and date field across the system (lead form, 
 
 - **Numeric fields:** zero (`0`) is a valid value; negative values are **not allowed**. Enforce with a `MinValueValidator(0)`-equivalent at both the serializer and DB constraint level.
 - **Date fields:** past dates are **not allowed** — every date field must be today or a future date. Enforce at the serializer level (compare against `timezone.now().date()`); do not rely on frontend validation alone.
+- **Mobile/phone number fields (added 2026-07-21):** exactly 10 digits, numeric characters only (no leading `+`, spaces, or other formatting). Stored as a `CharField(max_length=10)` with a `^\d{10}$` regex validator (a plain integer type can't preserve leading zeros and can't bound digit count), enforced at both the serializer and model level; do not rely on frontend validation alone.
 
 ---
 
@@ -167,7 +168,7 @@ Where a table needs a *semantic* creator (e.g. `leads.created_by` records whethe
 | name | text | |
 | employee_id | number | ≥ 0, **unique** — duplicate IDs are rejected with a friendly message |
 | email | text | |
-| mobile_no | number | ≥ 0 |
+| mobile_no | string | exactly 10 digits — see §3 Global Field Validation Rules |
 | acting_belt_level | FK → `belts` | see §4.2 |
 | belt | FK → `belts` | see §4.2. Same reference table as `acting_belt_level`, independent value. |
 | domain | FK → `areas` | user's competency Domain — sources its dropdown from the **same `areas` reference table** used by the lead's `domain`/Area field (§4.2). One shared table, two independent fields on two different forms. |

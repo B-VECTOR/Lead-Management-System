@@ -63,7 +63,7 @@ export default function HeldTasks() {
         <p className="text-sm text-muted-foreground">Tasks currently on hold. A held task cannot be edited until it is resumed. Expand a row to see the full hold history.</p>
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>

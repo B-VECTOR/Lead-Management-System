@@ -73,7 +73,7 @@ The base palette is neutral/grayscale (`oklch(… 0 0)`), so **color in the UI c
 ### Spacing
 
 - Page content padding: `p-4 sm:p-6` (set by `AppShell` main). Don't re-pad the page root.
-- Card body: `CardContent` default padding; use `p-0` when a card wraps a full-bleed `<Table>`.
+- Card body: `CardContent` default padding; use `p-0` when a card wraps a full-bleed `<Table>` — and also add `py-0` to the outer `<Card>` (it has `py-6` by default), or the table sits inset by that vertical padding anyway.
 - Gaps: `gap-2` (tight, inline), `gap-2.5` (nav items), `gap-4`/`gap-6` (section stacks). Vertical rhythm via `space-y-4` / `space-y-6`.
 
 ### App layout
@@ -166,7 +166,7 @@ Build new cross-page composites here (not inside a page) when a pattern repeats.
 
 ### Tables
 
-Wrap in a `Card` with `CardContent className="overflow-x-auto p-0"` so wide tables scroll horizontally on mobile without breaking the page. Header cells: `<TableHead>`; use a second header `<TableRow>` for per-column filter inputs (`h-8 text-xs`). Empty/loading state: a single full-`colSpan` `<TableCell className="py-8 text-center text-muted-foreground">`. Clickable rows: `className="cursor-pointer"` + `onClick`; stop propagation on inner links.
+Wrap in a `Card className="py-0"` with `CardContent className="overflow-x-auto p-0"` so wide tables scroll horizontally on mobile without breaking the page, and the card border hugs the table with no extra top/bottom padding. Header cells: `<TableHead>`; use a second header `<TableRow>` for per-column filter inputs (`h-8 text-xs`). Empty/loading state: a single full-`colSpan` `<TableCell className="py-8 text-center text-muted-foreground">`. Clickable rows: `className="cursor-pointer"` + `onClick`; stop propagation on inner links.
 
 ---
 

@@ -21,7 +21,7 @@ export default function Notifications() {
         {unread > 0 && <Button variant="outline" onClick={() => markAllRead.mutate()}>Mark all read</Button>}
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="flex flex-col divide-y p-0">
           {notifications.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">No notifications yet.</p>}
           {notifications.map((n) => (

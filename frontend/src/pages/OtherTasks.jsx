@@ -37,7 +37,7 @@ export default function OtherTasks() {
         {canManage && <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" /> New follow-up</Button>}
       </div>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>

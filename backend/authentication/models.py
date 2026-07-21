@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -60,10 +61,6 @@ class User(AbstractUser):
     last_name = None
     name = models.CharField(_("name"), max_length=300)
 
-    # Tech Req §4.1: numeric, ≥ 0. PositiveIntegerField / PositiveBigIntegerField
-    # both carry a MinValueValidator(0) by default; mobile numbers need the
-    # 64-bit range (a 10-digit number overflows a 32-bit int). Per Decision #7,
-    # this means no leading "+" or formatting can be stored.
     employee_id = models.PositiveIntegerField(
         _("employee ID"),
         unique=True,
@@ -73,7 +70,16 @@ class User(AbstractUser):
             "unique": _("This Employee ID is already in use by another user.")
         },
     )
-    mobile_no = models.PositiveBigIntegerField(_("mobile number"))
+    mobile_no = models.CharField(
+        _("mobile number"),
+        max_length=10,
+        validators=[
+            RegexValidator(
+                regex=r"^\d{10}$",
+                message=_("Enter a valid 10-digit mobile number."),
+            )
+        ],
+    )
     belt = models.ForeignKey(
         Belt,
         on_delete=models.SET_NULL,

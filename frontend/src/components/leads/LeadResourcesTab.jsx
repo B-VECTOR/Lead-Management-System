@@ -25,7 +25,7 @@ export function LeadResourcesTab({ leadId }) {
         Man-power allocated for this lead's workflow stages. Managed by the Resource Manager on the Resources screen.
       </p>
 
-      <Card>
+      <Card className="py-0">
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>

@@ -104,7 +104,7 @@ User form fields:
 
 -   Email --- text
 
--   Mobile No --- number (≥ 0, no negative values)
+-   Mobile No --- text, exactly 10 digits (numeric characters only)
 
 -   Acting Belt Level --- dropdown, sourced from the Belt reference
     table (section 5.17)
