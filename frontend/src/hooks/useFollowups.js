@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as followupsApi from '@/api/followups'
 import { useAuth } from '@/context/AuthContext'
-import { hasRole } from '@/api/scope'
+import { PERMISSIONS } from '@/api/scope'
 
 // Backend-wired follow-up hooks (Phase 7), replacing the mock-backed module.
 
@@ -14,14 +14,15 @@ export function useFollowups(filters = {}) {
   })
 }
 
-// Assignee dropdown — only Lead Managers may fetch it (they alone raise
-// follow-ups), so the query is disabled for everyone else.
+// Assignee dropdown — open to whoever can raise a follow-up (Phase 12
+// broadened creation beyond Lead-Manager-only; mirrors PERMISSIONS.manageFollowups
+// and the backend's CanAddFollowupPermission).
 export function useFollowupAssignees() {
   const { user } = useAuth()
   return useQuery({
     queryKey: ['followup-assignees'],
     queryFn: followupsApi.listFollowupAssignees,
-    enabled: !!user && hasRole(user, 'Lead Manager'),
+    enabled: !!user && PERMISSIONS.manageFollowups(user),
   })
 }
 

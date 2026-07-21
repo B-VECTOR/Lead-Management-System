@@ -12,7 +12,7 @@ import { useUsers } from '@/hooks/useUsers'
 import { useGroups, useBelts } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { groupLabel, IMPLICIT_GROUP_NAME } from '@/lib/roles'
+import { groupLabel, HIDDEN_FROM_ROLE_FILTER } from '@/lib/roles'
 
 export default function UsersList() {
   const { user } = useAuth()
@@ -23,7 +23,7 @@ export default function UsersList() {
   const { data: groups = [] } = useGroups()
   const { data: belts = [] } = useBelts()
   const selectableRoles = useMemo(
-    () => groups.filter((g) => g.name !== IMPLICIT_GROUP_NAME).map((g) => groupLabel(g.name)),
+    () => groups.filter((g) => !HIDDEN_FROM_ROLE_FILTER.includes(g.name)).map((g) => groupLabel(g.name)),
     [groups],
   )
   const beltNames = useMemo(() => belts.map((b) => b.name), [belts])

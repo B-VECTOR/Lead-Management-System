@@ -800,7 +800,8 @@ class FollowupScopeMixin:
 
 class FollowupListCreateView(FollowupScopeMixin, generics.ListCreateAPIView):
     """List the caller's follow-ups (Other Tasks / a lead's tab) or raise a new
-    one (Lead Manager only — the permission class enforces it).
+    one (any authenticated user who can view the target lead — Phase 12; the
+    permission class + perform_create enforce it).
     """
 
     serializer_class = FollowupSerializer
@@ -877,8 +878,9 @@ class FollowupAssigneeListView(generics.ListAPIView):
 
     The docs describe the dropdown as "Employee-role users, including the Lead
     Manager themself"; since Employee is the baseline role every user holds
-    (CLAUDE.md), this returns all active users. Lead-Manager-only (they are the
-    only role that raises follow-ups).
+    (CLAUDE.md), this returns all active users. Open to any authenticated user
+    (Phase 12 broadened follow-up creation beyond Lead-Manager-only), so any
+    creator can load the assignee list.
     """
 
     serializer_class = AssignableUserSerializer

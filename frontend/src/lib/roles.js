@@ -21,6 +21,10 @@ export const GROUP_LABELS = {
 export const IMPLICIT_GROUP_NAME = 'employee'
 export const IMPLICIT_ROLE = GROUP_LABELS[IMPLICIT_GROUP_NAME]
 
+// Only User Management members can see the Users list, so this role is
+// implicit for anyone viewing it — hide it from the role filter dropdown.
+export const HIDDEN_FROM_ROLE_FILTER = [IMPLICIT_GROUP_NAME, 'user_management']
+
 export function groupLabel(name) {
   return GROUP_LABELS[name] || name
 }
