@@ -81,6 +81,10 @@ class LeadSerializer(serializers.ModelSerializer):
     # The still-open hold interval while the lead is On Hold (Tech Req §5.8/§4.9
     # v16) — drives the amber "on hold" banner (reason + who/when) on detail.
     active_hold = serializers.SerializerMethodField()
+    # The current project cycle's short-close stamp (Phase 16, PRD §5.12) —
+    # drives the blue "short-closed" banner on detail while the lead is still
+    # working its way to Complete.
+    short_close_info = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -107,6 +111,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "lead_display_id",
             "drop_remark",
             "active_hold",
+            "short_close_info",
             "project_id",
             "project_id_base",
             "extension",
@@ -124,6 +129,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "lead_display_id",
             "drop_remark",
             "active_hold",
+            "short_close_info",
             "project_id",
             "project_id_base",
             "extension",
@@ -190,6 +196,18 @@ class LeadSerializer(serializers.ModelSerializer):
             "reason": hold.reason,
             "hold_at": hold.hold_at,
             "hold_by_name": hold.hold_by.name if hold.hold_by else None,
+        }
+
+    def get_short_close_info(self, obj):
+        if obj.status == Lead.Status.COMPLETE:
+            return None
+        detail = obj.project_details.filter(is_current=True, short_closed=True).first()
+        if detail is None:
+            return None
+        return {
+            "short_closed_at": detail.short_closed_at,
+            "short_closed_by_name": detail.short_closed_by.name if detail.short_closed_by else None,
+            "remark": detail.short_close_remark,
         }
 
     def validate_status(self, value):
@@ -348,6 +366,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "can_hold",
             "can_reassign",
             "scheduled_open",
+            "short_closed",
             "opened_at",
             "closed_at",
             "elapsed_time",
@@ -362,6 +381,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "assigned_to",
             "status",
             "is_allocation_task",
+            "short_closed",
             "opened_at",
             "closed_at",
             "elapsed_time",
@@ -582,6 +602,9 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
             "variable_fee",
             "fixed_fee_upto",
             "can_short_close",
+            "short_closed",
+            "short_closed_at",
+            "short_close_remark",
             "generated_at",
         ]
 
@@ -629,7 +652,12 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
         return None
 
     def get_can_short_close(self, obj):
-        return obj.is_current and obj.lead.status != Lead.Status.COMPLETE
+        return (
+            obj.is_current
+            and not obj.short_closed
+            and obj.lead.status
+            not in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED)
+        )
 
 
 class FollowupUpdateSerializer(serializers.ModelSerializer):

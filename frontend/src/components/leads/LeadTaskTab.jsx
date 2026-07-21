@@ -266,7 +266,9 @@ export function LeadTaskTab({ leadId }) {
             })()}
             {activeTask.status === 'skipped' && (
               <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
-                Skipped — the workflow branched around this step, so it never opened.
+                {activeTask.short_closed
+                  ? 'Skipped — the project was short-closed; work moved directly to Project Closure.'
+                  : 'Skipped — the workflow branched around this step, so it never opened.'}
               </p>
             )}
             {activeTask.status === 'dropped' && (

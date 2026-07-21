@@ -755,12 +755,27 @@ class ProjectClosureShortCloseView(APIView):
                 {"detail": "Short-close applies only to the current project cycle."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        opened = engine.open_project_closure(detail.lead, request.user)
+        # A remark is compulsory (Phase 16 follow-up) so a project is never
+        # short-closed by accident — mirrors the hold/unhold remark, but required.
+        remark = (request.data.get("remark") or "").strip()
+        if not remark:
+            return Response(
+                {"remark": ["A remark is required to short-close a project."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        opened = engine.open_project_closure(detail.lead, request.user, remark=remark)
         if opened is None:
             return Response(
                 {"detail": "Project closure is already open or the lead is complete."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        events.log_activity(
+            detail.lead,
+            request.user,
+            "status",
+            f"Project short-closed ({detail.project_id})",
+            remark,
+        )
         defs = engine.task_defs_for(detail.lead.lead_type)
         return Response(
             TaskSerializer(opened, context={"request": request, "task_defs": defs}).data,

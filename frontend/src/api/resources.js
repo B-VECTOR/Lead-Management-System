@@ -104,9 +104,9 @@ export async function listProjectClosure({ leadId } = {}) {
   }
 }
 
-export async function shortCloseProject(id) {
+export async function shortCloseProject(id, remark) {
   try {
-    const { data } = await client.post(`/api/project-closure/${id}/short-close/`)
+    const { data } = await client.post(`/api/project-closure/${id}/short-close/`, { remark })
     return data
   } catch (err) {
     throwApiError(err)

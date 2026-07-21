@@ -114,8 +114,14 @@ def regenerate_project_id(lead, user, *, allocation=None, when=None):
 def complete_current_cycle(lead):
     """Task 17 closure: mark the current project_details cycle Complete (§4.8).
 
-    Earlier (``Extended``) rows are left untouched.
+    A short-closed cycle keeps its terminal **Short Closed** status instead of
+    flipping to Complete (Phase 16 follow-up). Earlier (``Extended``) rows are
+    left untouched either way.
     """
-    ProjectDetails.objects.filter(lead=lead, is_current=True).update(
-        status=ProjectDetails.Status.COMPLETE
+    current = ProjectDetails.objects.filter(lead=lead, is_current=True)
+    status = (
+        ProjectDetails.Status.SHORT_CLOSED
+        if current.filter(short_closed=True).exists()
+        else ProjectDetails.Status.COMPLETE
     )
+    current.update(status=status)

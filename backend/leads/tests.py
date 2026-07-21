@@ -1614,7 +1614,9 @@ class ProjectClosureApiTests(Phase6TestBase):
     def test_short_close_opens_project_closure_task(self):
         detail = ProjectDetails.objects.get(lead=self.lead, is_current=True)
         self.client.force_authenticate(self.resource_manager)
-        res = self.client.post(f"/api/project-closure/{detail.id}/short-close/")
+        res = self.client.post(
+            f"/api/project-closure/{detail.id}/short-close/", {"remark": "Wrapping up."}
+        )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
         self.assertEqual(res.data["task_no"], 17)
         self.assertTrue(
@@ -1624,9 +1626,154 @@ class ProjectClosureApiTests(Phase6TestBase):
     def test_short_close_twice_is_rejected(self):
         detail = ProjectDetails.objects.get(lead=self.lead, is_current=True)
         self.client.force_authenticate(self.resource_manager)
-        self.client.post(f"/api/project-closure/{detail.id}/short-close/")
-        again = self.client.post(f"/api/project-closure/{detail.id}/short-close/")
+        first = self.client.post(
+            f"/api/project-closure/{detail.id}/short-close/", {"remark": "Wrapping up."}
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED, first.data)
+        again = self.client.post(
+            f"/api/project-closure/{detail.id}/short-close/", {"remark": "Again."}
+        )
         self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ShortCloseCascadeTests(Phase6TestBase):
+    """Phase 16: short-closing sweeps whatever else is active to `skipped` and
+    stamps the current project cycle, driving the Lead/Task banners."""
+
+    def setUp(self):
+        super().setUp()
+        # No WorkflowTriggerConfig row exists for task 13 in this fixture, so
+        # it opens immediately (rather than `pending`) once Task 12 closes —
+        # see TriggerSchedulerTests, which is the only place configs are made.
+        self.drive(self.walk_to_task12())  # Task 12 closed → one project cycle
+        self.task13 = self.open_task(13)
+        self.assertIsNotNone(self.task13)  # sanity: opened, not pending
+        self.detail = ProjectDetails.objects.get(lead=self.lead, is_current=True)
+
+    def test_short_close_skips_the_open_task_and_opens_closure(self):
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/project-closure/{self.detail.id}/short-close/",
+            {"remark": "Client cancelled the engagement."},
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["task_no"], 17)
+        self.assertTrue(
+            self.lead.tasks.filter(task_no=17, status=Task.Status.OPEN).exists()
+        )
+        self.task13.refresh_from_db()
+        self.assertEqual(self.task13.status, Task.Status.SKIPPED)
+        self.assertTrue(self.task13.short_closed)
+        # Lead + current cycle move to the terminal Short Closed status, and the
+        # compulsory remark is stored on the cycle.
+        self.lead.refresh_from_db()
+        self.detail.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.SHORT_CLOSED)
+        self.assertEqual(self.detail.status, ProjectDetails.Status.SHORT_CLOSED)
+        self.assertEqual(self.detail.short_close_remark, "Client cancelled the engagement.")
+
+    def test_short_close_requires_a_remark(self):
+        self.client.force_authenticate(self.resource_manager)
+        for body in ({}, {"remark": "   "}):
+            res = self.client.post(
+                f"/api/project-closure/{self.detail.id}/short-close/", body
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        # Nothing happened: still open, not short-closed.
+        self.task13.refresh_from_db()
+        self.detail.refresh_from_db()
+        self.assertEqual(self.task13.status, Task.Status.OPEN)
+        self.assertFalse(self.detail.short_closed)
+
+    def test_short_close_skips_a_held_task(self):
+        holds.hold_task(self.task13, self.lead_manager)
+        self.task13.refresh_from_db()
+        self.assertEqual(self.task13.status, Task.Status.HOLD)
+        engine.open_project_closure(self.lead, user=self.resource_manager)
+        self.task13.refresh_from_db()
+        self.assertEqual(self.task13.status, Task.Status.SKIPPED)
+        self.assertTrue(self.task13.short_closed)
+
+    def test_short_close_skips_a_pending_trigger_task(self):
+        # A second, fresh lead with a Task-13 trigger config whose 60-day
+        # offset window hasn't arrived yet, so it sits `pending` rather than
+        # opening once Task 12 closes.
+        workflow = Workflow.objects.get(type=Lead.LeadType.BD)
+        WorkflowTriggerConfig.objects.create(
+            workflow=workflow, task_no=13, reference_task_no=12,
+            reference_field_key="modified_planned_end_date", offset_days=60,
+        )
+        lead2 = Lead.objects.create(
+            country=self.country, industry=self.industry, domain=self.area,
+            company_name="WF Co 2", project_name="WF Project 2",
+            created_by=self.lead_manager, assigned_to=self.lead_manager,
+        )
+
+        def open_task(no):
+            return lead2.tasks.filter(task_no=no, status=Task.Status.OPEN).order_by("-id").first()
+
+        self.drive(open_task(1))
+        self.drive_alloc(open_task(2), self.exec_red)
+        self.drive(open_task(3))
+        self.drive(open_task(4))
+        self.drive(open_task(5), values={"solution_blueprint_required": "No"})
+        self.drive(open_task(10))
+        self.drive_alloc(open_task(11), self.exec_red)
+        self.drive(open_task(12))  # default _VALUES: end date 90 days out — outside the 60-day window
+        pending13 = lead2.tasks.filter(task_no=13, status=Task.Status.PENDING).order_by("-id").first()
+        self.assertIsNotNone(pending13)
+        detail = ProjectDetails.objects.get(lead=lead2, is_current=True)
+        engine.open_project_closure(lead2, user=self.resource_manager)
+        pending13.refresh_from_db()
+        self.assertEqual(pending13.status, Task.Status.SKIPPED)
+        self.assertTrue(pending13.short_closed)
+        detail.refresh_from_db()
+        self.assertTrue(detail.short_closed)
+
+    def test_short_close_stamps_current_cycle_only(self):
+        engine.open_project_closure(self.lead, user=self.resource_manager)
+        self.detail.refresh_from_db()
+        self.assertTrue(self.detail.short_closed)
+        self.assertIsNotNone(self.detail.short_closed_at)
+        self.assertEqual(self.detail.short_closed_by, self.resource_manager)
+
+    def test_can_short_close_false_immediately_after(self):
+        self.client.force_authenticate(self.resource_manager)
+        self.client.post(
+            f"/api/project-closure/{self.detail.id}/short-close/",
+            {"remark": "Done early."},
+        )
+        res = self.client.get("/api/project-closure/")
+        row = next(r for r in res.data if r["id"] == self.detail.id)
+        self.assertFalse(row["can_short_close"])
+        self.assertTrue(row["short_closed"])
+
+    def test_lead_serializer_short_close_info(self):
+        engine.open_project_closure(
+            self.lead, user=self.resource_manager, remark="No budget."
+        )
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertIsNotNone(res.data["short_close_info"])
+        self.assertEqual(res.data["short_close_info"]["short_closed_by_name"], self.resource_manager.name)
+        self.assertEqual(res.data["short_close_info"]["remark"], "No budget.")
+
+    def test_short_closed_cycle_stays_short_closed_after_task17(self):
+        # Task 17 still runs (fees collected) but the lead + cycle keep the
+        # terminal Short Closed status — they never flip to Complete.
+        engine.open_project_closure(
+            self.lead, user=self.resource_manager, remark="No budget."
+        )
+        task17 = self.open_task(17)
+        self.drive(task17, values={"final_closed": "Yes"})
+        self.lead.refresh_from_db()
+        self.detail.refresh_from_db()
+        self.assertEqual(self.lead.status, Lead.Status.SHORT_CLOSED)
+        self.assertEqual(self.detail.status, ProjectDetails.Status.SHORT_CLOSED)
+        # The banner persists (it's keyed off the short_closed flag, not status).
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(f"/api/leads/{self.lead.id}/")
+        self.assertIsNotNone(res.data["short_close_info"])
 
 
 class FollowupApiTestBase(LeadApiTestBase):

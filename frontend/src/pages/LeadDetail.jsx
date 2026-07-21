@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowLeft, Download, Eye, Paperclip, PauseCircle, Pencil, Trash2, UserCog, XCircle } from 'lucide-react'
+import { ArrowLeft, Download, Eye, Info, Paperclip, PauseCircle, Pencil, Trash2, UserCog, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -182,6 +182,23 @@ export default function LeadDetail() {
           <div>
             <p className="font-medium">Dropped</p>
             <p className="mt-0.5">{lead.drop_remark}</p>
+          </div>
+        </div>
+      )}
+      {lead.short_close_info && (
+        <div className="flex items-start gap-2 rounded-md border border-blue-300 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p className="font-medium">
+              Short-closed{lead.short_close_info.short_closed_by_name ? ` — by ${lead.short_close_info.short_closed_by_name}` : ''}
+              {lead.short_close_info.short_closed_at ? ` on ${formatDateTime(lead.short_close_info.short_closed_at)}` : ''}
+            </p>
+            <p className="mt-0.5">
+              Any tasks in progress were skipped; the project has moved directly to Project Closure.
+            </p>
+            {lead.short_close_info.remark && (
+              <p className="mt-1"><span className="font-medium">Remark:</span> {lead.short_close_info.remark}</p>
+            )}
           </div>
         </div>
       )}

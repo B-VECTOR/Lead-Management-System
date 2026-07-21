@@ -9,6 +9,8 @@ const LEAD_STATUS_STYLES = {
   // v12 uses "Complete"; keep "Completed" for any legacy mock data.
   Complete: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
   Completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  // Terminal early-closure — orange, distinct from natural Complete (emerald).
+  'Short Closed': 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
 }
 
 // Individual task-step status within the Task tab's checklist workspace —
@@ -58,11 +60,13 @@ const ALLOCATION_STATUS_STYLES = {
   Closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
 }
 
-// Project-closure row status (§5.16): In Progress / Extended / Complete.
+// Project-closure row status (§5.16): In Progress / Extended / Complete /
+// Short Closed (Phase 16 follow-up — kept once a cycle is short-closed).
 const PROJECT_CLOSURE_STATUS_STYLES = {
   'In Progress': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
   Extended: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   Complete: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  'Short Closed': 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
 }
 
 const PRIORITY_STYLES = {

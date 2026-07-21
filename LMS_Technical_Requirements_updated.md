@@ -247,7 +247,8 @@ All four tables (`countries`, `industries`, `areas`, `belts`) are managed from t
 | On Hold | User — manual | Pauses the workflow and all its open tasks (§6, Hold/Unhold). **(v16)** Set via a popup that captures an optional hold remark (`lead_hold.remark`). |
 | Dropped | User — manual | Cancels the lead. **(v16)** Set via a popup that captures an optional drop remark (`leads.drop_remark`); all open/hold tasks move to `dropped`. |
 | Hybernation | System — automatic | Set when Task 12 (Implementation) closes. Cannot be set manually. |
-| Complete | System — automatic | Set when the final task (Task 17, Project Closure) closes. Cannot be set manually. |
+| Complete | System — automatic | Set when the final task (Task 17, Project Closure) closes on a cycle that was **not** short-closed. Cannot be set manually. |
+| Short Closed | System — via short-close | **(Phase 16.1)** Terminal. Set when the Resource Manager short-closes the project (§9.2); requires a compulsory remark. Task 17 still runs, but the status is *kept* at Short Closed instead of flipping to Complete, so a short-closed engagement stays distinguishable. Cannot be set manually. |
 
 #### 4.3.3 Leads list — Tracker column & header filters (v16)
 - **Tracker column:** each lead row shows a workflow-progress tracker computed from task closure — `closed/total` task instances, a percentage, and a progress bar. `skipped` tasks (routed around by branching) are excluded from the total; extension/repeat cycles add instances, so the tracker reflects real remaining work. Bar color follows lead status: green (In Progress; darker on Complete), amber (On Hold), red (Dropped). Leads whose workflow hasn't started show "Not started". The API exposes this as `task_progress {total, closed, percent}` on the lead serializer.
@@ -260,7 +261,8 @@ All four tables (`countries`, `industries`, `areas`, `belts`) are managed from t
 | task_no | integer | sequence position in workflow (1–17 for BD) |
 | task_name | text | pulled from workflow JSON |
 | assigned_to | FK → users | |
-| status | dropdown | `pending`, `open`, `hold`, `closed`, `skipped` — `skipped` is set automatically when a branch condition routes around the task so it can never open (5 = No → 6–9; 7 = No → 8; 13 = No → 14–16; lead completion → any remaining `pending`). Task lists show only tasks that have opened (plus `skipped`); `pending` rows are hidden. |
+| status | dropdown | `pending`, `open`, `hold`, `closed`, `skipped` — `skipped` is set automatically when a branch condition routes around the task so it can never open (5 = No → 6–9; 7 = No → 8; 13 = No → 14–16; lead completion → any remaining `pending`), or **(Phase 16)** when the Resource Manager short-closes the project while this task is `open`, `hold`, or `pending`. Task lists show only tasks that have opened (plus `skipped`); `pending` rows are hidden. |
+| short_closed | boolean, default false | **Phase 16.** True on a `skipped` row specifically because a short-close swept it aside (as opposed to a normal branch route) — lets the task's own view explain why it never ran to completion. |
 | is_allocation_task | boolean | true for tasks 2, 6, 11, 15 |
 | opened_at | timestamp | |
 | closed_at | timestamp | |
@@ -344,11 +346,16 @@ Every time a Project ID is generated or regenerated (Task 12, and each Task 16 c
 | is_current | boolean | true only on the single most-recent row for a given lead |
 | generated_at | timestamp | when Task 12 or Task 16 closed to produce this row |
 | generated_by | FK → users | audit trail |
+| short_closed | boolean, default false | **Phase 16.** True once the Resource Manager short-closes this cycle from the Project Closure screen. |
+| short_closed_at | timestamp, nullable | **Phase 16.** When short-close was triggered. |
+| short_closed_by | FK → users, nullable | **Phase 16.** Who triggered it. |
+| short_close_remark | text | **Phase 16.1.** The compulsory reason captured by the short-close dialog (the endpoint rejects a blank remark). |
 
 **Row lifecycle:**
 1. **Task 12 (Implementation) closes:** insert one row — `extension_no = "00"`, `status = "In Progress"`, `is_current = true`, `resource_allocation_id` = the Task 11 allocation row.
 2. **Task 16 (Extension Implementation) closes:** flip the previous current row to `status = "Extended"`, `is_current = false`; insert a new row — `extension_no` incremented, `status = "In Progress"`, `is_current = true`, `resource_allocation_id` = that cycle's Task 15 allocation row.
 3. **Task 17 (Project Closure) closes, lead status → `Complete`:** set the current row's (`is_current = true`) `status` to `"Complete"`. Earlier rows keep whatever status they already had (`Extended`); they are not rewritten.
+4. **Resource Manager short-closes the current cycle (Phase 16):** stamp `short_closed = true`, `short_closed_at = now()`, `short_closed_by = <acting user>`, `short_close_remark = <required remark>` on the `is_current = true` row, in the same transaction that sweeps other active tasks to `skipped` and opens Task 17 (§4.4, §9.2). **(Phase 16.1)** The same transaction also sets the row's `status` to the new terminal value `"Short Closed"` and the lead's status to `Short Closed`; when Task 17 later closes, both are *kept* at `Short Closed` rather than flipping to `Complete` (see the workflow row-17 note). `can_short_close` (surfaced to the Project Closure screen) is false once `short_closed` is true, so the action cannot be re-triggered on that cycle.
 
 **Screen impact — Resource Allocation & Project Closure:** both screens should list **one line per `project_details` row**, not one line per lead — so a lead that went through two extensions shows three rows (its original implementation plus two extensions), each with its own Project ID, extension number, status, and generation date, all clearly grouped under the same lead/company. The Project Closure short-close action always operates on the `is_current = true` row.
 
@@ -439,7 +446,7 @@ This is the authoritative task sequence for `lead_type = BD`, transcribed from t
 | 14 | Extension Detail | View: same BD; Edit: execution red | 13.8 Addendum agreement · 13.9 Expected variable fee over eligible period submitted | Engagement start date; Engagement end date; Period (months); Actual fixed fee invoice date; Variable fee start date; Manpower (Brown, White) | Opens only if Task 13 approved = Yes |
 | 15 | Project Extension Team Allocation | Resource Manager by default | *None — allocation task* | Status only | Opens if Task 13 approved = Yes. Creates `resource_allocation` row (type = `Extension`) |
 | 16 | Extension Implementation | Execution red (assigned by Resource Manager via Task 15) | Same checklist set as Task 12 (12.1–12.8) | Engagement start date; Engagement end date; Period (months); Actual fixed fee invoice date; Variable fee start date | **On close: `leads.extension` increments by one (e.g. `00`→`01`, `01`→`02`). `project_id` is regenerated using the new extension value and updated on `leads`. The previous `project_details` row flips to `status = Extended`; a new `project_details` row is inserted for the new extension_no, linked to this cycle's Task 15 `resource_allocation` row. The superseded previous cycle's `resource_allocation` row (Implementation, or the prior Extension) auto-closes — this cycle's `Extension` row stays `Open` (v14).** Then loops back to Task 13 (new extension cycle). Repeats until Task 13 = No |
-| 17 | Project Closure | Execution red | 16.1 All fixed fee received · 16.2 All variable fee received · 16.3 All reimbursements received | Final closed (Yes/No) | Opens when **any** of: engagement end date (from Task 12) is reached, **or** Task 13's "Extension approved" = No, **or** the Resource Manager short-closes the project from the Project Closure screen. **On close: lead status → `Complete`; the current `project_details` row's status → `Complete`; the current cycle's still-open `Implementation`/`Extension` `resource_allocation` row auto-closes (earlier cycles already closed when they were superseded, v14); any still-pending tasks become `skipped`.** |
+| 17 | Project Closure | Execution red | 16.1 All fixed fee received · 16.2 All variable fee received · 16.3 All reimbursements received | Final closed (Yes/No) | Opens when **any** of: engagement end date (from Task 12) is reached, **or** Task 13's "Extension approved" = No, **or** the Resource Manager short-closes the project from the Project Closure screen. **The short-close route (v16, Phase 16) additionally sweeps whatever other task is currently `open`, `hold`, or `pending` under the lead to `skipped` (with `short_closed = true` on those rows) in the same transaction that opens this task — short-closing moves the project straight to closure regardless of which step it was on. The short-close dialog requires a remark (Phase 16.1).** On close: lead status → `Complete`; the current `project_details` row's status → `Complete`; the current cycle's still-open `Implementation`/`Extension` `resource_allocation` row auto-closes (earlier cycles already closed when they were superseded, v14); any still-pending tasks become `skipped`. **(Phase 16.1) When the cycle was short-closed, the terminal status is `Short Closed` instead of `Complete` on both the lead and the `project_details` row — Task 17 still runs (fees are still collected) but the Short Closed status is kept, so a short-closed engagement stays distinguishable from a naturally-completed one.** |
 
 **Cross-cutting rules:**
 - "Default BD Person" = the user the lead is assigned to on the lead form (`leads.assigned_to`).
@@ -526,9 +533,10 @@ As described in §7 — list + edit view with the accordion/man-power context an
 | Fixed Fee | latest captured value from workflow (Task 10/14 "Fixed Fee") |
 | Variable Fee | latest captured value from workflow |
 | Fix Fee Upto | latest captured "fixed fee upto" value from workflow |
-| Do you want to short-close? (Yes/No) | user input — only actionable on the `is_current = true` row |
+| Do you want to short-close? (Yes/No) | user input — only actionable on the `is_current = true` row, and only while `project_details.short_closed` is false (§4.8, Phase 16) |
 
-- Selecting **Yes** opens Task 17 (Project Closure); closing it sets lead status to `Complete`, which in turn sets the current `project_details` row's `status` to `Complete` (§4.8) and closes out the `Implementation` and every `Extension` `resource_allocation` row for that lead (§4.7).
+- Selecting **Yes** opens a dialog requiring a **compulsory remark** (Phase 16.1 — the endpoint rejects a blank remark, so a project is never short-closed by accident). On confirm it immediately sweeps every other task currently `open`, `hold`, or `pending` under the lead to `skipped` (`short_closed = true` on those rows — §4.4, Phase 16), stamps `project_details.short_closed/_at/_by/short_close_remark` on the current cycle, sets the lead and current cycle to the terminal **`Short Closed`** status (Phase 16.1), logs the remark to the lead activity log, and opens Task 17 (Project Closure). Closing Task 17 still closes out the `Implementation` and every `Extension` `resource_allocation` row for that lead (§4.7), but the lead and cycle **keep** `Short Closed` rather than becoming `Complete` (§4.8).
+- Once a cycle is short-closed, its action cell shows **"Short-closed"** in place of the Yes/No control (`can_short_close` is now false); the lead and its closure cycle display a `Short Closed` badge (orange) everywhere their status is shown; and the lead's own detail page carries a highlighted banner — "Short-closed — by \<user\> on \<date\>", including the remark. Any task that was swept aside shows its own "Skipped — the project was short-closed" note, distinct from the normal branch-routed skip message.
 
 ## 9.3 Finance Role (Future Scope)
 The **Finance** role is defined in the role list but has **no screens, permissions, or workflow interaction in this phase**. It should exist as a role option (for future-proofing role management) but requires no functional build now.
@@ -659,7 +667,7 @@ This data is seeded into the `countries`, `industries`, and `areas` reference ta
 
 **Domain / Area (single-select, FK → `areas`):** B2B Sales, B2C Sales, Distribution, NPD, Operations, Projects, Supply Chain, VectorFLOW AMC, VectorFLOW Upgrade, VectorPRO AMC, VectorPRO Upgrade
 
-**Lead status:** In Progress, On Hold, Dropped, Hybernation, Closed/Complete
+**Lead status:** In Progress, On Hold, Dropped, Hybernation, Closed/Complete, Short Closed (Phase 16.1 — terminal, via short-close)
 
 **Lead type:** BD, Mining (Mining = future phase)
 

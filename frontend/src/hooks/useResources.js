@@ -58,7 +58,7 @@ export function useProjectClosure(filters = {}) {
 export function useShortCloseProject() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id }) => resourcesApi.shortCloseProject(id),
+    mutationFn: ({ id, remark }) => resourcesApi.shortCloseProject(id, remark),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project-closure'] })
       qc.invalidateQueries({ queryKey: ['lead-tasks'] })

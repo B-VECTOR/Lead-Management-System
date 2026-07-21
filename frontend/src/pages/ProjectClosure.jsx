@@ -3,6 +3,9 @@ import { toast } from 'sonner'
 import { ChevronRight, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { ProjectClosureStatusBadge } from '@/components/shared/StatusBadge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useProjectClosure, useShortCloseProject } from '@/hooks/useResources'
@@ -54,11 +57,11 @@ export default function ProjectClosure() {
     })
   }
 
-  function handleShortClose(id) {
+  function handleShortClose(id, remark) {
     shortClose.mutate(
-      { id },
+      { id, remark },
       {
-        onSuccess: () => toast.success('Project closure task opened'),
+        onSuccess: () => toast.success('Project short-closed; closure task opened'),
         onError: (err) => toast.error(err.message),
       },
     )
@@ -124,11 +127,14 @@ export default function ProjectClosure() {
                       <TableCell className="text-right text-sm">{fmtFee(current.variable_fee)}</TableCell>
                       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                         {current.can_short_close ? (
-                          <Button size="sm" variant="outline" disabled={shortClose.isPending} onClick={() => handleShortClose(current.id)}>
-                            <XCircle className="size-4" /> Short-close
-                          </Button>
+                          <ShortCloseButton
+                            pending={shortClose.isPending}
+                            onConfirm={(remark) => handleShortClose(current.id, remark)}
+                          />
                         ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <span className="text-xs text-muted-foreground">
+                            {current.short_closed ? 'Short-closed' : '—'}
+                          </span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -156,5 +162,55 @@ export default function ProjectClosure() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// Short-close control: opens a dialog that requires a remark before firing, so
+// a project is never short-closed by accident (mirrors the hold/unhold remark
+// popup, but the remark is compulsory — Confirm stays disabled while empty).
+function ShortCloseButton({ onConfirm, pending }) {
+  const [open, setOpen] = useState(false)
+  const [remark, setRemark] = useState('')
+  const trimmed = remark.trim()
+
+  function handleConfirm() {
+    if (!trimmed) return
+    onConfirm(trimmed)
+    setOpen(false)
+    setRemark('')
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="outline" disabled={pending} onClick={() => setOpen(true)}>
+        <XCircle className="size-4" /> Short-close
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Short-close project</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This moves the project straight to closure: any task still in progress is skipped and the status becomes <span className="font-medium text-foreground">Short Closed</span>. This cannot be undone.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="short-close-remark">Remark (required)</Label>
+            <Textarea
+              id="short-close-remark"
+              value={remark}
+              onChange={(e) => setRemark(e.target.value)}
+              placeholder="Why is this project being short-closed?"
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={handleConfirm} disabled={pending || !trimmed}>
+              Short-close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

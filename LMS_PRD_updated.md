@@ -667,6 +667,35 @@ current project cycle\'s status as Complete and frees up (auto-closes)
 the Implementation and every Extension allocation for that lead --- see
 section 5.7.
 
+> **Phase 16 addition (confirmed with the user 2026-07-21):** short-close
+> now moves the project straight to closure regardless of which step it
+> is currently on. The moment Yes is selected, whatever task is open,
+> on hold, or still waiting on a date trigger for that lead is swept to
+> **Skipped** immediately --- there is no separate "skip" action for the
+> task\'s own assignee to take. The current project cycle is stamped
+> with who short-closed it and when; while the lead has not yet reached
+> Complete, this is shown as a highlighted banner on the Lead detail
+> page, and each swept task\'s own view explains that it was skipped
+> because the project was short-closed (as distinct from a normal
+> branch-routed skip). The Project Closure screen\'s action cell shows
+> "Short-closed" in place of the Yes/No control once a cycle has been
+> short-closed, so it cannot be triggered twice.
+
+> **Phase 16.1 follow-up (confirmed with the user 2026-07-21):** two
+> refinements to the above. (1) Short-close now has its own terminal
+> status, **Short Closed** --- selecting Yes sets the lead and the current
+> project cycle to Short Closed immediately, and they *stay* Short Closed:
+> Task 17 (Project Closure) still opens and runs so fees/reimbursements
+> are still collected, but closing it no longer flips the status to
+> Complete. A short-closed engagement is therefore permanently
+> distinguishable from a naturally-completed one (its badge is orange, not
+> green). (2) A **remark is compulsory** on short-close --- the Yes control
+> opens a dialog with a required remark box (Confirm stays disabled until
+> something is typed), mirroring the hold/unhold remark popup but
+> mandatory, so a project can never be short-closed by accident. The
+> remark is stored on the project cycle, written to the lead activity log,
+> and shown in the Lead-detail short-close banner.
+
 ## 5.13 Lead Admin
 
 Lead Admin has view access to all screens across the system, excluding

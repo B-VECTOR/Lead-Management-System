@@ -35,7 +35,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from . import holds, projects, resources
-from .models import Checklist, Lead, Task, Workflow, WorkflowTriggerConfig
+from .models import Checklist, Lead, ProjectDetails, Task, Workflow, WorkflowTriggerConfig
 
 
 def active_workflow(lead_type):
@@ -357,11 +357,18 @@ def _apply_on_close(task, tdef, user):
         projects.complete_current_cycle(lead)
 
     if oc.get("lead_status"):
-        lead.status = oc["lead_status"]
+        lead_status = oc["lead_status"]
+        # A short-closed cycle stays Short Closed: the terminal closure task
+        # would otherwise set the lead Complete, but short-close is kept as its
+        # own terminal status (Phase 16 follow-up), so redirect it here.
+        if lead_status == Lead.Status.COMPLETE and _is_short_closed(lead):
+            lead_status = Lead.Status.SHORT_CLOSED
+        lead.status = lead_status
         lead.save(update_fields=["status", "updated_at"])
         # On lead completion any still-pending (trigger-gated) tasks can never
         # open — mark them skipped so the path taken stays explicit (§4.4 v14).
-        if lead.status == Lead.Status.COMPLETE:
+        # Short Closed is terminal in the same way.
+        if lead.status in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED):
             lead.tasks.filter(status=Task.Status.PENDING).update(
                 status=Task.Status.SKIPPED
             )
@@ -431,16 +438,30 @@ def _closure_task_def(defs):
     return None
 
 
+def _is_short_closed(lead):
+    """True when the lead's current project cycle was short-closed — so the
+    terminal closure task should end in Short Closed rather than Complete."""
+    return lead.project_details.filter(is_current=True, short_closed=True).exists()
+
+
 @transaction.atomic
-def open_project_closure(lead, user=None):
+def open_project_closure(lead, user=None, remark=""):
     """Short-close a project (§9.2 / §5.12): open the Project-Closure task.
 
-    Used by the Resource Manager's Project Closure screen. Opens the terminal
-    closure task (assigned to the current Execution Red) so it can be closed to
-    finish the engagement. No-op — returns None — if the lead is already
-    complete or a closure task is already open/pending.
+    Used by the Resource Manager's Project Closure screen. Whatever else is
+    currently active under the lead (open, held, or still pending on a date
+    trigger) is swept to ``skipped`` first — short-closing means the project
+    moves straight to closure regardless of which step it was on (Phase 16) —
+    then the terminal closure task opens (assigned to the current Execution
+    Red) so it can be closed to finish the engagement. The lead and its current
+    ``project_details`` cycle are moved to the terminal **Short Closed** status
+    (which is kept — it never flips to Complete when Task 17 later closes), and
+    the cycle is stamped with who/when short-closed it plus the compulsory
+    ``remark``, for the Lead-detail banner and the Project Closure screen. No-op
+    — returns None — if the lead is already terminal (Complete/Short Closed) or
+    a closure task is already open/pending.
     """
-    if lead.status == Lead.Status.COMPLETE:
+    if lead.status in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED):
         return None
     defs = task_defs_for(lead.lead_type)
     closure = _closure_task_def(defs)
@@ -452,7 +473,29 @@ def open_project_closure(lead, user=None):
     ).exists()
     if already:
         return None
-    return open_task(lead, closure)
+    lead.tasks.filter(
+        status__in=[Task.Status.OPEN, Task.Status.HOLD, Task.Status.PENDING]
+    ).update(status=Task.Status.SKIPPED, short_closed=True)
+    task = open_task(lead, closure)
+    detail = lead.project_details.filter(is_current=True).first()
+    if detail is not None:
+        detail.short_closed = True
+        detail.short_closed_at = timezone.now()
+        detail.short_closed_by = user
+        detail.short_close_remark = remark
+        detail.status = ProjectDetails.Status.SHORT_CLOSED
+        detail.save(
+            update_fields=[
+                "short_closed",
+                "short_closed_at",
+                "short_closed_by",
+                "short_close_remark",
+                "status",
+            ]
+        )
+    lead.status = Lead.Status.SHORT_CLOSED
+    lead.save(update_fields=["status", "updated_at"])
+    return task
 
 
 # --- Trigger scheduler (Tech Req §4.12 / PRD §5.6) -------------------------

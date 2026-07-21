@@ -64,10 +64,11 @@ class TaskAdmin(admin.ModelAdmin):
         "status",
         "assigned_to",
         "is_allocation_task",
+        "short_closed",
         "opened_at",
         "closed_at",
     )
-    list_filter = ("status", "is_allocation_task", "task_no")
+    list_filter = ("status", "is_allocation_task", "short_closed", "task_no")
     search_fields = ("task_name", "lead__company_name", "lead__project_name")
     raw_id_fields = ("lead", "assigned_to")
     readonly_fields = ("opened_at", "closed_at", "elapsed_time", "created_at", "updated_at")
@@ -124,11 +125,12 @@ class ProjectDetailsAdmin(admin.ModelAdmin):
     list_display = (
         "id", "lead", "project_id", "extension_no", "status",
         "is_current", "generated_at", "generated_by",
+        "short_closed", "short_closed_at", "short_closed_by",
     )
-    list_filter = ("status", "is_current")
+    list_filter = ("status", "is_current", "short_closed")
     search_fields = ("project_id", "project_id_base", "lead__company_name")
-    raw_id_fields = ("lead", "resource_allocation", "generated_by")
-    readonly_fields = ("generated_at",)
+    raw_id_fields = ("lead", "resource_allocation", "generated_by", "short_closed_by")
+    readonly_fields = ("generated_at", "short_closed_at")
 
 
 class FollowupUpdateInline(admin.TabularInline):

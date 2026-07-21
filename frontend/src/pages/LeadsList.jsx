@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, PauseCircle, FilterX } from 'lucide-react'
+import { Plus, PauseCircle, Info, FilterX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -217,6 +217,14 @@ export default function LeadsList() {
                           className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                         >
                           <PauseCircle className="size-3" /> Task on hold
+                        </span>
+                      )}
+                      {lead.short_close_info && (
+                        <span
+                          title={`Short-closed${lead.short_close_info.short_closed_by_name ? ` by ${lead.short_close_info.short_closed_by_name}` : ''}`}
+                          className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                        >
+                          <Info className="size-3" /> Short-closed
                         </span>
                       )}
                     </div>
