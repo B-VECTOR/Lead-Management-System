@@ -14,7 +14,7 @@ import { formatDate } from '@/lib/format'
 
 function StatCard({ label, value, icon: Icon, hint }) {
   return (
-    <Card>
+    <Card className="py-0">
       <CardContent className="flex items-center justify-between p-4">
         <div>
           <p className="text-sm text-muted-foreground">{label}</p>
@@ -68,7 +68,7 @@ function LeadDashboard({ user }) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-2 gap-3 py-4">
           <CardHeader>
             <CardTitle className="text-base">Leads by status</CardTitle>
           </CardHeader>
@@ -86,7 +86,7 @@ function LeadDashboard({ user }) {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="gap-3 py-4">
           <CardHeader>
             <CardTitle className="text-base">Overdue follow-ups</CardTitle>
           </CardHeader>
@@ -102,7 +102,7 @@ function LeadDashboard({ user }) {
         </Card>
       </div>
 
-      <Card>
+      <Card className="gap-3 py-4">
         <CardHeader>
           <CardTitle className="text-base">{isLeadManager || isLeadAdmin ? 'Active leads in scope' : 'My leads'}</CardTitle>
         </CardHeader>
