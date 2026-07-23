@@ -195,20 +195,20 @@ export function LeadTaskTab({ leadId }) {
 
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start">
-      <Card className="md:hidden">
+      <Card className="md:hidden py-0">
         <CardContent className="p-4">
           <TaskStepper tasks={tasks} activeId={activeTask.id} onSelect={setActiveId} />
         </CardContent>
       </Card>
 
-      <Card className="hidden shrink-0 md:sticky md:top-4 md:block md:w-64">
+      <Card className="hidden shrink-0 md:sticky md:top-4 md:block md:w-64 py-0">
         <CardContent className="max-h-[70vh] overflow-y-auto p-2">
           <TaskStepperVertical tasks={tasks} activeId={activeTask.id} onSelect={setActiveId} itemCounts={itemCounts} />
         </CardContent>
       </Card>
 
       <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <Card>
+        <Card className="gap-3 py-4">
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-base">

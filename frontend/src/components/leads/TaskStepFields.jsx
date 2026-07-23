@@ -196,7 +196,7 @@ export const TaskStepFields = forwardRef(function TaskStepFields({ task, leadId,
   }
 
   return (
-    <Card>
+    <Card className="gap-3 py-4">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">Additional details</CardTitle>
       </CardHeader>

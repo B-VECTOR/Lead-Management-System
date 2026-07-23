@@ -204,27 +204,27 @@ export default function LeadDetail() {
       )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Card><CardContent className="flex items-center justify-between gap-3 p-4">
+        <Card className="py-0"><CardContent className="flex items-center justify-between gap-3 p-4">
           <div>
             <p className="text-xs text-muted-foreground">Overall progress</p>
             <p className="mt-1 text-sm font-medium">Tasks completed</p>
           </div>
           <ProgressRing value={lead.progress ?? 0} />
         </CardContent></Card>
-        <Card><CardContent className="p-4">
+        <Card className="py-0"><CardContent className="p-4">
           <p className="text-xs text-muted-foreground">Lead ID</p>
           <p className="mt-1 text-sm font-medium">{lead.lead_display_id}</p>
         </CardContent></Card>
-        <Card><CardContent className="p-4">
+        <Card className="py-0"><CardContent className="p-4">
           <p className="text-xs text-muted-foreground">Owner</p>
           <p className="mt-1 text-sm font-medium">{lead.created_by_name || '—'}</p>
         </CardContent></Card>
-        <Card><CardContent className="p-4">
+        <Card className="py-0"><CardContent className="p-4">
           <p className="text-xs text-muted-foreground">Assigned to</p>
           <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
         </CardContent></Card>
         {lead.project_id && (
-          <Card><CardContent className="p-4">
+          <Card className="py-0"><CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Project ID</p>
             <p className="mt-1 text-sm font-medium">{lead.project_id}</p>
           </CardContent></Card>
@@ -246,7 +246,7 @@ export default function LeadDetail() {
         </TabsContent>
 
         <TabsContent value="activity">
-          <Card>
+          <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Activity</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-xs text-muted-foreground">Auto-logged events on this lead.</p>
@@ -270,7 +270,7 @@ export default function LeadDetail() {
         </TabsContent>
 
         <TabsContent value="files">
-          <Card>
+          <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Files</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               <div className="flex flex-wrap items-end gap-2">
@@ -321,7 +321,7 @@ export default function LeadDetail() {
         </TabsContent>
 
         <TabsContent value="details" className="flex flex-col gap-4">
-          <Card>
+          <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Classification</CardTitle></CardHeader>
             <CardContent>
               <InfoRow label="Country" value={lead.country_name} />
@@ -331,7 +331,7 @@ export default function LeadDetail() {
               <InfoRow label="Lead type" value={lead.lead_type} />
             </CardContent>
           </Card>
-          <Card>
+          <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Scope</CardTitle></CardHeader>
             <CardContent>
               <p className="text-sm">{lead.scope || '—'}</p>
