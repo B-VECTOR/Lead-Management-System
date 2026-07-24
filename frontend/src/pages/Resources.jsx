@@ -43,6 +43,17 @@ const SINGLE_FIELDS = [
 
 const NONE = '__none__'
 
+// Keeps an already-assigned person selectable even if their belt no longer
+// matches the field's filter (e.g. re-graded after the fact, or allocated
+// before Phase 17) — falls back to the unfiltered list rather than silently
+// blanking out an existing selection.
+function withCurrentSelection(list, ids, fallback) {
+  const missing = ids.filter((id) => id && !list.some((u) => u.id === id))
+  if (missing.length === 0) return list
+  const extra = fallback.filter((u) => missing.includes(u.id))
+  return extra.length ? [...list, ...extra] : list
+}
+
 // Open = resources actively tied up; Closed = freed up (auto-close rules).
 // Colour is canonical (shared AllocationStatusBadge); this page shows Closed as
 // "Freed" and adds a hint tooltip.
@@ -169,7 +180,7 @@ function ManpowerLine({ label, required, allocated }) {
 // Single-holder resource keys (in form order) for gathering prior assignees.
 const SINGLE_KEYS = ['execution_red', 'execution_brown', ...SINGLE_FIELDS.map(([k]) => k)]
 
-function AllocationDialog({ allocation, users, onClose }) {
+function AllocationDialog({ allocation, users, redUsers, brownUsers, whiteUsers, onClose }) {
   const update = useUpdateAllocation()
   const submit = useSubmitAllocation()
   const [singles, setSingles] = useState({})
@@ -211,6 +222,10 @@ function AllocationDialog({ allocation, users, onClose }) {
     const prev = priorByUser[u.id]
     return prev ? `${u.name} (prev: ${[...prev].join(', ')})` : u.name
   }
+
+  const redOptions = withCurrentSelection(redUsers, [singles.execution_red], users)
+  const brownOptions = withCurrentSelection(brownUsers, [singles.execution_brown], users)
+  const whiteOptions = withCurrentSelection(whiteUsers, whites, users)
 
   if (!allocation) return null
   const readOnly = allocation.status === 'Closed'
@@ -294,16 +309,16 @@ function AllocationDialog({ allocation, users, onClose }) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Execution Red <span className="text-red-500">*</span> <span className="text-muted-foreground">(next task is assigned to them)</span></Label>
-            <UserSelect value={singles.execution_red} users={users} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_red: v }))} />
-            {!readOnly && redMissing && <p className="text-xs text-red-600">Execution Red is required to allocate.</p>}
+            <UserSelect value={singles.execution_red} users={redOptions} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_red: v }))} />
+            {!readOnly && redMissing && <p className="text-xs text-red-600">Execution Red is required{!isPending ? ' — it cannot be cleared once assigned' : ' to allocate'}.</p>}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Execution Brown {allocation.man_power_brown > 0 && <span className="text-muted-foreground">(need {allocation.man_power_brown})</span>}</Label>
-            <UserSelect value={singles.execution_brown} users={users} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_brown: v }))} />
+            <UserSelect value={singles.execution_brown} users={brownOptions} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_brown: v }))} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">White {allocation.man_power_white > 0 && <span className="text-muted-foreground">(need {allocation.man_power_white})</span>}</Label>
-            <MultiUserSelect value={whites} users={users} disabled={readOnly} labelFor={labelFor} onChange={setWhites} />
+            <MultiUserSelect value={whites} users={whiteOptions} disabled={readOnly} labelFor={labelFor} onChange={setWhites} />
           </div>
           {SINGLE_FIELDS.map(([key, label]) => (
             <div key={key} className="flex flex-col gap-1.5">
@@ -323,7 +338,7 @@ function AllocationDialog({ allocation, users, onClose }) {
             isPending ? (
               <Button onClick={handleAllocate} disabled={busy || cannotAllocate} title={redMissing ? 'Select an Execution Red first' : undefined}>Allocate resources</Button>
             ) : (
-              <Button onClick={handleUpdate} disabled={busy}>Update allocation</Button>
+              <Button onClick={handleUpdate} disabled={busy || redMissing} title={redMissing ? 'Execution Red cannot be cleared once assigned' : undefined}>Update allocation</Button>
             )
           )}
         </DialogFooter>
@@ -391,7 +406,12 @@ function AllocationRow({ a, leading, hint, muted, onRowClick, onEdit }) {
 // the allocation form with the full lead/project + man-power context.
 export default function Resources() {
   const { data: allocations = [], isLoading } = useResourceAllocations()
+  // Auditors/Project Members stay unfiltered; Red/Brown/White are each scoped
+  // server-side to their matching belt (+ Potential) (Phase 17).
   const { data: users = [] } = useAllocationUsers()
+  const { data: redUsers = [] } = useAllocationUsers('execution_red')
+  const { data: brownUsers = [] } = useAllocationUsers('execution_brown')
+  const { data: whiteUsers = [] } = useAllocationUsers('whites')
   const [editing, setEditing] = useState(null)
   const [expanded, setExpanded] = useState(() => new Set())
 
@@ -476,6 +496,9 @@ export default function Resources() {
         <AllocationDialog
           allocation={editing}
           users={users}
+          redUsers={redUsers}
+          brownUsers={brownUsers}
+          whiteUsers={whiteUsers}
           onClose={() => setEditing(null)}
         />
       )}

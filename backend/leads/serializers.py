@@ -546,6 +546,15 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "closed_at",
         ]
 
+    def validate_execution_red(self, value):
+        # Phase 17: once a row has an Execution Red, it can be swapped but never
+        # cleared back to blank — the next/current workflow task depends on it.
+        if self.instance and self.instance.execution_red_id and value is None:
+            raise serializers.ValidationError(
+                "Execution Red cannot be cleared once assigned — choose a replacement instead."
+            )
+        return value
+
     def get_lead_display_id(self, obj):
         return f"LD-{obj.lead.created_at.year}-{obj.lead.id:05d}"
 

@@ -19,10 +19,13 @@ export function useLeadResourceAllocations(leadId) {
   })
 }
 
-export function useAllocationUsers() {
+// `field` scopes the list to that dropdown's belt (execution_red /
+// execution_brown / whites); omit for the unfiltered auditor/project-member
+// list (Phase 17).
+export function useAllocationUsers(field) {
   return useQuery({
-    queryKey: ['allocation-users'],
-    queryFn: resourcesApi.listAllocationUsers,
+    queryKey: ['allocation-users', field],
+    queryFn: () => resourcesApi.listAllocationUsers(field),
     staleTime: 5 * 60 * 1000,
   })
 }

@@ -654,6 +654,25 @@ class ResourceAllocationDetailView(generics.RetrieveUpdateAPIView):
             *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
         ).prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
 
+    def perform_update(self, serializer):
+        # Phase 17: an Execution-Red swap (not the first-ever assignment)
+        # cascades onto the tasks it was driving — see resources.reassign_execution_red.
+        old_red = serializer.instance.execution_red
+        allocation = serializer.save()
+        new_red = allocation.execution_red
+        if old_red and new_red and old_red.id != new_red.id:
+            moved = resources.reassign_execution_red(
+                allocation.lead, old_red, new_red, self.request.user
+            )
+            if moved:
+                events.log_activity(
+                    allocation.lead,
+                    self.request.user,
+                    "resource",
+                    f"Execution Red changed from {old_red.name} to {new_red.name} — "
+                    f"{len(moved)} task(s) reassigned to them",
+                )
+
 
 class ResourceAllocationSubmitView(APIView):
     """Submit a filled allocation form (§7.5): mark it Open and close the
@@ -693,12 +712,29 @@ class ResourceAllocationSubmitView(APIView):
         )
 
 
+# Phase 17: which belt names qualify a user for each allocation dropdown — a
+# user qualifies if *either* their Belt or Acting Belt Level matches (both
+# fields source the same `belts` table). Auditor/Project-Member slots are not
+# belt-gated, so they're absent here and fall through to the unfiltered list.
+ALLOCATION_FIELD_BELTS = {
+    "execution_red": ["Red", "Potential Red"],
+    "execution_brown": ["Brown", "Potential Brown"],
+    "whites": ["White", "Potential White"],
+}
+
+
 class AllocationUserListView(generics.ListAPIView):
     """Active users selectable in the allocation form's resource dropdowns.
 
     Per the user, the task-assignment screen allocates only **Lead Manager or
     Employee** people — Marketing, Finance, Resource Manager, Lead Admin and
     User Management are excluded (see :data:`NON_ASSIGNABLE_GROUPS`). RM-only.
+
+    An optional ``?field=`` param (``execution_red`` / ``execution_brown`` /
+    ``whites``) additionally scopes the list to users whose Belt or Acting
+    Belt Level matches that role — e.g. ``?field=execution_red`` only offers
+    Red/Potential Red people (Phase 17). Unrecognised or omitted ``field``
+    values leave the list unfiltered, as before.
     """
 
     serializer_class = AssignableUserSerializer
@@ -706,12 +742,16 @@ class AllocationUserListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return (
+        qs = (
             User.objects.filter(is_active=True, is_superuser=False)
             .exclude(groups__name__in=NON_ASSIGNABLE_GROUPS)
-            .order_by("name")
-            .distinct()
         )
+        belt_names = ALLOCATION_FIELD_BELTS.get(self.request.query_params.get("field"))
+        if belt_names:
+            qs = qs.filter(
+                Q(belt__name__in=belt_names) | Q(acting_belt_level__name__in=belt_names)
+            )
+        return qs.order_by("name").distinct()
 
 
 class ProjectClosureListView(generics.ListAPIView):

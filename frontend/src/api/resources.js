@@ -80,9 +80,12 @@ export async function submitResourceAllocation(id) {
   }
 }
 
-export async function listAllocationUsers() {
+// `field` optionally scopes the list to Red/Brown/White (+ Potential) belt
+// holders for that specific dropdown (Phase 17); omit for the unfiltered list
+// (auditors/project members).
+export async function listAllocationUsers(field) {
   try {
-    const { data } = await client.get('/api/allocation-users/')
+    const { data } = await client.get('/api/allocation-users/', { params: field ? { field } : {} })
     return rows(data)
   } catch (err) {
     if (err.response?.status === 403) return []

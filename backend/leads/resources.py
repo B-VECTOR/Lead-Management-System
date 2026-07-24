@@ -116,38 +116,67 @@ def ensure_allocation_row(task, tdef):
         man_power_brown=brown,
         man_power_white=white,
     )
-    _prefill_extension_row(row)
+    _prefill_from_previous_cycle(row)
     _notify_resource_managers(row)
     return row
 
 
-def _prefill_extension_row(row):
-    """Prefill a new Extension row from the previous cycle (§4.7 v14).
+def _prefill_from_previous_cycle(row):
+    """Prefill a new allocation row from the lead's most recent prior cycle
+    (§4.7 v14, extended to every stage transition in Phase 17).
 
-    The engagement hands over cycle to cycle, so a new Extension allocation
-    starts as a copy of the previous cycle's resources (the Implementation row
-    for the first extension, the prior Extension row afterwards) — the
-    Resource Manager only adjusts what changed.
+    The engagement hands over stage to stage (2HR → SNT → Implementation →
+    Extension → Extension …), so a new row starts as a copy of whichever row
+    was created immediately before it on this lead — the Resource Manager only
+    adjusts what changed rather than re-picking everyone from scratch. A lead's
+    first-ever allocation (2HR) has no predecessor, so this is a no-op there.
     """
-    if row.type != ResourceAllocation.Type.EXTENSION:
-        return
-    prev = (
-        row.lead.resource_allocations.filter(
-            type__in=[
-                ResourceAllocation.Type.IMPLEMENTATION,
-                ResourceAllocation.Type.EXTENSION,
-            ]
-        )
-        .exclude(pk=row.pk)
-        .order_by("-id")
-        .first()
-    )
+    prev = row.lead.resource_allocations.exclude(pk=row.pk).order_by("-id").first()
     if prev is None:
         return
     for field in ResourceAllocation.SINGLE_RESOURCE_FIELDS:
         setattr(row, f"{field}_id", getattr(prev, f"{field}_id"))
     row.save(update_fields=[f"{f}" for f in ResourceAllocation.SINGLE_RESOURCE_FIELDS])
     row.whites.set(prev.whites.all())
+
+
+def reassign_execution_red(lead, old_red, new_red, actor):
+    """Cascade a mid-lead Execution-Red swap onto the tasks it was driving.
+
+    When the Resource Manager changes who Execution Red is on an existing
+    allocation (not the first-ever assignment), every task on this lead that
+    is still in play (``open``/``hold``/``pending``) and assigned to the
+    outgoing Red moves to the incoming one in the same action, and both are
+    notified. Closed/skipped tasks keep their historical assignee. Returns the
+    list of reassigned tasks (empty if the outgoing Red held none).
+    """
+    tasks = list(
+        lead.tasks.filter(
+            assigned_to=old_red,
+            status__in=[Task.Status.OPEN, Task.Status.HOLD, Task.Status.PENDING],
+        )
+    )
+    if not tasks:
+        return tasks
+    lead.tasks.filter(pk__in=[t.pk for t in tasks]).update(assigned_to=new_red)
+    lead_label = f"{lead.company_name} — {lead.project_name}"
+    if old_red.id != actor.id:
+        events.notify(
+            old_red,
+            Notification.Type.TASK_REASSIGNED,
+            f"{new_red.name} is now Execution Red on “{lead_label}” — "
+            f"{len(tasks)} task(s) you held were reassigned to them.",
+            events.lead_link(lead),
+        )
+    if new_red.id != actor.id:
+        events.notify(
+            new_red,
+            Notification.Type.TASK_REASSIGNED,
+            f"You are now Execution Red on “{lead_label}” — "
+            f"{len(tasks)} task(s) were reassigned to you.",
+            events.lead_link(lead),
+        )
+    return tasks
 
 
 def latest_execution_red(lead):

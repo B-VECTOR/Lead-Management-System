@@ -1370,6 +1370,39 @@ class AllocationEngineTests(Phase6TestBase):
         alloc.whites.add(self.lead_admin)  # 1 == 1
         self.assertFalse(alloc.is_over_allocated)
 
+    # --- Phase 17: prefill generalised beyond Extension to every stage -------
+
+    def test_snt_and_implementation_rows_prefilled_from_previous_stage(self):
+        blueprint = {
+            "solution_blueprint_required": "Yes", "fee": 100,
+            "manpower_brown": 1, "manpower_white": 1,
+            "expected_start_date": _future(), "payment_tranches": 2,
+        }
+        self.drive(self.open_task(1))                        # → 2
+        self.drive_alloc(self.open_task(2), self.exec_red)   # → 3
+        two_hr = self.lead.resource_allocations.get(type="2HR")
+        two_hr.whites.add(self.lead_admin)
+        self.drive(self.open_task(3))                        # → 4, 5
+        self.drive(self.open_task(4))                        # 2HR closes
+        self.drive(self.open_task(5), values=blueprint)      # → 6 (SNT alloc)
+        snt = self.lead.resource_allocations.get(type="SNT")
+        # SNT opens prefilled from the 2HR row rather than blank.
+        self.assertEqual(snt.execution_red, self.exec_red)
+        self.assertEqual(snt.execution_brown, self.exec_brown)
+        self.assertEqual(list(snt.whites.all()), [self.lead_admin])
+        self.assertEqual(snt.status, ResourceAllocation.Status.PENDING)
+
+        snt.execution_red = self.lead_manager  # RM swaps only the Red
+        snt.save()
+        self.drive_alloc(self.open_task(6), self.lead_manager)  # → 7
+        self.drive(self.open_task(7))                           # No+moved → 9, 10
+        self.drive(self.open_task(9))                           # SNT auto-closes
+        self.drive(self.open_task(10))                          # → 11 (Implementation alloc)
+        impl = self.lead.resource_allocations.get(type="Implementation")
+        # Implementation prefilled from SNT (its immediate predecessor), not 2HR.
+        self.assertEqual(impl.execution_red, self.lead_manager)
+        self.assertEqual(list(impl.whites.all()), [self.lead_admin])
+
 
 class ProjectIdTests(Phase6TestBase):
     def test_task12_generates_project_id_and_hybernation(self):
@@ -1591,6 +1624,110 @@ class ResourceApiTests(Phase6TestBase):
         self.assertNotIn(self.marketing.id, ids)
         self.assertNotIn(self.lead_admin.id, ids)
         self.assertNotIn(self.resource_manager.id, ids)
+
+    # --- Phase 17: belt-filtered dropdowns, red-cannot-be-cleared, cascade ---
+
+    def test_allocation_users_filtered_by_belt(self):
+        from authentication.models import Belt
+
+        red = Belt.objects.create(name="Red", order=1)
+        potential_red = Belt.objects.create(name="Potential Red", order=2)
+        brown = Belt.objects.create(name="Brown", order=3)
+        white = Belt.objects.create(name="White", order=4)
+
+        red_user = self.exec_red
+        red_user.belt = red
+        red_user.save(update_fields=["belt"])
+
+        potential_red_user = self.exec_brown
+        potential_red_user.acting_belt_level = potential_red
+        potential_red_user.save(update_fields=["acting_belt_level"])
+
+        brown_user = self.lead_manager
+        brown_user.belt = brown
+        brown_user.save(update_fields=["belt"])
+
+        white_user = self.employee
+        white_user.acting_belt_level = white
+        white_user.save(update_fields=["acting_belt_level"])
+
+        self.client.force_authenticate(self.resource_manager)
+
+        red_ids = {r["id"] for r in self.client.get("/api/allocation-users/?field=execution_red").data}
+        self.assertIn(red_user.id, red_ids)
+        self.assertIn(potential_red_user.id, red_ids)  # "Potential Red" also qualifies
+        self.assertNotIn(brown_user.id, red_ids)
+        self.assertNotIn(white_user.id, red_ids)
+
+        brown_ids = {r["id"] for r in self.client.get("/api/allocation-users/?field=execution_brown").data}
+        self.assertIn(brown_user.id, brown_ids)
+        self.assertNotIn(red_user.id, brown_ids)
+
+        white_ids = {r["id"] for r in self.client.get("/api/allocation-users/?field=whites").data}
+        self.assertIn(white_user.id, white_ids)
+        self.assertNotIn(red_user.id, white_ids)
+
+        # Omitted/unrecognised `field` keeps the existing unfiltered behaviour.
+        all_ids = {r["id"] for r in self.client.get("/api/allocation-users/").data}
+        for uid in (red_user.id, brown_user.id, white_user.id, potential_red_user.id):
+            self.assertIn(uid, all_ids)
+
+    def test_execution_red_cannot_be_cleared_once_assigned(self):
+        self.client.force_authenticate(self.resource_manager)
+        self.client.patch(
+            f"/api/resource-allocations/{self.alloc.id}/",
+            {"execution_red": self.exec_red.id},
+            format="json",
+        )
+        res = self.client.patch(
+            f"/api/resource-allocations/{self.alloc.id}/",
+            {"execution_red": None},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.alloc.refresh_from_db()
+        self.assertEqual(self.alloc.execution_red, self.exec_red)
+
+    def test_execution_red_reassignment_cascades_open_tasks_and_notifies(self):
+        # setUp already opened Task 2 (2HR alloc, self.alloc); submit it so
+        # Task 3 opens assigned to exec_red, then close 3 → 4 opens (also
+        # execution_red-assigned) while 3 itself becomes Closed.
+        self.drive_alloc(self.open_task(2), self.exec_red)
+        self.drive(self.open_task(3))
+        task3 = self.lead.tasks.get(task_no=3)
+        task4 = self.lead.tasks.get(task_no=4)
+        self.assertEqual(task3.assigned_to, self.exec_red)
+        self.assertEqual(task4.assigned_to, self.exec_red)
+        self.assertEqual(task3.status, Task.Status.CLOSED)
+        self.assertEqual(task4.status, Task.Status.OPEN)
+
+        two_hr = self.lead.resource_allocations.get(type="2HR")
+        new_red = self.lead_manager
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.patch(
+            f"/api/resource-allocations/{two_hr.id}/",
+            {"execution_red": new_red.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        task3.refresh_from_db()
+        task4.refresh_from_db()
+        # The closed task keeps its historical assignee...
+        self.assertEqual(task3.assigned_to, self.exec_red)
+        # ...but the still-open task moves to the new Execution Red.
+        self.assertEqual(task4.assigned_to, new_red)
+
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.exec_red, type=Notification.Type.TASK_REASSIGNED
+            ).exists()
+        )
+        self.assertTrue(
+            Notification.objects.filter(
+                user=new_red, type=Notification.Type.TASK_REASSIGNED
+            ).exists()
+        )
 
 
 class ProjectClosureApiTests(Phase6TestBase):

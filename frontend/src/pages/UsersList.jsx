@@ -40,7 +40,7 @@ export default function UsersList() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return users
-      .filter((u) => !needle || [u.name, u.email, u.employee_id].some((v) => v?.toLowerCase().includes(needle)))
+      .filter((u) => !needle || [u.name, u.email, u.employee_id].some((v) => v != null && String(v).toLowerCase().includes(needle)))
       .filter((u) => role === 'all' || u.roles?.includes(role))
       .filter((u) => belt === 'all' || u.belt === belt)
       .filter((u) => status === 'all' || (status === 'active' ? u.active : !u.active))
