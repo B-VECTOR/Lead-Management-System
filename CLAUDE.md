@@ -46,18 +46,20 @@ Checklists and tasks are instantiated per-project from workflow/task templates �
 - **Mobile-responsive** is a requirement on every screen, not an afterthought.
 
 ## Commands
-_(fill in once the project is scaffolded)_
-- Backend dev server: `TODO`
-- Frontend dev server: `TODO`
-- Run backend tests: `TODO`
-- Run migrations: `TODO`
+- Backend dev server: `cd backend && source .venv/bin/activate && python manage.py runserver`
+- Backend migrations: `cd backend && source .venv/bin/activate && python manage.py makemigrations && python manage.py migrate`
+- Run backend tests: `cd backend && source .venv/bin/activate && python manage.py test leads authentication reference`
+- Frontend dev server: `cd frontend && npm run dev`
+- Frontend build / lint: `cd frontend && npm run build` / `npm run lint` (oxlint)
 
 ## Conventions
 _(fill in as they're established — keep this section factual, not aspirational)_
-- Branch naming: `TODO`
-- Commit message format: `TODO`
+- Branch naming: `TODO` — no branches other than `main` exist yet.
+- Commit message format: `TODO` — no convention established; history so far is free-text subject lines.
 - Folder structure: `TODO`
 
 ## Settled decisions
 
-Foundational decisions resolved 2026-07-10 are recorded in `PLAN.md` §0 (Decisions) — read them before questioning the architecture. In brief: the two `*_updated.md` docs govern (`specs.md` is deprecated, archived at `archive/specs_v0.6.md`); multi-role via Django Groups (no `role` field); `username` is the login identifier; two lead types only (BD + Mining, Extension is a BD workflow cycle); reference tables live in their own `reference` app.
+Foundational decisions resolved 2026-07-10 are recorded in `PLAN.md`'s "0. Decisions" section (the appendix, below the `APPENDIX A` divider) — read them before questioning the architecture. In brief: the two `*_updated.md` docs govern (`specs.md` is deprecated, archived at `archive/specs_v0.6.md`); multi-role via Django Groups (no `role` field); `username` is the login identifier; reference tables live in their own `reference` app.
+
+**Superseded by the v4.0/v17.0 rebuild (PLAN.md Decisions D1–D12, resolved 2026-07-26):** the 2026-07-10 "two lead types only (BD + Mining)" decision no longer holds — `lead_type` gained a third value, **Extension** (D10: a standalone lead entering the workflow directly at Task 22, not a BD-cycle sub-state). Treat PLAN.md's D1–D12 section as authoritative over anything in the appendix that conflicts with it.

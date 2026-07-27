@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
-import { canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks } from '@/api/scope'
+import { canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
 import Login from '@/pages/Login'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
@@ -15,6 +15,7 @@ import Notifications from '@/pages/Notifications'
 import HeldLeads from '@/pages/HeldLeads'
 import HeldTasks from '@/pages/HeldTasks'
 import Resources from '@/pages/Resources'
+import ResourceHistory from '@/pages/ResourceHistory'
 import ProjectClosure from '@/pages/ProjectClosure'
 import Finance from '@/pages/Finance'
 import UsersList from '@/pages/UsersList'
@@ -47,7 +48,11 @@ export default function App() {
         <Route path="/held-leads" element={<RequireAuth check={canSeeHeldLeads}><HeldLeads /></RequireAuth>} />
         <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldTasks}><HeldTasks /></RequireAuth>} />
 
-        <Route path="/resources" element={<RequireAuth roles={['Resource Manager']}><Resources /></RequireAuth>} />
+        {/* D12 (R5): a lead's Default BD Person also works its allocation
+            tasks, not just the Resource Manager — the backend scopes what
+            each caller actually sees/can act on (mirrors the /leads/:id gate). */}
+        <Route path="/resources" element={<RequireAuth check={canSeeResources}><Resources /></RequireAuth>} />
+        <Route path="/resource-history" element={<RequireAuth roles={['Resource Manager']}><ResourceHistory /></RequireAuth>} />
         <Route path="/project-closure" element={<RequireAuth roles={['Resource Manager']}><ProjectClosure /></RequireAuth>} />
         <Route path="/finance" element={<RequireAuth roles={['Finance']}><Finance /></RequireAuth>} />
 

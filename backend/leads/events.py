@@ -6,7 +6,14 @@ lead/task/follow-up flows work whether or not these fire — so wiring them in
 does not change existing behaviour or the workflow engine.
 """
 
+from django.contrib.auth import get_user_model
+
 from .models import ActivityLog, Notification
+
+# The Finance role group name (seeded by authentication.seed_lookups). Kept as a
+# literal here to avoid importing the permissions module for one constant,
+# mirroring resources.RESOURCE_MANAGER_GROUP.
+FINANCE_GROUP = "finance"
 
 
 def log_activity(lead, actor, type, summary, body=""):
@@ -28,3 +35,19 @@ def notify(user, type, message, link=""):
 def lead_link(lead):
     """Frontend route for a lead — used as a notification's deep link."""
     return f"/leads/{lead.id}"
+
+
+def notify_finance(lead, type, message, link=None):
+    """Notify every active Finance user of a payment-approval event (R4, §5.10).
+
+    Finance gate tasks open unassigned (worked from the Accounts queue), so no
+    single assignee is notified by the normal task-open path — alert all Finance
+    holders instead. Best-effort/additive, like resources._notify_resource_managers.
+    """
+    User = get_user_model()
+    link = link if link is not None else lead_link(lead)
+    managers = User.objects.filter(
+        groups__name=FINANCE_GROUP, is_active=True
+    ).distinct()
+    for user in managers:
+        notify(user, type, message, link)

@@ -66,6 +66,10 @@ def can_view_task(user, task):
         return True
     if task.assigned_to_id == user.id:
         return True
+    # Finance sees (and works — see can_edit_task) the payment-approval gate
+    # tasks 7/15/28, which open unassigned (§5.10 / §12).
+    if task.is_finance_gate and FINANCE in roles:
+        return True
     lead = task.lead
     if LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id):
         return True
@@ -87,7 +91,12 @@ def can_edit_task(user, task):
         return False
     if task.assigned_to_id == user.id:
         return True
-    return LEAD_ADMIN in user_role_names(user)
+    roles = user_role_names(user)
+    # Finance works the payment-approval gates (7/15/28) — answering "Payment
+    # received?" Yes/No — even though they open unassigned (§5.10 / §12).
+    if task.is_finance_gate and FINANCE in roles:
+        return True
+    return LEAD_ADMIN in roles
 
 
 def can_reassign_task(user, task):
@@ -169,6 +178,52 @@ class ResourceManagerPermission(BasePermission):
         if not user or not user.is_authenticated:
             return False
         return RESOURCE_MANAGER in user_role_names(user)
+
+
+def can_work_allocation_task(user, task):
+    """Who may allocate/reassign/release/submit an allocation task's slots
+    (D12, Tech Req §4.7 / PRD §5.7): the Resource Manager, or the lead's
+    Default BD Person (``lead.assigned_to``) — either may complete it.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if RESOURCE_MANAGER in user_role_names(user):
+        return True
+    return task.lead.assigned_to_id == user.id
+
+
+class AllocationActionPermission(BasePermission):
+    """Object-level gate for the allocation slot-action endpoints (allocate /
+    reassign / release / submit) and the allocation user-picker (D12).
+
+    The view must implement ``get_task()`` returning the :class:`Task` the
+    action targets (or ``None``), since the permission depends on *that
+    lead's* owner, not a blanket role check.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if RESOURCE_MANAGER in user_role_names(user):
+            return True
+        task = view.get_task()
+        return task is not None and can_work_allocation_task(user, task)
+
+
+class FinancePermission(BasePermission):
+    """Accounts-queue access — Finance role only (PRD §6 / Tech Req §12).
+
+    Gates the Finance screen (the queue of payment-approval gate tasks 7/15/28).
+    Working an individual gate is additionally allowed by :func:`can_edit_task`;
+    this class guards the list endpoint's role.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        return FINANCE in user_role_names(user)
 
 
 def can_view_followup(user, followup):

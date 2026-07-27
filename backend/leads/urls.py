@@ -1,11 +1,17 @@
 from django.urls import path
 
 from .views import (
+    AllocationAllocateView,
+    AllocationReassignView,
+    AllocationReleaseView,
+    AllocationSubmitView,
+    AllocationTaskListView,
     AllocationUserListView,
     AssignableUserListView,
     AttachmentDeleteView,
     ChecklistItemUpdateView,
     DashboardView,
+    FinanceGateListView,
     FollowupAssigneeListView,
     FollowupDetailView,
     FollowupListCreateView,
@@ -19,15 +25,13 @@ from .views import (
     LeadHoldView,
     LeadListCreateView,
     LeadResourceAllocationListView,
+    LeadShortCloseView,
     LeadTaskListView,
     NotificationListView,
     NotificationMarkAllReadView,
     NotificationMarkReadView,
     ProjectClosureListView,
-    ProjectClosureShortCloseView,
-    ResourceAllocationDetailView,
     ResourceAllocationListView,
-    ResourceAllocationSubmitView,
     TaskCompleteView,
     TaskDetailView,
     TaskHoldView,
@@ -63,6 +67,12 @@ urlpatterns = [
         LeadDropView.as_view(),
         name="api-lead-drop",
     ),
+    # Short-close (R6, §9.2/§5.12) — lead-scoped, RM-only.
+    path(
+        "api/leads/<int:pk>/short-close/",
+        LeadShortCloseView.as_view(),
+        name="api-lead-short-close",
+    ),
     path(
         "api/tasks/<int:pk>/hold/",
         TaskHoldView.as_view(action="hold"),
@@ -95,7 +105,7 @@ urlpatterns = [
         ChecklistItemUpdateView.as_view(),
         name="api-checklist-item",
     ),
-    # Resource allocation + Project closure (Phase 6 — Tech Req §4.7–4.8, §7, §9)
+    # Resource allocation + Project closure (R5 rebuild — Tech Req §4.7–4.8, §7, §9)
     path(
         "api/leads/<int:lead_id>/resource-allocations/",
         LeadResourceAllocationListView.as_view(),
@@ -107,14 +117,29 @@ urlpatterns = [
         name="api-resource-allocations",
     ),
     path(
-        "api/resource-allocations/<int:pk>/",
-        ResourceAllocationDetailView.as_view(),
-        name="api-resource-allocation-detail",
+        "api/allocation-tasks/",
+        AllocationTaskListView.as_view(),
+        name="api-allocation-tasks",
     ),
     path(
-        "api/resource-allocations/<int:pk>/submit/",
-        ResourceAllocationSubmitView.as_view(),
-        name="api-resource-allocation-submit",
+        "api/allocation-tasks/<int:task_id>/allocate/",
+        AllocationAllocateView.as_view(),
+        name="api-allocation-task-allocate",
+    ),
+    path(
+        "api/allocation-tasks/<int:task_id>/reassign/",
+        AllocationReassignView.as_view(),
+        name="api-allocation-task-reassign",
+    ),
+    path(
+        "api/allocation-tasks/<int:task_id>/release/",
+        AllocationReleaseView.as_view(),
+        name="api-allocation-task-release",
+    ),
+    path(
+        "api/allocation-tasks/<int:task_id>/submit/",
+        AllocationSubmitView.as_view(),
+        name="api-allocation-task-submit",
     ),
     path(
         "api/allocation-users/",
@@ -125,11 +150,6 @@ urlpatterns = [
         "api/project-closure/",
         ProjectClosureListView.as_view(),
         name="api-project-closure",
-    ),
-    path(
-        "api/project-closure/<int:pk>/short-close/",
-        ProjectClosureShortCloseView.as_view(),
-        name="api-project-closure-short-close",
     ),
     # Follow-ups & Other Tasks (Phase 7 — Tech Req §4.10, §8; PRD §5.11)
     path(
@@ -186,4 +206,6 @@ urlpatterns = [
     ),
     # Leads-funnel dashboard (Phase 8 — PRD §6)
     path("api/dashboard/", DashboardView.as_view(), name="api-dashboard"),
+    # Finance Accounts queue — payment-approval gate tasks 7/15/28 (R4, §5.10)
+    path("api/finance-gates/", FinanceGateListView.as_view(), name="api-finance-gates"),
 ]

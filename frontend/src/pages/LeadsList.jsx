@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { LeadStatusBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
+import { LeadStatusBadge, LeadTypeBadge, StageBadge, stageLabel } from '@/components/shared/StatusBadge'
 import { useLeads } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
@@ -16,9 +16,8 @@ import { cn } from '@/lib/utils'
 // green while moving (or done), amber when paused, red when dropped.
 const STATUS_BAR_COLORS = {
   'In Progress': 'bg-emerald-500',
-  Hybernation: 'bg-emerald-500',
-  Complete: 'bg-emerald-700',
-  'On Hold': 'bg-amber-500',
+  Completed: 'bg-emerald-700',
+  Hold: 'bg-amber-500',
   Dropped: 'bg-red-500',
 }
 
@@ -28,6 +27,7 @@ const EMPTY_FILTERS = {
   industry: 'all',
   domain: 'all',
   owner: 'all',
+  currentStage: 'all',
   currentTask: 'all',
   status: 'all',
 }
@@ -93,10 +93,14 @@ export default function LeadsList() {
       .sort((a, b) => a[0] - b[0])
       .map(([no, name]) => ({ value: String(no), label: `Task ${no}. ${name}` }))
     const asOpts = (vals) => vals.map((v) => ({ value: v, label: v }))
+    // Current-Stage options (§4.3.3): the derived stage code on each lead
+    // (R2's `current_stage`), labelled the same way the StageBadge/stepper do.
+    const stages = uniq(leads.map((l) => l.current_stage?.stage))
     return {
       industries: asOpts(uniq(leads.map((l) => l.industry_name))),
       domains: asOpts(uniq(leads.map((l) => l.domain_name))),
       owners: asOpts(owners),
+      stages: stages.map((code) => ({ value: code, label: stageLabel(code) })),
       currentTasks,
       statuses: asOpts(uniq(leads.map((l) => l.status))),
     }
@@ -109,13 +113,14 @@ export default function LeadsList() {
     return leads
       .filter((l) => {
         if (text && !`${l.company_name} ${l.project_name}`.toLowerCase().includes(text)) return false
-        if (pid && !(l.project_id || '').toLowerCase().includes(pid)) return false
+        if (pid && !(l.project_id_display || '').toLowerCase().includes(pid)) return false
         if (filters.industry !== 'all' && l.industry_name !== filters.industry) return false
         if (filters.domain !== 'all' && l.domain_name !== filters.domain) return false
         if (filters.owner !== 'all') {
           const owner = l.assigned_to_name || 'Not Assigned'
           if (owner !== filters.owner) return false
         }
+        if (filters.currentStage !== 'all' && l.current_stage?.stage !== filters.currentStage) return false
         if (filters.currentTask !== 'all' && String(l.current_task?.task_no ?? '') !== filters.currentTask) return false
         if (filters.status !== 'all' && l.status !== filters.status) return false
         return true
@@ -123,7 +128,7 @@ export default function LeadsList() {
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
   }, [leads, filters])
 
-  const columnCount = 9
+  const columnCount = 10
 
   return (
     <div className="flex flex-col gap-4">
@@ -159,6 +164,7 @@ export default function LeadsList() {
                 <TableHead>Industry</TableHead>
                 <TableHead>Domain</TableHead>
                 <TableHead>Owner</TableHead>
+                <TableHead>Current Stage</TableHead>
                 <TableHead>Current Task</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Tracker</TableHead>
@@ -177,6 +183,7 @@ export default function LeadsList() {
                 <TableHead className="py-1.5"><FilterSelect value={filters.industry} onChange={setFilter('industry')} options={options.industries} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.domain} onChange={setFilter('domain')} options={options.domains} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.owner} onChange={setFilter('owner')} options={options.owners} placeholder="All" /></TableHead>
+                <TableHead className="py-1.5"><FilterSelect value={filters.currentStage} onChange={setFilter('currentStage')} options={options.stages} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.currentTask} onChange={setFilter('currentTask')} options={options.currentTasks} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.status} onChange={setFilter('status')} options={options.statuses} placeholder="All" /></TableHead>
                 <TableHead />
@@ -199,10 +206,13 @@ export default function LeadsList() {
                     </div>
                     <div className="text-xs text-muted-foreground">{lead.company_name || '—'}</div>
                   </TableCell>
-                  <TableCell className="text-sm tabular-nums">{lead.project_id || <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell className="text-sm tabular-nums">{lead.project_id_display || <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell>{lead.industry_name || '—'}</TableCell>
                   <TableCell>{lead.domain_name || '—'}</TableCell>
                   <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not Assigned</span>}</TableCell>
+                  <TableCell>
+                    {lead.current_stage?.stage ? <StageBadge stage={lead.current_stage.stage} /> : <span className="text-sm text-muted-foreground">—</span>}
+                  </TableCell>
                   <TableCell className="text-sm">
                     {lead.current_task
                       ? `${lead.current_task.task_no}. ${lead.current_task.task_name}`
@@ -211,7 +221,7 @@ export default function LeadsList() {
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1">
                       <LeadStatusBadge status={lead.status} />
-                      {lead.has_held_task && lead.status !== 'On Hold' && (
+                      {lead.has_held_task && lead.status !== 'Hold' && (
                         <span
                           title="A task under this lead is on hold"
                           className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"

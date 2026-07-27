@@ -3,13 +3,13 @@ from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import engine, events, holds, resources
+from . import engine, events, holds, projects, resources
 from .models import (
     ActivityLog,
     Attachment,
@@ -28,8 +28,10 @@ from .permissions import (
     MARKETING,
     RESOURCE_MANAGER,
     USER_MANAGEMENT,
+    AllocationActionPermission,
     CanAddFollowupPermission,
     CanAssignOwnerPermission,
+    FinancePermission,
     FollowupPermission,
     LeadPermission,
     ResourceManagerPermission,
@@ -42,6 +44,7 @@ from .permissions import (
     can_reassign_task,
     can_view_followup,
     can_view_task,
+    can_work_allocation_task,
     user_role_names,
 )
 from .serializers import (
@@ -84,8 +87,12 @@ def lead_scope_q(user):
       task on (``tasks__assigned_to``). *(The Phase-13 any-allocation-slot rule
       was rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
     - **Lead Manager / Marketing** — additionally the leads they created.
-    - **Resource Manager** — additionally any lead with a ``resource_allocation``
-      row (it has reached an allocation stage they staff).
+    - **Resource Manager** — additionally any lead that has reached an
+      allocation task (3/10/17/18/24/25, R5) — checked by task, not by a
+      ``resource_allocation`` row, so the lead is visible from the moment
+      staffing is needed, before anyone has been allocated yet.
+    - **Finance** — additionally any lead that has reached a payment-approval
+      gate task (7/15/28), so the gate can be worked from the lead detail (§5.10).
     """
     roles = user_role_names(user)
     if LEAD_ADMIN in roles:
@@ -94,7 +101,9 @@ def lead_scope_q(user):
     if roles & {LEAD_MANAGER, MARKETING}:
         scope |= Q(created_by=user)
     if RESOURCE_MANAGER in roles:
-        scope |= Q(resource_allocations__isnull=False)
+        scope |= Q(tasks__is_allocation_task=True)
+    if FINANCE in roles:
+        scope |= Q(tasks__is_finance_gate=True)
     return scope
 
 
@@ -117,8 +126,8 @@ class LeadQuerysetMixin:
 
     def get_queryset(self):
         qs = Lead.objects.select_related(
-            "country", "industry", "domain", "assigned_to", "created_by"
-        ).prefetch_related("tasks")
+            "industry", "domain", "assigned_to", "created_by"
+        ).prefetch_related("tasks", "stages")
         q = lead_scope_q(self.request.user)
         return qs if q is None else qs.filter(q).distinct()
 
@@ -170,6 +179,10 @@ class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
         # created_by records whether the lead originated from Marketing or a
         # Lead Manager (Tech Req §4.3); the client can never set it.
         lead = serializer.save(created_by=self.request.user)
+        # R2: allocate the stable base_code ({AreaCode}{YY}{Seq}, §13) and open
+        # the lead's initial stage so the derived Project ID resolves from
+        # creation onward. Per-task stage transitions land in R3.
+        projects.initialize_new_lead(lead)
         events.log_activity(lead, self.request.user, "lead", "Lead created")
         # A Lead-Manager-created lead already has an owner (workflow started).
         _notify_owner_assigned(lead, self.request.user)
@@ -348,6 +361,10 @@ class TaskScopeMixin:
         conds = Q(assigned_to=user) | Q(lead__assigned_to=user)
         if LEAD_MANAGER in roles:
             conds |= Q(lead__created_by=user)
+        # Finance works the payment-approval gates from the Accounts queue — they
+        # open unassigned, so scope them in by their flag (§5.10 / §12).
+        if FINANCE in roles:
+            conds |= Q(is_finance_gate=True)
         return qs.filter(conds).distinct()
 
 
@@ -507,6 +524,34 @@ class TaskReassignView(TaskScopeMixin, APIView):
         )
 
 
+class FinanceGateListView(TaskScopeMixin, generics.ListAPIView):
+    """The Accounts queue — open payment-approval gate tasks (7/15/28) for Finance.
+
+    Finance answers *"Payment received against all invoices?"* per gate: Yes
+    closes it (workflow proceeds / lead completes at Task 28); No closes it with
+    a remark and re-opens the preceding money task (§5.10). Working a gate reuses
+    the standard task endpoints (Save-as-Draft PATCH + complete) — this view just
+    lists the queue with each gate's field schema so the control can render.
+    """
+
+    serializer_class = TaskSerializer
+    permission_classes = [FinancePermission]
+    pagination_class = None
+
+    def get_queryset(self):
+        return self._scoped_tasks(
+            Task.objects.filter(is_finance_gate=True, status=Task.Status.OPEN)
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        defs = {}
+        for lead_type in Lead.LeadType.values:
+            defs.update(engine.task_defs_for(lead_type))
+        ctx["task_defs"] = defs
+        return ctx
+
+
 class HeldTaskListView(TaskScopeMixin, generics.ListAPIView):
     """Tasks currently on hold that the caller may see — the "Held Tasks" menu."""
 
@@ -586,11 +631,20 @@ class TaskHoldView(TaskScopeMixin, APIView):
         )
 
 
-# --- Resource allocation + Project closure (Phase 6, RM only) --------------
+# --- Resource allocation + Project closure (R5 rebuild — append-only slots) -
+
+def _allocation_row_qs():
+    return ResourceAllocation.objects.select_related(
+        "lead", "lead__assigned_to", "stage", "task", "user", "replaces",
+    )
+
 
 class ResourceAllocationListView(generics.ListAPIView):
-    """All resource-allocation rows — the Resource Manager's reporting screen
-    (Tech Req §9.1 / PRD §5.7). Optional ``?lead=`` / ``?status=`` filters.
+    """All resource-allocation rows — the Resource Manager's reporting /
+    resource-history screen (Tech Req §9.1 / PRD §5.7). Optional ``?lead=`` /
+    ``?status=`` / ``?slot=`` filters. Each row carries enough (slot, stage,
+    user, allocated_on/released_on, replaces) for the frontend to derive
+    days-worked and reassignment chains without a bespoke aggregation endpoint.
     """
 
     serializer_class = ResourceAllocationSerializer
@@ -598,26 +652,25 @@ class ResourceAllocationListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = ResourceAllocation.objects.select_related(
-            "lead", "lead__assigned_to", "allocation_task",
-            *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
-        ).prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
+        qs = _allocation_row_qs()
         lead_id = self.request.query_params.get("lead")
         if lead_id:
             qs = qs.filter(lead_id=lead_id)
         status_val = self.request.query_params.get("status")
         if status_val:
             qs = qs.filter(status=status_val)
+        slot = self.request.query_params.get("slot")
+        if slot:
+            qs = qs.filter(slot=slot)
         return qs
 
 
 class LeadResourceAllocationListView(LeadQuerysetMixin, generics.ListAPIView):
-    """A single lead's resource allocations — the Lead Detail "Resources" tab (#6).
-
-    Unlike the RM-only :class:`ResourceAllocationListView`, this is scoped by
-    lead visibility (``LeadQuerysetMixin``), so the lead's own people (assignee /
-    creator / Lead Manager / Lead Admin) can see which resources + man-power were
-    allocated, read-only. Editing stays RM-only on the Resources screen.
+    """A single lead's resource-allocation history — the Lead Detail "Resources"
+    tab. Unlike the RM-only :class:`ResourceAllocationListView`, this is scoped
+    by lead visibility (``LeadQuerysetMixin``), so the lead's own people
+    (assignee / creator / Lead Manager / Lead Admin) can see who was allocated,
+    read-only. Editing stays on the allocation-task actions below.
     """
 
     serializer_class = ResourceAllocationSerializer
@@ -628,68 +681,146 @@ class LeadResourceAllocationListView(LeadQuerysetMixin, generics.ListAPIView):
         return get_object_or_404(super().get_queryset(), pk=self.kwargs["lead_id"])
 
     def get_queryset(self):
-        return (
-            ResourceAllocation.objects.filter(lead=self.get_lead())
-            .select_related(
-                "lead", "lead__assigned_to", "allocation_task",
-                *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
+        return _allocation_row_qs().filter(lead=self.get_lead())
+
+
+class AllocationTaskListView(generics.ListAPIView):
+    """Every allocation task (3/10/17/18/24/25, R5) the caller may staff —
+    the Resources screen's main list. The Resource Manager sees every one
+    (across every lead); the Default BD Person (D12) sees only their own
+    leads'. Optional ``?status=`` (defaults to every status) / ``?lead=``.
+    """
+
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = Task.objects.filter(is_allocation_task=True).select_related(
+            "lead", "lead__assigned_to", "stage",
+        ).order_by("-id")
+        if RESOURCE_MANAGER not in user_role_names(self.request.user):
+            qs = qs.filter(lead__assigned_to=self.request.user)
+        lead_id = self.request.query_params.get("lead")
+        if lead_id:
+            qs = qs.filter(lead_id=lead_id)
+        status_val = self.request.query_params.get("status")
+        if status_val:
+            qs = qs.filter(status=status_val)
+        return qs
+
+    def get_serializer_context(self):
+        # One unified 28-task workflow (DD1) — every lead type resolves to the
+        # same graph, so a single task_defs map covers this cross-lead list.
+        context = super().get_serializer_context()
+        context["task_defs"] = engine.task_defs_for(Lead.LeadType.BD)
+        return context
+
+
+class AllocationTaskActionView(APIView):
+    """Base for the allocation slot-action endpoints — resolves the target
+    :class:`Task` once (``get_task``), used both by the action itself and by
+    :class:`AllocationActionPermission` (D12: Resource Manager or the lead's
+    Default BD Person).
+    """
+
+    permission_classes = [AllocationActionPermission]
+
+    def get_task(self):
+        if not hasattr(self, "_task"):
+            self._task = get_object_or_404(
+                Task.objects.select_related("lead", "stage"),
+                pk=self.kwargs["task_id"], is_allocation_task=True,
             )
-            .prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
+        return self._task
+
+    def _tdef(self, task):
+        defs = engine.task_defs_for(task.lead.lead_type)
+        tdef = defs.get(task.task_no)
+        if tdef is None:
+            raise NotFound("This task is not part of the active workflow.")
+        return tdef
+
+    def _task_response(self, task, request):
+        defs = engine.task_defs_for(task.lead.lead_type)
+        return Response(
+            TaskSerializer(task, context={"request": request, "task_defs": defs}).data
         )
 
 
-class ResourceAllocationDetailView(generics.RetrieveUpdateAPIView):
-    """Retrieve or edit one allocation row (Resource Manager fills the form).
+class AllocationAllocateView(AllocationTaskActionView):
+    """First fill of a slot (§4.7) — ``{"slot", "user_id"?, "is_tbd"?, "remark"?}``."""
 
-    PATCH updates the resource FKs + remark; it does **not** close the task —
-    that is the explicit ``submit`` action so an RM can save progress first.
-    """
-
-    serializer_class = ResourceAllocationSerializer
-    permission_classes = [ResourceManagerPermission]
-
-    def get_queryset(self):
-        return ResourceAllocation.objects.select_related(
-            "lead", "lead__assigned_to", "allocation_task",
-            *ResourceAllocation.SINGLE_RESOURCE_FIELDS,
-        ).prefetch_related(*ResourceAllocation.MULTI_RESOURCE_FIELDS)
-
-    def perform_update(self, serializer):
-        # Phase 17: an Execution-Red swap (not the first-ever assignment)
-        # cascades onto the tasks it was driving — see resources.reassign_execution_red.
-        old_red = serializer.instance.execution_red
-        allocation = serializer.save()
-        new_red = allocation.execution_red
-        if old_red and new_red and old_red.id != new_red.id:
-            moved = resources.reassign_execution_red(
-                allocation.lead, old_red, new_red, self.request.user
-            )
-            if moved:
-                events.log_activity(
-                    allocation.lead,
-                    self.request.user,
-                    "resource",
-                    f"Execution Red changed from {old_red.name} to {new_red.name} — "
-                    f"{len(moved)} task(s) reassigned to them",
-                )
-
-
-class ResourceAllocationSubmitView(APIView):
-    """Submit a filled allocation form (§7.5): mark it Open and close the
-    allocation task, opening the next task assigned to the chosen Execution Red.
-    """
-
-    permission_classes = [ResourceManagerPermission]
-
-    def post(self, request, pk):
-        allocation = get_object_or_404(ResourceAllocation, pk=pk)
-        opened = resources.submit_allocation(allocation, request.user)
-        allocation.refresh_from_db()
+    def post(self, request, task_id):
+        task = self.get_task()
+        tdef = self._tdef(task)
+        user_id = request.data.get("user_id")
+        user = get_object_or_404(User, pk=user_id) if user_id else None
+        row = resources.allocate(
+            task, tdef, request.data.get("slot"),
+            user=user, is_tbd=bool(request.data.get("is_tbd")),
+            remark=request.data.get("remark", ""),
+        )
         events.log_activity(
-            allocation.lead,
-            request.user,
-            "resource",
-            f"{allocation.type} resources allocated",
+            task.lead, request.user, "resource",
+            f"{ResourceAllocation.Slot(row.slot).label} allocated"
+            f"{f' to {row.user.name}' if row.user else ' (TBD)'} — {task.task_name}",
+        )
+        return self._task_response(task, request)
+
+
+class AllocationReassignView(AllocationTaskActionView):
+    """Release + append a replacement (§4.7) —
+    ``{"allocation_id", "user_id"?, "is_tbd"?, "remark"?}``."""
+
+    def post(self, request, task_id):
+        task = self.get_task()
+        current = get_object_or_404(
+            ResourceAllocation, pk=request.data.get("allocation_id"), task=task,
+        )
+        user_id = request.data.get("user_id")
+        user = get_object_or_404(User, pk=user_id) if user_id else None
+        new_row = resources.reassign(
+            task, current, user=user, is_tbd=bool(request.data.get("is_tbd")),
+            actor=request.user, remark=request.data.get("remark", ""),
+        )
+        events.log_activity(
+            task.lead, request.user, "resource",
+            f"{ResourceAllocation.Slot(new_row.slot).label} reassigned"
+            f"{f' to {new_row.user.name}' if new_row.user else ' (TBD)'} — {task.task_name}",
+        )
+        return self._task_response(task, request)
+
+
+class AllocationReleaseView(AllocationTaskActionView):
+    """Free a slot with no replacement — ``{"allocation_id"}``."""
+
+    def post(self, request, task_id):
+        task = self.get_task()
+        row = get_object_or_404(
+            ResourceAllocation, pk=request.data.get("allocation_id"), task=task,
+        )
+        resources.release(row)
+        events.log_activity(
+            task.lead, request.user, "resource",
+            f"{ResourceAllocation.Slot(row.slot).label} released — {task.task_name}",
+        )
+        return self._task_response(task, request)
+
+
+class AllocationSubmitView(AllocationTaskActionView):
+    """Submit a staffed allocation task (§7.5): validates the mandatory slots,
+    completes the task, and opens the next task assigned to the chosen
+    Execution Red.
+    """
+
+    def post(self, request, task_id):
+        task = self.get_task()
+        tdef = self._tdef(task)
+        opened = resources.submit(task, tdef, request.user)
+        task.refresh_from_db()
+        events.log_activity(
+            task.lead, request.user, "resource", f"{task.task_name} — resources allocated",
         )
         for nxt in opened:
             if nxt.assigned_to_id and nxt.assigned_to_id != request.user.id:
@@ -697,14 +828,12 @@ class ResourceAllocationSubmitView(APIView):
                     nxt.assigned_to,
                     Notification.Type.TASK_OPENED,
                     f"Task {nxt.task_no} “{nxt.task_name}” is ready for you.",
-                    events.lead_link(allocation.lead),
+                    events.lead_link(task.lead),
                 )
-        defs = engine.task_defs_for(allocation.lead.lead_type)
+        defs = engine.task_defs_for(task.lead.lead_type)
         return Response(
             {
-                "allocation": ResourceAllocationSerializer(
-                    allocation, context={"request": request}
-                ).data,
+                "task": TaskSerializer(task, context={"request": request, "task_defs": defs}).data,
                 "opened_tasks": TaskSerializer(
                     opened, many=True, context={"request": request, "task_defs": defs}
                 ).data,
@@ -712,41 +841,57 @@ class ResourceAllocationSubmitView(APIView):
         )
 
 
-# Phase 17: which belt names qualify a user for each allocation dropdown — a
-# user qualifies if *either* their Belt or Acting Belt Level matches (both
-# fields source the same `belts` table). Auditor/Project-Member slots are not
-# belt-gated, so they're absent here and fall through to the unfiltered list.
-ALLOCATION_FIELD_BELTS = {
+# Which belt names qualify a user for each allocation dropdown — a user
+# qualifies if *either* their Belt or Acting Belt Level matches (both fields
+# source the same `belts` table). Auditor slots are not belt-gated, so they're
+# absent here and fall through to the unfiltered list.
+ALLOCATION_SLOT_BELTS = {
     "execution_red": ["Red", "Potential Red"],
     "execution_brown": ["Brown", "Potential Brown"],
-    "whites": ["White", "Potential White"],
+    "white": ["White", "Potential White"],
 }
 
 
 class AllocationUserListView(generics.ListAPIView):
     """Active users selectable in the allocation form's resource dropdowns.
 
-    Per the user, the task-assignment screen allocates only **Lead Manager or
-    Employee** people — Marketing, Finance, Resource Manager, Lead Admin and
-    User Management are excluded (see :data:`NON_ASSIGNABLE_GROUPS`). RM-only.
+    Allocates only **Lead Manager or Employee** people — Marketing, Finance,
+    Resource Manager, Lead Admin and User Management are excluded (see
+    :data:`NON_ASSIGNABLE_GROUPS`). Scoped like the slot actions (D12): the
+    Resource Manager, or the ``?task=`` lead's Default BD Person.
 
-    An optional ``?field=`` param (``execution_red`` / ``execution_brown`` /
-    ``whites``) additionally scopes the list to users whose Belt or Acting
-    Belt Level matches that role — e.g. ``?field=execution_red`` only offers
-    Red/Potential Red people (Phase 17). Unrecognised or omitted ``field``
-    values leave the list unfiltered, as before.
+    ``?task=<allocation_task id>`` is required (ties the picker to a specific
+    lead for the BD-owner check). An optional ``?slot=`` further narrows the
+    list to users whose Belt or Acting Belt Level matches that slot's role —
+    e.g. ``?slot=execution_red`` only offers Red/Potential Red people.
     """
 
     serializer_class = AssignableUserSerializer
-    permission_classes = [ResourceManagerPermission]
+    permission_classes = [AllocationActionPermission]
     pagination_class = None
+
+    def get_task(self):
+        if not hasattr(self, "_task"):
+            task_id = self.request.query_params.get("task")
+            self._task = (
+                Task.objects.select_related("lead").filter(
+                    pk=task_id, is_allocation_task=True
+                ).first()
+                if task_id else None
+            )
+        return self._task
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if self.get_task() is None:
+            raise NotFound("A valid ?task= allocation task id is required.")
 
     def get_queryset(self):
         qs = (
             User.objects.filter(is_active=True, is_superuser=False)
             .exclude(groups__name__in=NON_ASSIGNABLE_GROUPS)
         )
-        belt_names = ALLOCATION_FIELD_BELTS.get(self.request.query_params.get("field"))
+        belt_names = ALLOCATION_SLOT_BELTS.get(self.request.query_params.get("slot"))
         if belt_names:
             qs = qs.filter(
                 Q(belt__name__in=belt_names) | Q(acting_belt_level__name__in=belt_names)
@@ -755,10 +900,14 @@ class AllocationUserListView(generics.ListAPIView):
 
 
 class ProjectClosureListView(generics.ListAPIView):
-    """One row per project cycle — the Project Closure screen (§9.2 / §5.12).
+    """One row per completed project cycle — the Project Closure screen
+    (§9.2 / §5.12, R6 rebuild).
 
-    Lists every ``project_details`` row (first-time implementation + each
-    extension), not one per lead. Optional ``?lead=`` filter. RM-only.
+    Lists every ``project_details`` row (Implementation + each Extension loop),
+    not one per lead. ``?lead=<id>`` broadens to that lead's whole
+    ``base_code`` family — the parent plus any Mining children share one
+    ``base_code`` (§13), so the screen shows implementation, every extension,
+    and any mining cycle "together" (§9.2) without a special case. RM-only.
     """
 
     serializer_class = ProjectDetailsSerializer
@@ -767,34 +916,33 @@ class ProjectClosureListView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = ProjectDetails.objects.select_related(
-            "lead", "lead__assigned_to", "resource_allocation",
-            "resource_allocation__execution_red",
-            "resource_allocation__execution_brown",
-        ).prefetch_related(
-            "resource_allocation__whites",
-        ).order_by("lead", "extension_no")
+            "lead", "lead__assigned_to", "stage",
+        ).order_by("lead__base_code", "generated_at", "id")
         lead_id = self.request.query_params.get("lead")
         if lead_id:
-            qs = qs.filter(lead_id=lead_id)
+            lead = get_object_or_404(Lead.objects.all(), pk=lead_id)
+            if lead.base_code:
+                qs = qs.filter(lead__base_code=lead.base_code)
+            else:
+                qs = qs.filter(lead_id=lead_id)
         return qs
 
 
-class ProjectClosureShortCloseView(APIView):
-    """Short-close the current project cycle (§9.2): open the Project-Closure
-    task so the engagement can be finished ahead of its natural end.
+class LeadShortCloseView(APIView):
+    """Short-close a lead (§9.2/§5.12, R6): open the Project-Closure task ahead
+    of its natural trigger.
+
+    A lead-scoped action now — the current Extension-Implementation cycle it
+    acts on hasn't produced a ``project_details`` row yet (that only happens
+    when its own closing task completes normally, §4.8), so this can no longer
+    key off one. RM-only, and only while :func:`engine.can_short_close` allows
+    it (Task 26 has opened at some point and closure hasn't been reached yet).
     """
 
     permission_classes = [ResourceManagerPermission]
 
     def post(self, request, pk):
-        detail = get_object_or_404(
-            ProjectDetails.objects.select_related("lead"), pk=pk
-        )
-        if not detail.is_current:
-            return Response(
-                {"detail": "Short-close applies only to the current project cycle."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        lead = get_object_or_404(Lead.objects.all(), pk=pk)
         # A remark is compulsory (Phase 16 follow-up) so a project is never
         # short-closed by accident — mirrors the hold/unhold remark, but required.
         remark = (request.data.get("remark") or "").strip()
@@ -803,20 +951,20 @@ class ProjectClosureShortCloseView(APIView):
                 {"remark": ["A remark is required to short-close a project."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        opened = engine.open_project_closure(detail.lead, request.user, remark=remark)
+        opened = engine.open_project_closure(lead, request.user, remark=remark)
         if opened is None:
             return Response(
-                {"detail": "Project closure is already open or the lead is complete."},
+                {"detail": "Short-close isn't available for this lead right now."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         events.log_activity(
-            detail.lead,
+            lead,
             request.user,
             "status",
-            f"Project short-closed ({detail.project_id})",
+            f"Project short-closed ({projects.derived_project_id(lead)})",
             remark,
         )
-        defs = engine.task_defs_for(detail.lead.lead_type)
+        defs = engine.task_defs_for(lead.lead_type)
         return Response(
             TaskSerializer(opened, context={"request": request, "task_defs": defs}).data,
             status=status.HTTP_201_CREATED,
@@ -1130,7 +1278,7 @@ class DashboardView(LeadQuerysetMixin, APIView):
 
         active_qs = leads.filter(
             status__in=[Lead.Status.IN_PROGRESS, Lead.Status.ON_HOLD]
-        ).prefetch_related("tasks")
+        ).prefetch_related("tasks", "stages")
         active_leads = []
         for lead in active_qs:
             tasks = [
@@ -1145,7 +1293,9 @@ class DashboardView(LeadQuerysetMixin, APIView):
                     "company_name": lead.company_name,
                     "project_name": lead.project_name,
                     "status": lead.status,
-                    "project_id": lead.project_id,
+                    # R2 (§13): derived stage-legible Project ID (front-end key
+                    # `project_id_display`, matching the lead serializer).
+                    "project_id_display": projects.derived_project_id(lead),
                     "progress": progress,
                 }
             )

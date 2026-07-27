@@ -1,345 +1,243 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronRight, ExternalLink, Pencil, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { AlertTriangle, ExternalLink, Pencil, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { AllocationStatusBadge } from '@/components/shared/StatusBadge'
+import { StageBadge, TaskStateBadge } from '@/components/shared/StatusBadge'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import {
-  useResourceAllocations,
+  useAllocationTasks,
   useAllocationUsers,
-  useUpdateAllocation,
-  useSubmitAllocation,
+  useAllocateSlot,
+  useReassignSlot,
+  useReleaseSlot,
+  useSubmitAllocationTask,
 } from '@/hooks/useResources'
 
-// Single-holder slots (one user each). Execution Red drives the next task's
-// assignee. Browns and White are multi-select and handled separately.
-const SINGLE_FIELDS = [
-  ['auditor1', 'Auditor 1'],
-  ['auditor2', 'Auditor 2'],
-  ['auditor3', 'Auditor 3'],
-  ['auditor4', 'Auditor 4'],
-  ['project_member1', 'Project Member 1'],
-  ['project_member2', 'Project Member 2'],
-  ['project_member3', 'Project Member 3'],
-  ['project_member4', 'Project Member 4'],
-  ['project_member5', 'Project Member 5'],
-  ['project_member6', 'Project Member 6'],
-  ['project_member7', 'Project Member 7'],
-  ['project_member8', 'Project Member 8'],
-  ['project_member9', 'Project Member 9'],
-  ['project_member10', 'Project Member 10'],
-]
-
 const NONE = '__none__'
+const TBD = '__tbd__'
 
-// Keeps an already-assigned person selectable even if their belt no longer
-// matches the field's filter (e.g. re-graded after the fact, or allocated
-// before Phase 17) — falls back to the unfiltered list rather than silently
-// blanking out an existing selection.
-function withCurrentSelection(list, ids, fallback) {
-  const missing = ids.filter((id) => id && !list.some((u) => u.id === id))
-  if (missing.length === 0) return list
-  const extra = fallback.filter((u) => missing.includes(u.id))
-  return extra.length ? [...list, ...extra] : list
+// Which slots hold at most one currently-allocated resource — the rest (White)
+// is a pool that can carry several concurrent rows.
+function isPool(slot) {
+  return slot === 'white'
 }
 
-// Open = resources actively tied up; Closed = freed up (auto-close rules).
-// Colour is canonical (shared AllocationStatusBadge); this page shows Closed as
-// "Freed" and adds a hint tooltip.
-const STATUS_META = {
-  Pending: { label: 'Pending', hint: 'Awaiting allocation' },
-  Open: { label: 'Open', hint: 'Resources tied up' },
-  Closed: { label: 'Freed', hint: 'Resources freed up' },
-}
-
-function StatusBadge({ status }) {
-  const meta = STATUS_META[status] || { label: status, hint: '' }
+// A single-occupancy slot (Execution Red / Brown / Auditor 1 / Auditor 2): at
+// most one `allocated` row. Picking a user allocates (empty slot) or reassigns
+// (already filled) — a reassign releases the old row and appends a new one
+// linked by `replaces` (§4.7); it's never overwritten in place.
+function SingleSlotControl({ slot, label, required, occupant, users, disabled, onAllocate, onReassign, onRelease }) {
+  const value = occupant?.user ? String(occupant.user) : NONE
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span><AllocationStatusBadge status={status} label={meta.label} /></span>
-      </TooltipTrigger>
-      {meta.hint && <TooltipContent>{meta.hint}</TooltipContent>}
-    </Tooltip>
-  )
-}
-
-function UserSelect({ value, onChange, users, disabled, labelFor }) {
-  const label = labelFor || ((u) => u.name)
-  return (
-    <Select value={value ? String(value) : NONE} onValueChange={(v) => onChange(v === NONE ? null : Number(v))} disabled={disabled}>
-      <SelectTrigger className="w-full"><SelectValue placeholder="— None —" /></SelectTrigger>
-      {/* `position="popper"` makes the dropdown render in the Radix popper
-          wrapper so `isInPortalLayer` recognises an outside-click as landing in
-          a portal layer — otherwise closing the dropdown also dismissed the
-          whole AllocationDialog ("2 steps out"). */}
-      <SelectContent position="popper">
-        <SelectItem value={NONE}>— None (TBD) —</SelectItem>
-        {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{label(u)}</SelectItem>)}
-      </SelectContent>
-    </Select>
-  )
-}
-
-// Multi-select for White: a stage can need several. (Brown is single now.)
-function MultiUserSelect({ value = [], onChange, users, disabled, labelFor }) {
-  const [open, setOpen] = useState(false)
-  const label = labelFor || ((u) => u.name)
-  const selected = users.filter((u) => value.includes(u.id))
-  const toggle = (id) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id])
-
-  return (
-    // `modal` so an outside click while the dropdown is open closes only the
-    // dropdown — its own layer captures the click before it reaches the parent
-    // AllocationDialog (which is portalled separately and would otherwise treat
-    // the click as "outside" and dismiss the whole dialog).
-    <Popover open={open} onOpenChange={setOpen} modal>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs">
+        {label} {required > 0 && <span className="text-muted-foreground">(need {required})</span>}
+        {slot === 'execution_red' && <span className="text-red-500"> *</span>}
+      </Label>
+      <div className="flex items-center gap-1.5">
+        <Select
+          value={value}
           disabled={disabled}
-          className="h-auto min-h-9 w-full flex-wrap justify-start gap-1 py-1.5 font-normal"
+          onValueChange={(v) => {
+            if (v === NONE) return
+            const userId = Number(v)
+            if (occupant) onReassign(occupant.id, userId)
+            else onAllocate(slot, userId)
+          }}
         >
-          {selected.length === 0 ? (
-            <span className="text-muted-foreground">— None (TBD) —</span>
-          ) : (
-            selected.map((u) => (
-              <Badge key={u.id} variant="secondary" className="gap-1">
-                {u.name}
-                {!disabled && (
-                  <X
-                    className="size-3 cursor-pointer opacity-70 hover:opacity-100"
-                    onClick={(e) => { e.stopPropagation(); toggle(u.id) }}
-                  />
-                )}
-              </Badge>
-            ))
-          )}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search people…" />
-          <CommandList>
-            <CommandEmpty>No user found.</CommandEmpty>
-            <CommandGroup>
-              {users.map((u) => (
-                <CommandItem key={u.id} value={u.name} onSelect={() => toggle(u.id)}>
-                  <Check className={cn('mr-2 size-4', value.includes(u.id) ? 'opacity-100' : 'opacity-0')} />
-                  {label(u)}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+          <SelectTrigger className="w-full"><SelectValue placeholder="— Select —" /></SelectTrigger>
+          <SelectContent position="popper">
+            {!occupant && <SelectItem value={NONE}>— None —</SelectItem>}
+            {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {occupant && !disabled && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" size="icon-sm" variant="ghost" onClick={() => onRelease(occupant.id)}>
+                <X className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Release this slot</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+      {slot === 'execution_red' && !occupant && (
+        <p className="text-xs text-muted-foreground">Required to submit — the next task is assigned to them.</p>
+      )}
+    </div>
   )
 }
 
-// Guard the allocation dialog against being dismissed by a click that actually
-// landed inside a portalled popover/select layer (rendered outside the dialog's
-// DOM node). A genuine click outside the dialog still closes it.
-function isInPortalLayer(e) {
-  const t = e.detail?.originalEvent?.target
-  return !!(
-    t &&
-    t.closest?.(
-      '[data-radix-popper-content-wrapper], [data-radix-select-content], [data-radix-select-viewport]',
-    )
-  )
-}
+// White is a pool: several people may be allocated at once, and a slot may be
+// left "TBD" (to-be-decided) instead of naming someone (PRD §5.7).
+function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, onRelease }) {
+  const [pick, setPick] = useState(NONE)
+  const allocatedNames = occupants.filter((o) => !o.is_tbd)
+  const tbdCount = occupants.filter((o) => o.is_tbd).length
 
-function DetailRow({ label, value }) {
-  if (!value) return null
-  return <span>{label}: <b className="font-medium text-foreground">{value}</b></span>
-}
+  function add() {
+    if (pick === NONE) return
+    if (pick === TBD) onAllocate('white', null, true)
+    else onAllocate('white', Number(pick))
+    setPick(NONE)
+  }
 
-function ManpowerLine({ label, required, allocated }) {
-  const over = required > 0 && allocated > required
   return (
-    <span>
-      {label}: <b className={over ? 'text-red-600' : 'text-foreground'}>{allocated}</b>
-      <span className="text-muted-foreground"> / {required}</span>
-    </span>
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs">White {required > 0 && <span className="text-muted-foreground">(need {required})</span>}</Label>
+      <div className="flex flex-wrap gap-1.5">
+        {occupants.length === 0 && <span className="text-xs text-muted-foreground">None allocated yet.</span>}
+        {allocatedNames.map((o) => (
+          <span key={o.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
+            {o.user_name?.name}
+            {!disabled && <X className="size-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onRelease(o.id)} />}
+          </span>
+        ))}
+        {Array.from({ length: tbdCount }).map((_, i) => {
+          const o = occupants.filter((x) => x.is_tbd)[i]
+          return (
+            <span key={o.id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+              TBD
+              {!disabled && <X className="size-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onRelease(o.id)} />}
+            </span>
+          )
+        })}
+      </div>
+      {!disabled && (
+        <div className="flex items-center gap-1.5">
+          <Select value={pick} onValueChange={setPick}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="— Add a White —" /></SelectTrigger>
+            <SelectContent position="popper">
+              <SelectItem value={TBD}>Leave as TBD</SelectItem>
+              {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button type="button" size="sm" variant="outline" disabled={pick === NONE} onClick={add}>Add</Button>
+        </div>
+      )}
+    </div>
   )
 }
 
-// Single-holder resource keys (in form order) for gathering prior assignees.
-const SINGLE_KEYS = ['execution_red', 'execution_brown', ...SINGLE_FIELDS.map(([k]) => k)]
+function AllocationDialog({ task, onClose }) {
+  const allocate = useAllocateSlot()
+  const reassign = useReassignSlot()
+  const release = useReleaseSlot()
+  const submit = useSubmitAllocationTask()
+  const busy = allocate.isPending || reassign.isPending || release.isPending || submit.isPending
 
-function AllocationDialog({ allocation, users, redUsers, brownUsers, whiteUsers, onClose }) {
-  const update = useUpdateAllocation()
-  const submit = useSubmitAllocation()
-  const [singles, setSingles] = useState({})
-  const [whites, setWhites] = useState([])
-  const [remark, setRemark] = useState('')
+  const alloc = task.allocation || {}
+  const slots = alloc.slots || []
+  const singleSlots = alloc.single_occupancy_slots || []
 
-  // Every allocation on this lead — used to flag people already assigned on an
-  // earlier step so the RM can re-pick them without memorising names (#3). The
-  // list endpoint is RM-scoped; on the first allocation there are no prior rows.
-  const { data: leadAllocs = [] } = useResourceAllocations({ leadId: allocation?.lead })
+  const [redSlot] = slots.filter((s) => s === 'execution_red')
+  const { data: redUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_red' })
+  const { data: brownUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_brown' })
+  const { data: whiteUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'white' })
+  const { data: plainUsers = [] } = useAllocationUsers({ taskId: task.id })
+  const usersFor = (slot) => (
+    slot === 'execution_red' ? redUsers
+      : slot === 'execution_brown' ? brownUsers
+        : slot === 'white' ? whiteUsers
+          : plainUsers
+  )
 
-  useEffect(() => {
-    if (!allocation) return
-    const next = {
-      execution_red: allocation.execution_red || null,
-      execution_brown: allocation.execution_brown || null,
+  const disabled = !['open', 'pending'].includes(task.status)
+
+  async function handleAllocate(slot, userId, isTbd = false) {
+    try {
+      await allocate.mutateAsync({ taskId: task.id, slot, userId, isTbd })
+    } catch (e) {
+      toast.error(e.message)
     }
-    for (const [key] of SINGLE_FIELDS) next[key] = allocation[key] || null
-    setSingles(next)
-    setWhites(allocation.whites || [])
-    setRemark(allocation.remark || '')
-  }, [allocation])
-
-  // userId → set of allocation types they were previously assigned on (rows
-  // other than this one). Drives the "(prev: 2HR)" dropdown hint.
-  const priorByUser = useMemo(() => {
-    const map = {}
-    for (const row of leadAllocs) {
-      if (row.id === allocation?.id) continue
-      const ids = SINGLE_KEYS.map((k) => row[k]).filter(Boolean).concat(row.whites || [])
-      for (const id of ids) {
-        (map[id] ||= new Set()).add(row.type)
-      }
+  }
+  async function handleReassign(allocationId, userId) {
+    try {
+      await reassign.mutateAsync({ taskId: task.id, allocationId, userId })
+      toast.success('Reassigned')
+    } catch (e) {
+      toast.error(e.message)
     }
-    return map
-  }, [leadAllocs, allocation?.id])
-
-  const labelFor = (u) => {
-    const prev = priorByUser[u.id]
-    return prev ? `${u.name} (prev: ${[...prev].join(', ')})` : u.name
+  }
+  async function handleRelease(allocationId) {
+    try {
+      await release.mutateAsync({ taskId: task.id, allocationId })
+    } catch (e) {
+      toast.error(e.message)
+    }
+  }
+  async function handleSubmit() {
+    try {
+      await submit.mutateAsync({ taskId: task.id })
+      toast.success('Resources allocated — next task opened')
+      onClose()
+    } catch (e) {
+      toast.error(e.message)
+    }
   }
 
-  const redOptions = withCurrentSelection(redUsers, [singles.execution_red], users)
-  const brownOptions = withCurrentSelection(brownUsers, [singles.execution_brown], users)
-  const whiteOptions = withCurrentSelection(whiteUsers, whites, users)
-
-  if (!allocation) return null
-  const readOnly = allocation.status === 'Closed'
-  const isPending = allocation.status === 'Pending'
-  const busy = update.isPending || submit.isPending
-  const payload = { ...singles, whites, remark }
-
-  const brownCount = singles.execution_brown ? 1 : 0
-  const overBrown = allocation.man_power_brown > 0 && brownCount > allocation.man_power_brown
-  const overWhite = allocation.man_power_white > 0 && whites.length > allocation.man_power_white
-  const over = overBrown || overWhite
-  // Live under-allocation hint (§4.7 v14) — amber, mirrors the backend flag.
-  const underBrown = allocation.man_power_brown > 0 && brownCount < allocation.man_power_brown
-  const underWhite = allocation.man_power_white > 0 && whites.length < allocation.man_power_white
-  const under = underBrown || underWhite
-  // Execution Red is mandatory — the next workflow task is assigned to them
-  // (§7.5; the Phase-13 Brown/White-editor rule was rescinded in Phase 14a).
-  const redMissing = !singles.execution_red
-  const cannotAllocate = redMissing
-
-  async function handleAllocate() {
-    // Single CTA: save the form, then submit — which closes the allocation
-    // task and opens the next workflow task for the chosen Execution Red.
-    await update.mutateAsync({ id: allocation.id, patch: payload })
-    await submit.mutateAsync({ id: allocation.id })
-    toast.success('Resources allocated — next task opened')
-    onClose()
-  }
-
-  async function handleUpdate() {
-    await update.mutateAsync({ id: allocation.id, patch: payload })
-    toast.success('Allocation updated')
-    onClose()
-  }
+  const redOccupant = (alloc.occupants?.execution_red || [])[0]
+  const redMissing = redSlot && !redOccupant
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent
-        className="max-h-[90vh] max-w-2xl overflow-y-auto"
-        onPointerDownOutside={(e) => { if (isInPortalLayer(e)) e.preventDefault() }}
-        onInteractOutside={(e) => { if (isInPortalLayer(e)) e.preventDefault() }}
-      >
-        <DialogHeader><DialogTitle>Allocate resources — {allocation.type}</DialogTitle></DialogHeader>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader><DialogTitle>{task.task_name}</DialogTitle></DialogHeader>
 
-        {/* Lead / project context (PRD §5.7) so the RM can staff with clarity. */}
         <div className="rounded-md border bg-muted/40 p-3 text-sm">
           <div className="flex items-center gap-2">
-            <span className="font-medium">{allocation.lead_project_name}</span>
-            <StatusBadge status={allocation.status} />
+            <span className="font-medium">{task.lead_project_name}</span>
+            <StageBadge stage={task.stage_code} />
+            <TaskStateBadge status={task.status} />
           </div>
-          <div className="text-muted-foreground">{allocation.lead_company_name}</div>
-          <div className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-            <DetailRow label="Lead ID" value={allocation.lead_display_id} />
-            <DetailRow label="Project ID" value={allocation.lead_project_id} />
-            <DetailRow label="Lead Manager" value={allocation.lead_manager?.name} />
-            <DetailRow label="Country" value={allocation.lead_country} />
-            <DetailRow label="Industry" value={allocation.lead_industry} />
-            <DetailRow label="Domain" value={allocation.lead_domain} />
-            <DetailRow label="Division" value={allocation.lead_division} />
-            <DetailRow label="Scope" value={allocation.lead_scope} />
-          </div>
-          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs">
-            <span className="font-medium text-muted-foreground">Man-power (allocated / required):</span>
-            <ManpowerLine label="Brown" required={allocation.man_power_brown} allocated={brownCount} />
-            <ManpowerLine label="White" required={allocation.man_power_white} allocated={whites.length} />
-          </div>
-          {over && (
-            <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600">
-              <AlertTriangle className="size-3.5" />
-              {overBrown && overWhite ? 'Brown and White exceed' : overBrown ? 'Brown exceeds' : 'White exceeds'} the required man-power.
-            </p>
-          )}
-          {!over && under && (
-            <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-600">
-              <AlertTriangle className="size-3.5" />
-              {underBrown && underWhite ? 'Brown and White are below' : underBrown ? 'Brown is below' : 'White is below'} the required man-power.
-            </p>
-          )}
+          <div className="text-muted-foreground">{task.lead_company_name}</div>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Execution Red <span className="text-red-500">*</span> <span className="text-muted-foreground">(next task is assigned to them)</span></Label>
-            <UserSelect value={singles.execution_red} users={redOptions} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_red: v }))} />
-            {!readOnly && redMissing && <p className="text-xs text-red-600">Execution Red is required{!isPending ? ' — it cannot be cleared once assigned' : ' to allocate'}.</p>}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Execution Brown {allocation.man_power_brown > 0 && <span className="text-muted-foreground">(need {allocation.man_power_brown})</span>}</Label>
-            <UserSelect value={singles.execution_brown} users={brownOptions} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, execution_brown: v }))} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">White {allocation.man_power_white > 0 && <span className="text-muted-foreground">(need {allocation.man_power_white})</span>}</Label>
-            <MultiUserSelect value={whites} users={whiteOptions} disabled={readOnly} labelFor={labelFor} onChange={setWhites} />
-          </div>
-          {SINGLE_FIELDS.map(([key, label]) => (
-            <div key={key} className="flex flex-col gap-1.5">
-              <Label className="text-xs">{label}</Label>
-              <UserSelect value={singles[key]} users={users} disabled={readOnly} labelFor={labelFor} onChange={(v) => setSingles((s) => ({ ...s, [key]: v }))} />
-            </div>
+          {slots.filter((s) => singleSlots.includes(s)).map((slot) => (
+            <SingleSlotControl
+              key={slot}
+              slot={slot}
+              label={alloc.slot_labels?.[slot] || slot}
+              required={alloc.required?.[slot] || 0}
+              occupant={(alloc.occupants?.[slot] || [])[0]}
+              users={usersFor(slot)}
+              disabled={disabled}
+              onAllocate={handleAllocate}
+              onReassign={handleReassign}
+              onRelease={handleRelease}
+            />
           ))}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">Remark</Label>
-          <Textarea value={remark} disabled={readOnly} onChange={(e) => setRemark(e.target.value)} rows={2} />
+          {slots.filter((s) => isPool(s)).map((slot) => (
+            <WhiteSlotControl
+              key={slot}
+              required={alloc.required?.[slot] || 0}
+              occupants={alloc.occupants?.[slot] || []}
+              users={usersFor(slot)}
+              disabled={disabled}
+              onAllocate={handleAllocate}
+              onRelease={handleRelease}
+            />
+          ))}
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
-          {!readOnly && (
-            isPending ? (
-              <Button onClick={handleAllocate} disabled={busy || cannotAllocate} title={redMissing ? 'Select an Execution Red first' : undefined}>Allocate resources</Button>
-            ) : (
-              <Button onClick={handleUpdate} disabled={busy || redMissing} title={redMissing ? 'Execution Red cannot be cleared once assigned' : undefined}>Update allocation</Button>
-            )
+          {!disabled && (
+            <Button
+              onClick={handleSubmit}
+              disabled={busy || redMissing}
+              title={redMissing ? 'Select an Execution Red first' : undefined}
+            >
+              Submit allocation
+            </Button>
           )}
         </DialogFooter>
       </DialogContent>
@@ -347,51 +245,61 @@ function AllocationDialog({ allocation, users, redUsers, brownUsers, whiteUsers,
   )
 }
 
-function AllocationRow({ a, leading, hint, muted, onRowClick, onEdit }) {
+function slotSummary(task) {
+  const alloc = task.allocation
+  if (!alloc) return null
+  const parts = []
+  let over = false
+  let under = false
+  for (const slot of alloc.slots || []) {
+    const required = alloc.required?.[slot] || 0
+    const count = (alloc.occupants?.[slot] || []).length
+    if (required === 0 && count === 0) continue
+    if (required > 0 && count > required) over = true
+    if (required > 0 && count < required) under = true
+    parts.push(`${alloc.slot_labels?.[slot] || slot} ${count}/${required || count}`)
+  }
+  return { text: parts.join(' · '), over, under }
+}
+
+function AllocationRow({ task, onEdit }) {
+  const summary = slotSummary(task)
   return (
-    <TableRow className="cursor-pointer" onClick={onRowClick}>
-      <TableCell>{leading}</TableCell>
-      <TableCell className={cn(muted && 'pl-6')}>
+    <TableRow className="cursor-pointer" onClick={onEdit}>
+      <TableCell>
         <Link
-          to={`/leads/${a.lead}`}
-          className={cn('inline-flex items-center gap-1 font-medium hover:underline', muted && 'font-normal text-muted-foreground')}
+          to={`/leads/${task.lead}`}
+          className="inline-flex items-center gap-1 font-medium hover:underline"
           onClick={(e) => e.stopPropagation()}
         >
-          {a.lead_project_name}
+          {task.lead_project_name}
           <ExternalLink className="size-3 text-muted-foreground" />
         </Link>
-        <div className="text-xs text-muted-foreground">
-          {a.lead_company_name} · {a.lead_display_id}
-          {hint}
-        </div>
+        <div className="text-xs text-muted-foreground">{task.lead_company_name}</div>
       </TableCell>
-      <TableCell className={cn(muted && 'text-muted-foreground')}>{a.type}</TableCell>
-      <TableCell><StatusBadge status={a.status} /></TableCell>
       <TableCell>
-        <span className={a.is_over_allocated ? 'font-medium text-red-600' : muted ? 'text-muted-foreground' : ''}>
-          Brown {a.brown_count}/{a.man_power_brown} · White {a.white_count}/{a.man_power_white}
-        </span>
+        {task.task_name}
+        {task.is_hanging_task && <span className="ml-1.5 text-xs text-muted-foreground">(non-blocking)</span>}
       </TableCell>
+      <TableCell><StageBadge stage={task.stage_code} /></TableCell>
+      <TableCell><TaskStateBadge status={task.status} /></TableCell>
+      <TableCell>{summary?.text || <span className="text-muted-foreground">Not staffed yet</span>}</TableCell>
       <TableCell className="text-right">
         <div className="flex items-center justify-end gap-1.5">
-          {a.is_over_allocated && (
+          {summary?.over && (
             <Tooltip>
-              <TooltipTrigger asChild>
-                <AlertTriangle className="size-4 text-red-600" />
-              </TooltipTrigger>
+              <TooltipTrigger asChild><AlertTriangle className="size-4 text-red-600" /></TooltipTrigger>
               <TooltipContent>Over-allocated: more resources than required</TooltipContent>
             </Tooltip>
           )}
-          {!a.is_over_allocated && a.is_under_allocated && a.status === 'Open' && (
+          {!summary?.over && summary?.under && (
             <Tooltip>
-              <TooltipTrigger asChild>
-                <AlertTriangle className="size-4 text-amber-500" />
-              </TooltipTrigger>
-              <TooltipContent>Under-allocated: fewer resources than the required man-power</TooltipContent>
+              <TooltipTrigger asChild><AlertTriangle className="size-4 text-amber-500" /></TooltipTrigger>
+              <TooltipContent>Under-allocated: fewer resources than required</TooltipContent>
             </Tooltip>
           )}
           <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onEdit() }}>
-            <Pencil className="size-4" /> {a.status === 'Closed' ? 'View' : 'Edit'}
+            <Pencil className="size-4" /> {['open', 'pending'].includes(task.status) ? 'Staff' : 'View'}
           </Button>
         </div>
       </TableCell>
@@ -399,54 +307,50 @@ function AllocationRow({ a, leading, hint, muted, onRowClick, onEdit }) {
   )
 }
 
-// Resource Manager reporting screen (Tech Req §9.1 / PRD §5.7). Allocations are
-// grouped by lead — a lead re-entering the workflow (e.g. a new Extension
-// cycle) reuses the same project row instead of piling up separate rows: the
-// latest allocation stays on top, older ones collapse underneath. Edit opens
-// the allocation form with the full lead/project + man-power context.
+const STATUS_FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'open', label: 'Open' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'closed', label: 'Closed' },
+]
+
+// Resource-allocation screen (Tech Req §9.1 / PRD §5.7, R5 rebuild). One row
+// per allocation task (3/10/17/18/24/25) rather than the old wide per-cycle
+// row — staffing a task is now a set of per-slot actions (allocate / reassign
+// / release), each an append-only history row (§4.7). Workable by the
+// Resource Manager or the lead's Default BD Person (D12).
 export default function Resources() {
-  const { data: allocations = [], isLoading } = useResourceAllocations()
-  // Auditors/Project Members stay unfiltered; Red/Brown/White are each scoped
-  // server-side to their matching belt (+ Potential) (Phase 17).
-  const { data: users = [] } = useAllocationUsers()
-  const { data: redUsers = [] } = useAllocationUsers('execution_red')
-  const { data: brownUsers = [] } = useAllocationUsers('execution_brown')
-  const { data: whiteUsers = [] } = useAllocationUsers('whites')
-  const [editing, setEditing] = useState(null)
-  const [expanded, setExpanded] = useState(() => new Set())
+  const [statusFilter, setStatusFilter] = useState('all')
+  const { data: tasks = [], isLoading } = useAllocationTasks(
+    statusFilter === 'all' ? {} : { status: statusFilter },
+  )
+  const [editingId, setEditingId] = useState(null)
 
-  const projects = useMemo(() => {
-    const groups = new Map()
-    for (const a of allocations) {
-      if (!groups.has(a.lead)) groups.set(a.lead, [])
-      groups.get(a.lead).push(a)
-    }
-    return [...groups.values()]
-      .map((cycles) => {
-        const byRecency = [...cycles].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-        const [current, ...history] = byRecency
-        return { key: current.lead, current, history }
-      })
-      .sort((a, b) => new Date(b.current.created_at) - new Date(a.current.created_at))
-  }, [allocations])
-
-  function toggle(key) {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
+  const sorted = useMemo(() => [...tasks].sort((a, b) => b.id - a.id), [tasks])
+  const editing = sorted.find((t) => t.id === editingId) || null
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Resource Allocation</h1>
-        <p className="text-sm text-muted-foreground">
-          Allocate resources for each workflow stage. <b>Open</b> = resources tied up; <b>Freed</b> = released automatically as engagements finish.
-          Expand a project to see its earlier allocation cycles.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Resource Allocation</h1>
+          <p className="text-sm text-muted-foreground">
+            Staff each allocation task's slots (Execution Red/Brown, White, Auditors). Reassigning a slot
+            keeps the person it replaced in history — nothing is ever overwritten.
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          {STATUS_FILTERS.map((f) => (
+            <Button
+              key={f.value}
+              size="sm"
+              variant={statusFilter === f.value ? 'default' : 'outline'}
+              onClick={() => setStatusFilter(f.value)}
+            >
+              {f.label}
+            </Button>
+          ))}
+        </div>
       </div>
 
       <Card className="py-0">
@@ -454,54 +358,28 @@ export default function Resources() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-8" />
                 <TableHead>Project</TableHead>
-                <TableHead>Type</TableHead>
+                <TableHead>Allocation task</TableHead>
+                <TableHead>Stage</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Man-power (allocated / required)</TableHead>
+                <TableHead>Slots (allocated/required)</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>}
-              {!isLoading && projects.length === 0 && (
-                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No resource allocations yet.</TableCell></TableRow>
+              {!isLoading && sorted.length === 0 && (
+                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No allocation tasks yet.</TableCell></TableRow>
               )}
-              {projects.map(({ key, current, history }) => {
-                const isOpen = expanded.has(key)
-                const hasHistory = history.length > 0
-                return (
-                  <Fragment key={key}>
-                    <AllocationRow
-                      a={current}
-                      leading={hasHistory && (
-                        <ChevronRight className={cn('size-4 text-muted-foreground transition-transform', isOpen && 'rotate-90')} />
-                      )}
-                      hint={hasHistory && <span> · {history.length} earlier cycle{history.length > 1 ? 's' : ''}</span>}
-                      onRowClick={hasHistory ? () => toggle(key) : () => setEditing(current)}
-                      onEdit={() => setEditing(current)}
-                    />
-                    {isOpen && history.map((a) => (
-                      <AllocationRow key={a.id} a={a} muted onRowClick={() => setEditing(a)} onEdit={() => setEditing(a)} />
-                    ))}
-                  </Fragment>
-                )
-              })}
+              {sorted.map((task) => (
+                <AllocationRow key={task.id} task={task} onEdit={() => setEditingId(task.id)} />
+              ))}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
 
-      {editing && (
-        <AllocationDialog
-          allocation={editing}
-          users={users}
-          redUsers={redUsers}
-          brownUsers={brownUsers}
-          whiteUsers={whiteUsers}
-          onClose={() => setEditing(null)}
-        />
-      )}
+      {editing && <AllocationDialog task={editing} onClose={() => setEditingId(null)} />}
     </div>
   )
 }

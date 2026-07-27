@@ -39,8 +39,8 @@ function fromApiLead(l) {
     name: l.project_name,
     project_name: l.project_name,
     company_name: l.company_name,
-    country: l.country,
-    country_name: l.country_name,
+    base_code: l.base_code || '',
+    parent_lead: l.parent_lead ?? null,
     industry: l.industry,
     industry_name: l.industry_name,
     domain: l.domain,
@@ -50,7 +50,14 @@ function fromApiLead(l) {
     assigned_to: l.assigned_to ?? null,
     assigned_to_name: l.assigned_to_name || null,
     lead_type: l.lead_type,
+    flow_of_tasks: l.flow_of_tasks || '',
+    type_of_project: l.type_of_project || '',
     status: l.status,
+    // R2 (§13): the derived, stage-legible Project ID + current stage. The old
+    // stored `project_id` is retained for back-compat but is empty for leads
+    // created under the v4.0 model — displays use `project_id_display`.
+    project_id_display: l.project_id_display || '',
+    current_stage: l.current_stage || null,
     project_id: l.project_id || '',
     project_id_base: l.project_id_base || '',
     extension: l.extension || '00',
@@ -67,8 +74,8 @@ function fromApiLead(l) {
 function toApiPayload(data) {
   const payload = {}
   const passthrough = [
-    'country', 'company_name', 'project_name', 'industry', 'domain',
-    'division', 'scope', 'lead_type',
+    'company_name', 'project_name', 'industry', 'domain',
+    'division', 'scope', 'lead_type', 'flow_of_tasks', 'type_of_project',
   ]
   for (const key of passthrough) {
     if (key in data) payload[key] = data[key]
@@ -139,6 +146,18 @@ export async function dropLead(id, remark) {
   try {
     const { data } = await client.post(`/api/leads/${id}/drop/`, { remark: remark || '' })
     return fromApiLead(data)
+  } catch (err) {
+    throwApiError(err)
+  }
+}
+
+// Short-close (R6, §9.2/§5.12) — a lead-scoped action (Resource Manager only):
+// opens Project Closure ahead of its natural trigger. The compulsory remark is
+// stamped on the lead and shown as a banner; the response is the opened task.
+export async function shortCloseLead(id, remark) {
+  try {
+    const { data } = await client.post(`/api/leads/${id}/short-close/`, { remark: remark || '' })
+    return data
   } catch (err) {
     throwApiError(err)
   }

@@ -24,27 +24,68 @@ Explicitly **out of scope here** (deferred to later phases, per PLAN §3):
   ``execution_red``/Resource-Manager assignees — Phase 6. Those steps open
   **unassigned** here (the lead owner keeps view-only access, §6); a user can be
   put on them via the reassign action to walk the flow end-to-end.
-- Task-12 → Hybernation / Task-17 → Complete lead-status side effects and
-  Project-ID generation — Phase 6. Routing still advances correctly.
+- Lead-status side effects and Project-ID generation — Phase 6 (old model);
+  the 28-task rebuild redoes these in R3/R4. Routing still advances correctly.
 """
 
+import re
 from datetime import date
 
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from . import holds, projects, resources
-from .models import Checklist, Lead, ProjectDetails, Task, Workflow, WorkflowTriggerConfig
+from . import events, holds, projects, resources
+from .models import (
+    Checklist,
+    Lead,
+    LeadStage,
+    Notification,
+    Task,
+    Workflow,
+    WorkflowTriggerConfig,
+)
+
+# Extension-loop stage codes (E0, E1, …) — a task's literal ``stage`` value in
+# the workflow JSON ("E0" on Tasks 22–26) is a placeholder; the *actual* stage
+# for a given pass is resolved dynamically (R6, §4.3.1) — see ``_attach_stage``.
+_EXTENSION_STAGE_RE = re.compile(r"^E\d+$")
 
 
 def active_workflow(lead_type):
-    """The active :class:`Workflow` for ``lead_type`` (newest wins), or None."""
-    return (
+    """The active :class:`Workflow` for ``lead_type`` (newest wins), or None.
+
+    v4.0/v17.0 (R3) uses a **single unified 28-task graph** seeded as ``type=BD``;
+    Mining and Extension leads run the same graph, entered at a different task via
+    the per-flow ``entry`` list. So if no workflow is seeded for the lead's own
+    type, fall back to the BD workflow (DD1). A type-specific workflow, if one is
+    ever seeded, still wins.
+    """
+    wf = (
         Workflow.objects.filter(type=lead_type, status=Workflow.Status.ACTIVE)
         .order_by("-updated_at")
         .first()
     )
+    if wf is not None or lead_type == Lead.LeadType.BD:
+        return wf
+    return (
+        Workflow.objects.filter(type=Lead.LeadType.BD, status=Workflow.Status.ACTIVE)
+        .order_by("-updated_at")
+        .first()
+    )
+
+
+def _flow_for(lead, wf):
+    """The flow config (``{entry, skip, edges}``) for a lead (§4.3.4 / D6).
+
+    Extension-type leads use the ``EXTENSION`` entry (Task 22); BD/Mining leads
+    use their ``flow_of_tasks`` code (default ``DEFAULT``).
+    """
+    flows = (wf.workflow or {}).get("flows", {})
+    if lead.lead_type == Lead.LeadType.EXTENSION:
+        return flows.get("EXTENSION", {"entry": [22]})
+    key = lead.flow_of_tasks or "DEFAULT"
+    return flows.get(key, flows.get("DEFAULT", {"entry": [1]}))
 
 
 def _task_defs(workflow_json):
@@ -63,34 +104,65 @@ def _resolve_assignee(lead, tdef):
 
     ``default_bd_person`` → the lead's owner. ``execution_red`` → the Execution
     Red the Resource Manager allocated for the current block (§7.5); None until
-    an allocation is filled. *(The Phase-13 Brown/White-editor override was
-    rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
-    ``resource_manager`` allocation tasks stay unassigned — the Resource Manager
-    reaches them via the role-scoped allocation screen.
+    an allocation is filled. ``resource_manager`` / ``finance`` tasks stay
+    unassigned — reached via the role-scoped allocation screen / Accounts queue.
+
+    ``fallback_assignee`` (R3): used when the primary resolves to None — Task 5
+    falls back to the Default BD Person when Task 3 (allocation) was skipped
+    because Task 2 said no manpower was needed (PRD §5.4).
     """
     assignee = tdef.get("assignee")
+    resolved = None
     if assignee == "default_bd_person":
-        return lead.assigned_to
-    if assignee == "execution_red":
-        return resources.latest_execution_red(lead)
-    return None
+        resolved = lead.assigned_to
+    elif assignee == "execution_red":
+        resolved = resources.latest_execution_red(lead)
+    if resolved is None and tdef.get("fallback_assignee") == "default_bd_person":
+        resolved = lead.assigned_to
+    return resolved
+
+
+def _attach_stage(lead, tdef):
+    """Get-or-open the task's :class:`LeadStage` — returns the stage row or
+    None. Idempotent via :func:`projects.ensure_stage`, so opening several tasks
+    of one stage reuses a single stage row.
+
+    R6: Tasks 22–26's ``stage`` is a literal ``"E0"`` in the JSON, but the
+    *actual* extension-loop stage for a given pass is resolved dynamically via
+    :func:`projects.ensure_extension_stage` — Task 22 reuses the loop's
+    currently-open stage (or starts the next one, ``E0``/``E1``/…, the first
+    time or after a loop-back), Tasks 23–26 always reuse whichever one Task 22
+    just resolved. This keeps the loop counter (§4.3.1) out of workflow data.
+    """
+    code = tdef.get("stage")
+    if not code:
+        return None
+    if _EXTENSION_STAGE_RE.match(code):
+        return projects.ensure_extension_stage(lead)
+    return projects.ensure_stage(lead, code)
 
 
 def open_task(lead, tdef, *, status=Task.Status.OPEN):
     """Create one task instance for ``tdef`` and instantiate its checklist.
 
-    Opens it immediately (``opened_at`` stamped) unless ``status`` is
-    ``pending`` — a trigger task waiting for the scheduler, which carries no
-    ``opened_at`` until :func:`open_pending_task` fires.
+    Opens it immediately (``task_start_dt`` stamped, stage attached) unless
+    ``status`` is ``pending`` — a trigger task waiting for the scheduler, which
+    carries no ``task_start_dt`` / stage until :func:`open_pending_task` fires (a
+    pending task hasn't genuinely started, so its stage isn't opened yet).
     """
+    stage = _attach_stage(lead, tdef) if status == Task.Status.OPEN else None
     task = Task.objects.create(
         lead=lead,
         task_no=tdef["task_no"],
         task_name=tdef["name"],
+        stage=stage,
+        project_id=stage.project_id if stage is not None else "",
         assigned_to=_resolve_assignee(lead, tdef),
         status=status,
         is_allocation_task=tdef.get("is_allocation_task", False),
-        opened_at=timezone.now() if status == Task.Status.OPEN else None,
+        is_finance_gate=tdef.get("is_finance_gate", False),
+        is_hanging_task=tdef.get("is_hanging_task", False),
+        task_start_dt=timezone.now() if status == Task.Status.OPEN else None,
     )
     items = [
         Checklist(task=task, item_key=c["key"], item_label=c["label"])
@@ -98,37 +170,102 @@ def open_task(lead, tdef, *, status=Task.Status.OPEN):
     ]
     if items:
         Checklist.objects.bulk_create(items)
-    # An allocation task that opens immediately gets its resource_allocation row
-    # now (§7.2); trigger-gated ones (status=pending) get it when the scheduler
-    # opens them, via open_pending_task.
-    resources.ensure_allocation_row(task, tdef)
+    # R5: an allocation task no longer gets a row created upfront — the
+    # Resource Manager / Default BD Person (D12) fills each slot as they
+    # decide (resources.allocate). Just ping the Resource Managers it's
+    # waiting, once it has genuinely opened (not for a trigger-gated ``pending``
+    # instance — open_pending_task re-notifies when it actually opens).
+    if status == Task.Status.OPEN:
+        if tdef.get("is_allocation_task"):
+            resources.notify_allocation_task_open(task)
+        _apply_on_open(task, tdef)
     return task
 
 
 def open_pending_task(task):
     """Flip a ``pending`` trigger task to ``open`` (scheduler action).
 
-    Idempotent — a no-op unless the task is still pending. Resolves the
-    assignee at open time (still None for resource-manager steps until Phase 6).
+    Idempotent — a no-op unless the task is still pending. Opens (and links) the
+    task's stage at genuine open time, resolves the assignee, and reconciles the
+    lead's stages so the newly-opened stage closes any prior main-path stage.
     """
     if task.status != Task.Status.PENDING:
         return task
-    tdef = task_defs_for(task.lead.lead_type).get(task.task_no, {})
+    wf = active_workflow(task.lead.lead_type)
+    tdef = _task_defs(wf.workflow).get(task.task_no, {}) if wf else {}
     task.status = Task.Status.OPEN
-    task.opened_at = timezone.now()
+    task.task_start_dt = timezone.now()
+    task.stage = _attach_stage(task.lead, tdef)
+    task.project_id = task.stage.project_id if task.stage is not None else ""
     task.assigned_to = _resolve_assignee(task.lead, tdef)
-    task.save(update_fields=["status", "opened_at", "assigned_to", "updated_at"])
-    resources.ensure_allocation_row(task, tdef)
+    task.save(update_fields=["status", "task_start_dt", "stage", "project_id", "assigned_to", "updated_at"])
+    if tdef.get("is_allocation_task"):
+        resources.notify_allocation_task_open(task)
+    _apply_on_open(task, tdef)
+    if wf is not None:
+        _reconcile_stages(task.lead, wf)
     return task
 
 
-def _active_trigger_config(workflow, task_no):
-    """The active :class:`WorkflowTriggerConfig` gating ``task_no``, or None."""
+def _configs_for(workflow, task_no):
+    """All active trigger configs gating ``task_no`` (may be >1 — Task 21's
+    two-rule variant, §4.12)."""
     if workflow is None:
+        return []
+    return list(
+        WorkflowTriggerConfig.objects.filter(
+            workflow=workflow, task_no=task_no, is_active=True
+        )
+    )
+
+
+def _reference_value(lead, reference_task_no, field_key):
+    """Numeric value of ``field_key`` on the most-recent closed reference task,
+    or None — used to evaluate a trigger's condition (Task 21 duration rule)."""
+    ref = (
+        lead.tasks.filter(task_no=reference_task_no, status=Task.Status.CLOSED)
+        .order_by("-task_end_dt", "-id")
+        .first()
+    )
+    if ref is None:
         return None
-    return WorkflowTriggerConfig.objects.filter(
-        workflow=workflow, task_no=task_no, is_active=True
-    ).first()
+    raw = (ref.extra_fields or {}).get(field_key)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _config_condition_holds(lead, config):
+    """True when ``config`` has no condition, or its condition currently holds —
+    the reference task's ``condition_field_key`` value is ≤ ``condition_max``."""
+    if not config.condition_field_key or config.condition_max is None:
+        return True
+    val = _reference_value(lead, config.reference_task_no, config.condition_field_key)
+    return val is not None and val <= float(config.condition_max)
+
+
+def _applicable_config(lead, configs):
+    """Pick the trigger config that applies for ``lead`` from a task's configs.
+
+    A conditional rule (e.g. "duration < 6 months → shorter offset") wins when
+    its condition holds; otherwise the unconditional default rule applies. None
+    if no rule is eligible.
+    """
+    default = None
+    conditional = None
+    for c in configs:
+        if c.condition_field_key and c.condition_max is not None:
+            if _config_condition_holds(lead, c):
+                conditional = c
+        else:
+            default = c
+    return conditional or default
+
+
+def _active_trigger_config(workflow, task_no, lead):
+    """The applicable trigger config gating ``task_no`` for ``lead``, or None."""
+    return _applicable_config(lead, _configs_for(workflow, task_no))
 
 
 def _trigger_already_due(lead, config, *, today=None):
@@ -146,13 +283,15 @@ def _trigger_already_due(lead, config, *, today=None):
 
 @transaction.atomic
 def start_workflow(lead):
-    """Open Task 1 for a newly-owned lead (Tech Req §4.3.1).
+    """Start a newly-owned lead's workflow at its flow/type entry point (§4.3.1).
 
-    Idempotent and guarded: only for an active BD lead that has an owner and no
-    tasks yet. Returns the opened Task, or ``None`` if nothing was started.
+    Idempotent and guarded: only for an active lead that has an owner and no
+    tasks yet. The entry task(s) and any stages the flow skips are data on the
+    workflow's ``flows`` map (DD1/DD2): BD/Mining leads enter per ``flow_of_tasks``
+    (Task 1, or Task 16 for Direct Proposal), Extension leads at Task 22. The
+    flow's ``skip`` list is pre-marked ``skipped`` for tracker accuracy. Returns
+    the first opened Task, or ``None`` if nothing was started.
     """
-    if lead.lead_type != Lead.LeadType.BD:
-        return None
     if not lead.assigned_to_id or lead.status != Lead.Status.IN_PROGRESS:
         return None
     if lead.tasks.exists():
@@ -161,10 +300,15 @@ def start_workflow(lead):
     if wf is None:
         return None
     defs = _task_defs(wf.workflow)
-    first = defs.get(1)
-    if first is None:
-        return None
-    return open_task(lead, first)
+    flow = _flow_for(lead, wf)
+    _materialize_skips(lead, defs, flow.get("skip", []))
+    opened = []
+    for no in flow.get("entry", [1]):
+        tdef = defs.get(no)
+        if tdef is not None:
+            opened.append(open_task(lead, tdef))
+    _reconcile_stages(lead, wf)
+    return opened[0] if opened else None
 
 
 # --- Field validation (global rules, Tech Req §3) --------------------------
@@ -324,54 +468,230 @@ def _materialize_skips(lead, defs, task_nos):
     return skipped
 
 
-def _apply_on_close(task, tdef, user):
-    """Run the task's Phase-6 ``on_close`` side effects (Tech Req §4.7, §4.8, §13).
+def _reconcile_stages(lead, wf):
+    """Close any main-path stage the workflow has advanced past (R3, §4.4).
 
-    Generic — the concrete task numbers live only in the workflow JSON. Handles
-    allocation auto-close, Project-ID generation/regeneration + project_details
-    cycling, and system-only lead-status transitions (Hybernation/Complete).
+    A stage in the workflow's ``stage_sequence`` closes once (a) a **later**
+    main-path stage has opened (so no new tasks of this stage will open) **and**
+    (b) it has no ``open``/``pending``/``hold`` tasks left. Condition (b) keeps
+    2HR open while its parallel money branch (Tasks 6/7) is still running — the
+    2HR resources release only when that stage closes (§4.7). Parallel stages
+    (Mining ``M``, Extension ``E{n}``) are **not** in the sequence and are left
+    open here; their close is R6. Idempotent — safe to call after every open/close.
+    """
+    sequence = (wf.workflow or {}).get("stage_sequence", [])
+    if not sequence:
+        return
+    reached = set(lead.stages.values_list("stage", flat=True))
+    max_reached_idx = max(
+        (sequence.index(code) for code in reached if code in sequence),
+        default=-1,
+    )
+    for stage in lead.stages.filter(status=LeadStage.Status.IN_PROGRESS):
+        if stage.stage not in sequence:
+            continue  # parallel M / E{n} — closed in R6
+        if sequence.index(stage.stage) >= max_reached_idx:
+            continue  # nothing later has opened yet
+        if stage.tasks.filter(
+            status__in=[Task.Status.OPEN, Task.Status.PENDING, Task.Status.HOLD]
+        ).exists():
+            continue  # still has live tasks (e.g. the 2HR 6/7 money branch)
+        stage.status = LeadStage.Status.CLOSED
+        stage.stage_end_dt = timezone.now()
+        stage.save(update_fields=["status", "stage_end_dt", "updated_at"])
+        # D11: 2HR/SnT release their resource allocations the moment their own
+        # stage closes (Implementation/Extension release on Task 27 *opening*
+        # instead, via _apply_on_open — those stages aren't auto-closed until R6).
+        if stage.stage in resources.STAGE_CLOSE_RELEASE_STAGES:
+            resources.release_stage_allocations(lead, stage)
+
+
+def _apply_on_open(task, tdef):
+    """Run the task's ``on_open`` side effects (R5, Tech Req §4.7).
+
+    Generic — the concrete task number (27) lives only in the workflow JSON.
+    Currently the only ``on_open`` hook is releasing the lead's Implementation/
+    Extension-loop resource allocations (D11).
+    """
+    oc = tdef.get("on_open") or {}
+    if oc.get("release_allocations"):
+        resources.release_open_engagement_allocations(task.lead)
+
+
+def _record_project_cycle(task, user):
+    """Snapshot a ``project_details`` commercial row for the cycle ``task`` just
+    closed (R6, TR §4.8) — Task 20 (stage ``IM``) or Task 26 (stage ``E{n}``).
+    Reads the closing task's own ``fixed_fee``/``variable_fee_cap_total`` fields
+    (both defined on Task 20/26's shared field schema, §5)."""
+    values = task.extra_fields or {}
+    projects.record_project_cycle(
+        task.lead,
+        task.stage,
+        user,
+        fixed_fee=values.get("fixed_fee"),
+        variable_fee=values.get("variable_fee_cap_total"),
+    )
+
+
+def _apply_on_close(task, tdef, user):
+    """Run the task's ``on_close`` side effects (Tech Req §4.8; R6).
+
+    Generic — the concrete task numbers live only in the workflow JSON as data
+    flags: ``project_details`` (Task 20/26 — snapshot the cycle's commercials)
+    and ``close_extension_stage`` (Task 26 only — close its own ``E{n}`` stage
+    so the loop-back to Task 22 opens the *next* one via
+    :func:`projects.ensure_extension_stage`; Task 20's ``IM`` stage instead
+    closes through the ordinary main-sequence :func:`_reconcile_stages`).
+
+    R5 note: allocation release is **not** one of these hooks — release timing
+    is a stage-close/task-open event (D11), handled by
+    :func:`_reconcile_stages`/:func:`_apply_on_open` instead.
     """
     oc = tdef.get("on_close") or {}
     if not oc:
         return
-    lead = task.lead
+    if oc.get("project_details"):
+        _record_project_cycle(task, user)
+    if oc.get("close_extension_stage"):
+        projects.close_stage(task.stage)
 
-    if oc.get("close_allocations"):
-        resources.close_allocations(lead, oc["close_allocations"])
-    # Cycle handover (§4.7 v14): closing Task 16 frees the superseded previous
-    # cycle's Implementation/Extension row; only the current cycle stays Open.
-    if oc.get("close_superseded_allocations"):
-        resources.close_superseded_allocations(
-            lead, oc["close_superseded_allocations"]
+
+# --- Mining spawn (R6, PRD §5.3.1, §13; TR row 21) --------------------------
+
+
+def _spawn_mining_lead(parent, user):
+    """Task 21 "go-ahead = Yes": spawn + start the Mining child lead, notify
+    its owner, and log the event on both lead rows.
+
+    Called from the matched routing rule's ``spawn_lead`` flag (not an
+    ``on_close`` hook — it is conditional on the answer, which routing already
+    evaluates) — see :func:`complete_task`.
+    """
+    child = projects.spawn_mining_lead(parent, user)
+    start_workflow(child)
+    events.log_activity(
+        parent,
+        user,
+        "lead",
+        f"Mining opportunity approved — spawned a new Mining lead (#{child.id}, "
+        f"{projects.derived_project_id(child)})",
+    )
+    events.log_activity(
+        child,
+        user,
+        "lead",
+        f"Spawned from parent lead #{parent.id} (Task 21 go-ahead)",
+    )
+    if child.assigned_to_id:
+        events.notify(
+            child.assigned_to,
+            Notification.Type.LEAD_ASSIGNED,
+            f"A new Mining lead was spawned for “{child.company_name} — {child.project_name}”.",
+            events.lead_link(child),
         )
+    return child
 
-    pid = oc.get("project_id")
-    pd = oc.get("project_details")
-    alloc_type = pd.get("allocation_type") if isinstance(pd, dict) else None
-    allocation = resources.allocation_for_type(lead, alloc_type) if alloc_type else None
-    if pid == "generate":
-        projects.generate_first_project_id(lead, user, allocation=allocation)
-    elif pid == "regenerate":
-        projects.regenerate_project_id(lead, user, allocation=allocation)
-    if pd == "complete":
-        projects.complete_current_cycle(lead)
 
-    if oc.get("lead_status"):
-        lead_status = oc["lead_status"]
-        # A short-closed cycle stays Short Closed: the terminal closure task
-        # would otherwise set the lead Complete, but short-close is kept as its
-        # own terminal status (Phase 16 follow-up), so redirect it here.
-        if lead_status == Lead.Status.COMPLETE and _is_short_closed(lead):
-            lead_status = Lead.Status.SHORT_CLOSED
-        lead.status = lead_status
-        lead.save(update_fields=["status", "updated_at"])
-        # On lead completion any still-pending (trigger-gated) tasks can never
-        # open — mark them skipped so the path taken stays explicit (§4.4 v14).
-        # Short Closed is terminal in the same way.
-        if lead.status in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED):
-            lead.tasks.filter(status=Task.Status.PENDING).update(
-                status=Task.Status.SKIPPED
-            )
+# --- Finance gates + task re-open + auto-drop (R4, PRD §5.5/§5.10) ----------
+
+def _notify_finance_gate_open(task):
+    """Alert every Finance user that a payment-approval gate is waiting.
+
+    Gate tasks (7/15/28) open **unassigned** — they are worked from the Accounts
+    queue — so the normal "notify the new assignee" path never fires for them.
+    Best-effort/additive, mirroring :func:`resources._notify_resource_managers`.
+    """
+    events.notify_finance(
+        task.lead,
+        Notification.Type.TASK_OPENED,
+        f"Payment approval needed: Task {task.task_no} “{task.task_name}” on "
+        f"“{task.lead.company_name} — {task.lead.project_name}”.",
+    )
+
+
+def _reopen_task(task, *, actor=None, reason="", clear_fields=False):
+    """Return a ``closed`` task to ``open`` — the one sanctioned exception to
+    "closed is final" (§5.10).
+
+    Clears ``task_end_dt``, increments ``reopened_count``, and (for a re-opened
+    Finance gate) wipes the stale answer so it is re-worked from scratch. The
+    original ``task_start_dt`` is kept so the task keeps its start time.
+    Idempotent only in the sense that the caller must supply a genuinely-closed task.
+    """
+    task.status = Task.Status.OPEN
+    task.task_end_dt = None
+    task.reopened_count = (task.reopened_count or 0) + 1
+    if clear_fields:
+        task.extra_fields = {}
+    task.save(
+        update_fields=["status", "task_end_dt", "reopened_count", "extra_fields", "updated_at"]
+    )
+    return task
+
+
+def _bounce_finance_gate(gate, tdef, actor):
+    """Handle a Finance gate answered "No" (§5.10): re-open the preceding money
+    task so its owner chases the outstanding payment.
+
+    The gate itself has already been closed (with its mandatory remark) by the
+    caller; this re-opens the most-recent closed instance of ``reopen_on_no``,
+    logs the bounce + remark on the activity feed, and notifies the task's
+    assignee. Returns the re-opened task, or None if the preceding task can't be
+    found (should not happen — the gate only opens after it closes).
+    """
+    lead = gate.lead
+    prev_no = tdef.get("reopen_on_no")
+    prev = (
+        lead.tasks.filter(task_no=prev_no, status=Task.Status.CLOSED)
+        .order_by("-task_end_dt", "-id")
+        .first()
+    )
+    if prev is None:
+        return None
+    reason = ((gate.extra_fields or {}).get("remark") or "").strip()
+    _reopen_task(prev, actor=actor, reason=reason)
+    events.log_activity(
+        lead,
+        actor,
+        "task",
+        f"Task {prev.task_no} “{prev.task_name}” re-opened — payment not yet received "
+        f"(Finance gate Task {gate.task_no})",
+        reason,
+    )
+    if prev.assigned_to_id and prev.assigned_to_id != getattr(actor, "id", None):
+        events.notify(
+            prev.assigned_to,
+            Notification.Type.TASK_OPENED,
+            f"Task {prev.task_no} “{prev.task_name}” was re-opened — payment is still "
+            f"outstanding. {reason}".strip(),
+            events.lead_link(lead),
+        )
+    return prev
+
+
+def _complete_lead(gate, tdef, actor):
+    """Completion gate (§5.10): flip the lead to ``Completed`` once **both** the
+    closure task (Task 27) and its Accounts-approval gate (Task 28) are closed.
+
+    Only invoked for a gate carrying ``completes_lead`` answered "Yes"; guards on
+    the preceding task actually being closed so a stray call can't complete a
+    lead early. Still-pending trigger tasks can never open afterwards, so they
+    are swept to ``skipped`` to keep the path taken explicit.
+    """
+    lead = gate.lead
+    prev_no = tdef.get("reopen_on_no")
+    if not lead.tasks.filter(task_no=prev_no, status=Task.Status.CLOSED).exists():
+        return False
+    lead.status = Lead.Status.COMPLETE
+    lead.save(update_fields=["status", "updated_at"])
+    lead.tasks.filter(status=Task.Status.PENDING).update(status=Task.Status.SKIPPED)
+    events.log_activity(
+        lead,
+        actor,
+        "status",
+        "Lead marked Completed — Project Closure and Accounts Approval both closed",
+    )
+    return True
 
 
 @transaction.atomic
@@ -400,101 +720,191 @@ def complete_task(task, user):
     assert_closable(task, tdef)
 
     task.status = Task.Status.CLOSED
-    task.closed_at = timezone.now()
-    task.elapsed_time = holds.compute_elapsed_time(task, closed_at=task.closed_at)
-    task.save(update_fields=["status", "closed_at", "elapsed_time", "updated_at"])
+    task.task_end_dt = timezone.now()
+    task.elapsed_time = holds.compute_elapsed_time(task, closed_at=task.task_end_dt)
+    task.save(update_fields=["status", "task_end_dt", "elapsed_time", "updated_at"])
 
     # Side effects (Project ID, allocation close, lead status) before routing so
     # the successor's assignee resolution / trigger checks see the new state.
     _apply_on_close(task, tdef, user)
 
-    rule = _matched_route(tdef, task.extra_fields or {})
+    values = task.extra_fields or {}
+
+    # Finance gate bounce (§5.10): a "No" answer closes the gate (done above,
+    # with its mandatory remark) and re-opens the preceding money task instead
+    # of routing forward — the sanctioned closed→open exception. No successors.
+    if tdef.get("is_finance_gate") and values.get("payment_received") == "No":
+        _bounce_finance_gate(task, tdef, user)
+        _reconcile_stages(task.lead, wf)
+        return []
+
+    rule = _matched_route(tdef, values)
+
+    # Auto-drop (§5.5): a matched routing rule may carry a ``lead_status`` side
+    # effect (Task 8 "Go-ahead = No" → Dropped). Unlike a manual drop this does
+    # NOT cascade to the lead's other open tasks — the parallel Tasks 6 & 7 stay
+    # open so the 2HR reimbursement + its approval can still complete. The rule's
+    # ``open`` list is empty on such a branch, so no new tasks open.
+    rule_status = rule.get("lead_status")
+    if rule_status == Lead.Status.DROPPED and task.lead.status == Lead.Status.IN_PROGRESS:
+        task.lead.status = Lead.Status.DROPPED
+        task.lead.save(update_fields=["status", "updated_at"])
+        events.log_activity(
+            task.lead,
+            user,
+            "status",
+            f"Lead automatically dropped — no client go-ahead (Task {task.task_no})",
+        )
+
+    # Mining spawn (R6, §5.3.1/§13): Task 21 "go-ahead = Yes" carries
+    # ``spawn_lead`` on its matched rule — conditional on the answer, so it
+    # lives on the rule rather than an unconditional ``on_close`` hook.
+    if rule.get("spawn_lead"):
+        _spawn_mining_lead(task.lead, user)
+
+    # flow_of_tasks entry edges + skip-filtering (D6). An ``edges`` entry for this
+    # task overrides its default ``open`` list (e.g. SnT flow routes Task 2 → 9,
+    # bypassing the skipped 2HR body); the flow's ``skip`` set (pre-marked at start)
+    # also filters any successor a branch would otherwise open.
+    flow = _flow_for(task.lead, wf)
+    flow_skip = set(flow.get("skip", []))
+    edges = flow.get("edges", {})
+    if str(task.task_no) in edges:
+        open_list = list(edges[str(task.task_no)])
+        skip_list = []
+    else:
+        open_list = list(rule.get("open", []))
+        skip_list = list(rule.get("skip", []))
+    open_list = [no for no in open_list if no not in flow_skip]
+
     # Steps the chosen branch routes around become explicit `skipped` rows
     # (§4.4 v14) — the rule's `skip` list is data in the workflow JSON.
-    _materialize_skips(task.lead, defs, rule.get("skip", []))
+    _materialize_skips(task.lead, defs, skip_list)
 
     opened = []
-    for target_no in rule.get("open", []):
+    for target_no in open_list:
         target_def = defs.get(target_no)
         if target_def is None:
             continue
+        # A downstream Finance gate that already has a closed instance (this is a
+        # re-close after a bounce) is **re-opened** rather than duplicated (§5.10)
+        # — one gate row flips open↔closed across the whole bounce loop, so the
+        # tracker never double-counts it. Its stale answer is cleared for a fresh
+        # decision, and Finance is re-notified.
+        if target_def.get("is_finance_gate"):
+            existing = (
+                task.lead.tasks.filter(task_no=target_no, status=Task.Status.CLOSED)
+                .order_by("-task_end_dt", "-id")
+                .first()
+            )
+            if existing is not None:
+                _reopen_task(existing, actor=user, clear_fields=True)
+                _notify_finance_gate_open(existing)
+                opened.append(existing)
+                continue
         # A trigger-gated successor whose offset date has already arrived (the
         # reference date sits inside the offset window — e.g. an engagement end
-        # date under 2 months out for Task 13) opens right now rather than
+        # date under 2 months out for Task 22) opens right now rather than
         # waiting for the scheduler; only a genuinely future open date pends.
-        config = _active_trigger_config(wf, target_no)
+        config = _active_trigger_config(wf, target_no, task.lead)
         pending = config is not None and not _trigger_already_due(task.lead, config)
         status = Task.Status.PENDING if pending else Task.Status.OPEN
-        opened.append(open_task(task.lead, target_def, status=status))
+        new_task = open_task(task.lead, target_def, status=status)
+        if new_task.is_finance_gate and status == Task.Status.OPEN:
+            _notify_finance_gate_open(new_task)
+        opened.append(new_task)
+
+    # Completion gate (§5.10): Task 28 "Yes" with Task 27 closed completes the lead.
+    if tdef.get("completes_lead") and values.get("payment_received") == "Yes":
+        _complete_lead(task, tdef, user)
+
+    # Close any main-path stage the flow has now advanced past (§4.4).
+    _reconcile_stages(task.lead, wf)
     return opened
 
 
 def _closure_task_def(defs):
-    """The workflow's terminal Project-Closure task (the one whose ``on_close``
-    sets the lead to ``Complete``) — found by rule, not by task number."""
+    """The workflow's Project-Closure task (Task 27) — found by its
+    ``is_project_closure`` flag, not a hardcoded task number (R6)."""
     for tdef in defs.values():
-        if (tdef.get("on_close") or {}).get("lead_status") == Lead.Status.COMPLETE:
+        if tdef.get("is_project_closure"):
             return tdef
     return None
 
 
-def _is_short_closed(lead):
-    """True when the lead's current project cycle was short-closed — so the
-    terminal closure task should end in Short Closed rather than Complete."""
-    return lead.project_details.filter(is_current=True, short_closed=True).exists()
+def can_short_close(lead):
+    """Whether short-close (§9.2/§5.12) is currently available for ``lead``.
 
-
-@transaction.atomic
-def open_project_closure(lead, user=None, remark=""):
-    """Short-close a project (§9.2 / §5.12): open the Project-Closure task.
-
-    Used by the Resource Manager's Project Closure screen. Whatever else is
-    currently active under the lead (open, held, or still pending on a date
-    trigger) is swept to ``skipped`` first — short-closing means the project
-    moves straight to closure regardless of which step it was on (Phase 16) —
-    then the terminal closure task opens (assigned to the current Execution
-    Red) so it can be closed to finish the engagement. The lead and its current
-    ``project_details`` cycle are moved to the terminal **Short Closed** status
-    (which is kept — it never flips to Complete when Task 17 later closes), and
-    the cycle is stamped with who/when short-closed it plus the compulsory
-    ``remark``, for the Lead-detail banner and the Project Closure screen. No-op
-    — returns None — if the lead is already terminal (Complete/Short Closed) or
-    a closure task is already open/pending.
+    Data-driven — no task numbers hardcoded. The workflow JSON marks its
+    Project-Closure task with ``is_project_closure`` and whichever task(s)
+    grant short-close access with ``grants_short_close`` (Task 26, Extension
+    Implementation — TR row 26 / §9.2: "on open, give Shailesh short-close
+    access"). *Design decision (R6, documented — no natural closure trigger
+    exists mid-Extension-loop, TR row 27's list of Task-27 openers, unlike the
+    base Implementation's engagement-end-date trigger):* once granted, access
+    persists for the lead's life (the docs describe no revocation) until
+    closure has actually been reached — i.e. any instance of the closure task
+    already exists, regardless of its current status (even a Finance-bounced
+    one back to ``open``).
     """
-    if lead.status in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED):
-        return None
+    if lead.status != Lead.Status.IN_PROGRESS:
+        return False
     defs = task_defs_for(lead.lead_type)
     closure = _closure_task_def(defs)
     if closure is None:
+        return False
+    if lead.tasks.filter(task_no=closure["task_no"]).exists():
+        return False
+    grant_nos = [no for no, tdef in defs.items() if tdef.get("grants_short_close")]
+    if not grant_nos:
+        return False
+    return lead.tasks.filter(task_no__in=grant_nos).exists()
+
+
+@transaction.atomic
+def open_project_closure(lead, user, *, remark):
+    """Short-close a project (§9.2/§5.12): open the Project-Closure task ahead
+    of its natural trigger.
+
+    A **lead-scoped** action (R6) — unlike the pre-R6 model, which acted on one
+    "current" ``project_details`` row, short-close now fires while the current
+    Extension-Implementation cycle is still *open* (that row doesn't exist yet;
+    it's only inserted when the cycle's own closing task completes normally,
+    §4.8) — see :func:`can_short_close` for the eligibility check this assumes
+    the caller has already made.
+
+    In one transaction: sweeps every ``open``/``hold``/``pending`` task under
+    the lead to ``skipped`` (flagged ``short_closed`` — short-closing moves
+    straight to closure regardless of which step it was on); closes whichever
+    engagement stage (Implementation or the open Extension loop) was cut short
+    — its commercials were never finalized (Task 20/26 never closed), so no
+    ``project_details`` row is created for it, unlike a normal cycle close;
+    leaves Mining (``M``) untouched, since it runs independently; opens the
+    Project-Closure task (which releases the engagement's allocated resources
+    via its own ``on_open`` hook, §4.7); and stamps the compulsory remark on
+    the lead. Returns the opened task, or ``None`` if short-close isn't
+    currently available.
+    """
+    if not can_short_close(lead):
         return None
-    already = lead.tasks.filter(
-        task_no=closure["task_no"],
-        status__in=[Task.Status.OPEN, Task.Status.PENDING, Task.Status.HOLD],
-    ).exists()
-    if already:
-        return None
+    defs = task_defs_for(lead.lead_type)
+    closure = _closure_task_def(defs)
     lead.tasks.filter(
         status__in=[Task.Status.OPEN, Task.Status.HOLD, Task.Status.PENDING]
     ).update(status=Task.Status.SKIPPED, short_closed=True)
+    for stage in lead.stages.filter(status=LeadStage.Status.IN_PROGRESS):
+        if stage.stage == LeadStage.IM or _EXTENSION_STAGE_RE.match(stage.stage):
+            projects.close_stage(stage)
     task = open_task(lead, closure)
-    detail = lead.project_details.filter(is_current=True).first()
-    if detail is not None:
-        detail.short_closed = True
-        detail.short_closed_at = timezone.now()
-        detail.short_closed_by = user
-        detail.short_close_remark = remark
-        detail.status = ProjectDetails.Status.SHORT_CLOSED
-        detail.save(
-            update_fields=[
-                "short_closed",
-                "short_closed_at",
-                "short_closed_by",
-                "short_close_remark",
-                "status",
-            ]
-        )
-    lead.status = Lead.Status.SHORT_CLOSED
-    lead.save(update_fields=["status", "updated_at"])
+    lead.short_close_remark = remark
+    lead.short_closed_at = timezone.now()
+    lead.short_closed_by = user
+    lead.save(
+        update_fields=["short_close_remark", "short_closed_at", "short_closed_by", "updated_at"]
+    )
+    wf = active_workflow(lead.lead_type)
+    if wf is not None:
+        _reconcile_stages(lead, wf)
     return task
 
 
@@ -506,7 +916,7 @@ def _reference_date(lead, reference_task_no, field_key):
     """
     ref_task = (
         lead.tasks.filter(task_no=reference_task_no, status=Task.Status.CLOSED)
-        .order_by("-closed_at", "-id")
+        .order_by("-task_end_dt", "-id")
         .first()
     )
     if ref_task is None:
@@ -533,9 +943,7 @@ def pending_open_info(task):
     wf = active_workflow(task.lead.lead_type)
     if wf is None:
         return None
-    config = WorkflowTriggerConfig.objects.filter(
-        workflow=wf, task_no=task.task_no, is_active=True
-    ).first()
+    config = _active_trigger_config(wf, task.task_no, task.lead)
     if config is None:
         return None
     ref = _reference_date(task.lead, config.reference_task_no, config.reference_field_key)
@@ -558,22 +966,25 @@ def run_due_triggers(*, today=None):
     opening). Skips held/dropped/completed leads. Returns the list of opened
     tasks. Idempotent — safe to run as often as the scheduler needs.
 
-    Both ``In Progress`` and ``Hybernation`` leads are eligible: Task 12 puts a
-    lead into Hybernation (§4.3.2), yet its Task-13 extension trigger still has
-    to fire ~2 months before the engagement end date while it sits there.
+    Only ``In Progress`` leads are eligible. Iterates pending tasks (not configs)
+    so Task 21's two-rule variant resolves to the single applicable config per
+    lead (§4.12), and so the unified graph applies to Mining/Extension leads too
+    (DD1) rather than being filtered by ``workflow.type``.
     """
     today = today or timezone.now().date()
-    active_statuses = [Lead.Status.IN_PROGRESS, Lead.Status.HYBERNATION]
     opened = []
-    for config in WorkflowTriggerConfig.objects.filter(is_active=True).select_related("workflow"):
-        pending = Task.objects.filter(
-            task_no=config.task_no,
+    pending = (
+        Task.objects.filter(
             status=Task.Status.PENDING,
-            lead__lead_type=config.workflow.type,
-            lead__status__in=active_statuses,
-        ).select_related("lead")
-        for task in pending:
-            if _trigger_already_due(task.lead, config, today=today):
-                open_pending_task(task)
-                opened.append(task)
+            lead__status=Lead.Status.IN_PROGRESS,
+        )
+        .select_related("lead")
+        .order_by("id")
+    )
+    for task in pending:
+        wf = active_workflow(task.lead.lead_type)
+        config = _active_trigger_config(wf, task.task_no, task.lead) if wf else None
+        if config is not None and _trigger_already_due(task.lead, config, today=today):
+            open_pending_task(task)
+            opened.append(task)
     return opened

@@ -17,7 +17,7 @@ import { HoldActionButton } from '@/components/leads/HoldActionButton'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
-import { useLead, useDropLead, useAssignLeadOwner } from '@/hooks/useLeads'
+import { useLead, useDropLead, useAssignLeadOwner, useShortCloseLead } from '@/hooks/useLeads'
 import { useHoldLead, useUnholdLead } from '@/hooks/useHolds'
 import { useActivitiesForLead } from '@/hooks/useActivities'
 import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hooks/useAttachments'
@@ -26,10 +26,10 @@ import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
 import { formatDate, formatDateTime } from '@/lib/format'
 
-// Every status transition now goes through a dedicated action (Tech Req §4.3.2
-// v16): Hybernation/Complete are system-only, On Hold via the Hold button, and
-// Dropped via the Drop button's popup (which captures the drop remark) — so
-// the old status dropdown is gone.
+// Every status transition now goes through a dedicated action (Tech Req §4.3.2):
+// Completed is system-only, Hold via the Hold button, and Dropped via the Drop
+// button's popup (which captures the drop remark) — so the old status dropdown
+// is gone.
 
 function InfoRow({ label, value }) {
   return (
@@ -53,6 +53,7 @@ export default function LeadDetail() {
   const assignOwner = useAssignLeadOwner()
   const holdLead = useHoldLead()
   const unholdLead = useUnholdLead()
+  const shortCloseLead = useShortCloseLead()
   const uploadAttachment = useUploadAttachment('lead', id)
   const deleteAttachment = useDeleteAttachment('lead', id)
 
@@ -65,6 +66,8 @@ export default function LeadDetail() {
   const [reassignRemark, setReassignRemark] = useState('')
   const [dropOpen, setDropOpen] = useState(false)
   const [dropRemark, setDropRemark] = useState('')
+  const [shortCloseOpen, setShortCloseOpen] = useState(false)
+  const [shortCloseRemark, setShortCloseRemark] = useState('')
 
   if (isLoading) return <div className="text-sm text-muted-foreground">Loading lead…</div>
   if (isError || !lead) {
@@ -81,7 +84,8 @@ export default function LeadDetail() {
   const canEdit = PERMISSIONS.editLead(user, lead)
   const canHold = PERMISSIONS.holdLead(user, lead)
   const canDrop = PERMISSIONS.dropLead(user, lead)
-  const isHeld = lead.status === 'On Hold'
+  const canShortClose = PERMISSIONS.shortCloseLead(user) && lead.can_short_close
+  const isHeld = lead.status === 'Hold'
   const isDropped = lead.status === 'Dropped'
 
   function handleHoldToggle(remark) {
@@ -100,6 +104,22 @@ export default function LeadDetail() {
       { id, remark: dropRemark.trim() },
       {
         onSuccess: () => { toast.success('Lead dropped'); setDropOpen(false); setDropRemark('') },
+        onError: (err) => toast.error(err.message),
+      },
+    )
+  }
+
+  function handleShortClose() {
+    const remark = shortCloseRemark.trim()
+    if (!remark) return
+    shortCloseLead.mutate(
+      { id, remark },
+      {
+        onSuccess: () => {
+          toast.success('Project short-closed; closure task opened')
+          setShortCloseOpen(false)
+          setShortCloseRemark('')
+        },
         onError: (err) => toast.error(err.message),
       },
     )
@@ -136,11 +156,16 @@ export default function LeadDetail() {
             <LeadTypeBadge type={lead.lead_type} />
           </div>
           <p className="text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">{lead.lead_display_id}</span> · {lead.company_name} · {lead.country_name} · {lead.industry_name}
+            <span className="font-medium text-foreground">{lead.lead_display_id}</span> · {lead.company_name} · {lead.industry_name}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {canDrop && ['In Progress', 'On Hold'].includes(lead.status) && (
+          {canShortClose && (
+            <Button variant="outline" className="text-blue-600 hover:text-blue-700" onClick={() => setShortCloseOpen(true)}>
+              <XCircle className="size-4" /> Short-close
+            </Button>
+          )}
+          {canDrop && ['In Progress', 'Hold'].includes(lead.status) && (
             <Button variant="outline" className="text-red-600 hover:text-red-700" onClick={() => setDropOpen(true)}>
               <XCircle className="size-4" /> Drop
             </Button>
@@ -223,10 +248,10 @@ export default function LeadDetail() {
           <p className="text-xs text-muted-foreground">Assigned to</p>
           <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
         </CardContent></Card>
-        {lead.project_id && (
+        {lead.project_id_display && (
           <Card className="py-0"><CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Project ID</p>
-            <p className="mt-1 text-sm font-medium">{lead.project_id}</p>
+            <p className="mt-1 text-sm font-medium">{lead.project_id_display}</p>
           </CardContent></Card>
         )}
       </div>
@@ -324,11 +349,14 @@ export default function LeadDetail() {
           <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Classification</CardTitle></CardHeader>
             <CardContent>
-              <InfoRow label="Country" value={lead.country_name} />
               <InfoRow label="Industry" value={lead.industry_name} />
               <InfoRow label="Domain" value={lead.domain_name} />
               <InfoRow label="Division" value={lead.division || '—'} />
               <InfoRow label="Lead type" value={lead.lead_type} />
+              <InfoRow label="Type of project" value={lead.type_of_project || '—'} />
+              {lead.lead_type !== 'Extension' && (
+                <InfoRow label="Flow of tasks" value={lead.flow_of_tasks || '—'} />
+              )}
             </CardContent>
           </Card>
           <Card className="gap-3 py-4">
@@ -347,6 +375,37 @@ export default function LeadDetail() {
           <LeadResourcesTab leadId={id} />
         </TabsContent>
       </Tabs>
+
+      <Dialog open={shortCloseOpen} onOpenChange={setShortCloseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Short-close project</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This opens Project Closure right away — any task still open, on hold, or waiting on a date trigger is skipped. The project still runs through Closure and Accounts Approval and ends <span className="font-medium text-foreground">Completed</span>. This cannot be undone.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="short-close-remark">Remark (required)</Label>
+            <Textarea
+              id="short-close-remark"
+              value={shortCloseRemark}
+              onChange={(e) => setShortCloseRemark(e.target.value)}
+              placeholder="Why is this project being short-closed?"
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setShortCloseOpen(false)}>Cancel</Button>
+            <Button
+              type="button"
+              onClick={handleShortClose}
+              disabled={shortCloseLead.isPending || !shortCloseRemark.trim()}
+            >
+              Short-close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dropOpen} onOpenChange={setDropOpen}>
         <DialogContent>

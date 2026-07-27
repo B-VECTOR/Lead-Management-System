@@ -1,54 +1,86 @@
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { StageBadge } from '@/components/shared/StatusBadge'
 
-// Vertical rail version of TaskStepper for wider screens (Phase 4). Backend
-// statuses: closed = completed, open = in progress, pending/hold = not worked.
+// Group tasks into consecutive stage sections (v4.0/v17.0, §4.4). Tasks arrive
+// in the order they opened; a new section starts whenever the stage code
+// changes. Trigger-pending tasks carry no stage yet — they ride along in the
+// current section rather than forcing a header.
+function groupByStage(tasks) {
+  const groups = []
+  for (const task of tasks) {
+    const code = task.stage_code || null
+    const last = groups[groups.length - 1]
+    if (last && (code === null || code === last.stage)) {
+      last.tasks.push(task)
+    } else {
+      groups.push({ stage: code, tasks: [task] })
+    }
+  }
+  return groups
+}
+
+// Vertical rail version of TaskStepper for wider screens, grouped by stage (R3).
+// Backend statuses: closed = completed, open = in progress, pending/hold = not
+// worked, skipped/dropped = terminal.
 export function TaskStepperVertical({ tasks, activeId, onSelect, itemCounts }) {
+  const groups = groupByStage(tasks)
   return (
-    <div className="flex flex-col">
-      {tasks.map((task, i) => {
-        const isActive = task.id === activeId
-        const isCompleted = task.status === 'closed'
-        const isStarted = task.status === 'open'
-        const counts = itemCounts?.[task.id]
+    <div className="flex flex-col gap-3">
+      {groups.map((group, gi) => (
+        <div key={gi} className="flex flex-col">
+          {group.stage && (
+            <div className="px-2 pb-1.5">
+              <StageBadge stage={group.stage} />
+            </div>
+          )}
+          {group.tasks.map((task, i) => {
+            const isActive = task.id === activeId
+            const isCompleted = task.status === 'closed'
+            const isStarted = task.status === 'open'
+            const counts = itemCounts?.[task.id]
+            const isLast = i === group.tasks.length - 1
 
-        return (
-          <button
-            key={task.id}
-            type="button"
-            onClick={() => onSelect(task.id)}
-            className={cn(
-              'flex items-stretch gap-3 rounded-md px-2 py-2 text-left transition-colors',
-              isActive ? 'bg-accent' : 'hover:bg-accent/50'
-            )}
-          >
-            <div className="flex flex-col items-center">
-              <span
+            return (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => onSelect(task.id)}
                 className={cn(
-                  'flex size-7 shrink-0 items-center justify-center rounded-full border-2 text-xs font-medium transition-colors',
-                  isCompleted && 'border-emerald-500 bg-emerald-500 text-white',
-                  !isCompleted && isStarted && 'border-blue-500 text-blue-600',
-                  !isCompleted && !isStarted && 'border-muted-foreground/30 text-muted-foreground',
-                  isActive && !isCompleted && 'ring-2 ring-offset-2 ring-primary/40'
+                  'flex items-stretch gap-3 rounded-md px-2 py-2 text-left transition-colors',
+                  isActive ? 'bg-accent' : 'hover:bg-accent/50'
                 )}
               >
-                {isCompleted ? <Check className="size-3.5" /> : task.task_no}
-              </span>
-              {i < tasks.length - 1 && (
-                <div className={cn('my-1 w-0.5 flex-1', isCompleted ? 'bg-emerald-500' : 'bg-muted-foreground/20')} />
-              )}
-            </div>
-            <div className="min-w-0 flex-1 pb-3">
-              <p className={cn('truncate text-sm font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
-                {task.task_name}
-              </p>
-              {counts && counts.total > 0 && (
-                <p className="text-xs text-muted-foreground">{counts.done}/{counts.total} done</p>
-              )}
-            </div>
-          </button>
-        )
-      })}
+                <div className="flex flex-col items-center">
+                  <span
+                    className={cn(
+                      'flex size-7 shrink-0 items-center justify-center rounded-full border-2 text-xs font-medium transition-colors',
+                      isCompleted && 'border-emerald-500 bg-emerald-500 text-white',
+                      !isCompleted && isStarted && 'border-blue-500 text-blue-600',
+                      !isCompleted && !isStarted && 'border-muted-foreground/30 text-muted-foreground',
+                      isActive && !isCompleted && 'ring-2 ring-offset-2 ring-primary/40'
+                    )}
+                  >
+                    {isCompleted ? <Check className="size-3.5" /> : task.task_no}
+                  </span>
+                  {!isLast && (
+                    <div className={cn('my-1 w-0.5 flex-1', isCompleted ? 'bg-emerald-500' : 'bg-muted-foreground/20')} />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1 pb-3">
+                  <p className={cn('truncate text-sm font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
+                    {task.task_name}
+                    {task.is_hanging_task && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(parallel)</span>}
+                  </p>
+                  {counts && counts.total > 0 && (
+                    <p className="text-xs text-muted-foreground">{counts.done}/{counts.total} done</p>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      ))}
     </div>
   )
 }

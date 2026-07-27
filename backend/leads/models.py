@@ -5,42 +5,89 @@ from django.utils.translation import gettext_lazy as _
 
 
 class Lead(models.Model):
-    """A BD (or, future, Mining) lead — the unit the BD workflow runs against.
+    """A lead/project cycle — the unit the workflow runs against.
 
-    Field spec: Tech Req §4.3 / PRD §5.2. Per the resolved Phase-3 decision the
-    company is a plain ``company_name`` text field (both governing docs model it
-    that way); there is no separate Company entity. ``country``/``industry``/
-    ``domain`` are FKs into the shared reference tables (Tech Req §4.2), whose
-    ``code`` values later feed Project-ID generation (§13, Phase 6).
+    Field spec: Tech Req §4.3 / PRD §5.2 (v4.0/v17.0). Per the resolved Phase-3
+    decision the company is a plain ``company_name`` text field; there is no
+    separate Company entity. ``industry``/``domain`` are FKs into the shared
+    reference tables (Tech Req §4.2). Per decision **D2/D7** ``domain`` stays a
+    **single** FK (a deliberate deviation from the spec's multi-select), and the
+    domain's ``code`` feeds Project-ID generation (§13; base_code built in R2).
+
+    R1 rebuild: ``country`` is dropped (§5.17), ``lead_type`` gains
+    ``Extension``, ``status`` collapses to four values (Hybernation / Short
+    Closed retired), and the ``base_code`` / ``parent_lead_id`` /
+    ``flow_of_tasks`` / ``type_of_project`` fields are introduced.
     """
 
     class LeadType(models.TextChoices):
         BD = "BD", _("BD")
-        MINING = "Mining", _("Mining")  # future scope (Decision #6)
+        EXTENSION = "Extension", _("Extension")  # standalone, enters at Task 22 (D10)
+        MINING = "Mining", _("Mining")  # spawned off a parent via Task 21 (R6)
 
     class Status(models.TextChoices):
         IN_PROGRESS = "In Progress", _("In Progress")  # system default on create
-        ON_HOLD = "On Hold", _("On Hold")  # user — manual (Phase 5 cascade)
-        DROPPED = "Dropped", _("Dropped")  # user — manual
-        HYBERNATION = "Hybernation", _("Hybernation")  # system only (Task 12)
-        COMPLETE = "Complete", _("Complete")  # system only (Task 17)
-        # Terminal — the Resource Manager short-closed the project (Phase 16
-        # follow-up). Reached only through the Project Closure screen's
-        # short-close action, never a plain status write; it *stays* Short
-        # Closed (it does not flip to Complete when the closure task closes).
-        SHORT_CLOSED = "Short Closed", _("Short Closed")
+        # Member name kept as ON_HOLD to avoid churning every reference; the
+        # *value* is "Hold" per Tech Req §4.3.2. Reached via the hold endpoint.
+        ON_HOLD = "Hold", _("Hold")  # user — manual (hold/unhold cascade)
+        DROPPED = "Dropped", _("Dropped")  # user — manual, or system (Task 8)
+        # Member name kept as COMPLETE; value "Completed" per §4.3.2. Set only
+        # when both Task 27 and Task 28 close (R4). Never set manually.
+        COMPLETE = "Completed", _("Completed")
 
-    # Statuses a user may not set directly; Hybernation/Complete/Short Closed
-    # are system-only (Tech Req §4.3.2) and enforced in the serializer.
-    SYSTEM_ONLY_STATUSES = frozenset(
-        {Status.HYBERNATION, Status.COMPLETE, Status.SHORT_CLOSED}
+    # Statuses a user may not set directly. Only ``Completed`` is system-only
+    # now (Tech Req §4.3.2); Hold/Dropped are reached through their own
+    # endpoints (guarded separately in the serializer).
+    SYSTEM_ONLY_STATUSES = frozenset({Status.COMPLETE})
+
+    class FlowOfTasks(models.TextChoices):
+        """Which stages run for a BD/Mining lead (§5.3.2 / §4.3.4). Ignored for
+        Extension. Short stable codes are stored; the 28-task workflow JSON keys
+        its per-flow entry/skip lists off these (decision D6, wired in R3)."""
+
+        DEFAULT = "DEFAULT", _("DEFAULT (2HR → SnT → Proposal)")
+        TWO_HR_PROPOSAL = "2HR_PROPOSAL", _("2HR → Project Proposal")
+        DIRECT_PROPOSAL = "DIRECT_PROPOSAL", _("Direct Proposal")
+        SNT_PROPOSAL = "SNT_PROPOSAL", _("SnT → Project Proposal")
+
+    class TypeOfProject(models.TextChoices):
+        """Reporting/filter label only — does not change the task path (D3 /
+        §5.2.2). Stored as the display string."""
+
+        CONSULTING_FULL = "Consulting Full Fledged", _("Consulting Full Fledged")
+        AMC = "AMC", _("AMC")
+        UPGRADE = "Upgrade", _("Upgrade")
+        VECTORFLOW_LITE = "Vectorflow Lite", _("Vectorflow Lite")
+        AUDIT_ONLY = "Audit only", _("Audit only")
+        CONSULTING_LITE = "Consulting Lite + No software", _("Consulting Lite + No software")
+
+    # Stable project base `{AreaCode}{YY}{Seq}` (§13, D1) — generated at lead
+    # creation in R2; the column lands here in R1. **Not** DB-unique (R6 fix):
+    # a Mining child (Task 21) deliberately shares its parent's base_code (§13)
+    # — `projects.next_base_sequence`'s own `distinct()` was already written
+    # anticipating this share, but the column itself was left `unique=True`
+    # until R6 actually exercised the shared-base path and hit the constraint.
+    # Uniqueness *within an Area+Year* is enforced logically by
+    # `next_base_sequence`, not by the DB.
+    base_code = models.CharField(
+        _("project base code"),
+        max_length=50,
+        null=True,
+        blank=True,
+        help_text=_("Stable {AreaCode}{YY}{Seq}; generated at creation (R2); shared with Mining children (R6)."),
     )
-
-    country = models.ForeignKey(
-        "reference.Country",
-        on_delete=models.PROTECT,
-        related_name="leads",
-        verbose_name=_("country"),
+    # Mining-only linkage (D10): set on a Task-21-spawned lead, pointing at the
+    # parent it originated from. Left NULL for BD and Extension-type leads. The
+    # field is ``parent_lead`` so Django's DB column is ``parent_lead_id`` (the
+    # spec's column name, TR §4.3).
+    parent_lead = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="mining_children",
+        verbose_name=_("parent lead"),
+        help_text=_("Set on a Mining-spawned lead (Task 21); NULL otherwise."),
     )
     company_name = models.CharField(_("company name"), max_length=255)
     project_name = models.CharField(_("project name"), max_length=255)
@@ -77,6 +124,22 @@ class Lead(models.Model):
         choices=LeadType.choices,
         default=LeadType.BD,
     )
+    # Which stages run for a BD/Mining lead (§5.3.2). Required for BD/Mining,
+    # ignored for Extension — enforced in the serializer; blank at DB level so
+    # Extension rows can leave it empty.
+    flow_of_tasks = models.CharField(
+        _("flow of tasks"),
+        max_length=20,
+        choices=FlowOfTasks.choices,
+        blank=True,
+    )
+    # Reporting/filter label only (D3); required on every lead.
+    type_of_project = models.CharField(
+        _("type of project"),
+        max_length=40,
+        choices=TypeOfProject.choices,
+        blank=True,
+    )
     status = models.CharField(
         _("status"),
         max_length=20,
@@ -88,6 +151,25 @@ class Lead(models.Model):
     # as a red banner on the detail page while the lead is Dropped. Written
     # only by the drop action, never by a plain status PATCH.
     drop_remark = models.TextField(_("drop remark"), blank=True)
+
+    # Short-close stamp (R6, PRD §5.12 / Tech Req §9.2). Short-close is a
+    # lead-scoped action (it opens the shared Project Closure task and sweeps
+    # every open task under the lead) rather than a per-cycle one, so — unlike
+    # the pre-R6 model, which stamped these on the "current" `project_details`
+    # row — they live directly on the lead. There is no separate status value:
+    # a short-closed lead still ends `Completed` like any other closure; this
+    # is what lets the detail banner and Project Closure screen show it
+    # happened at all, for traceability (§9.2).
+    short_close_remark = models.TextField(_("short close remark"), blank=True)
+    short_closed_at = models.DateTimeField(_("short closed at"), null=True, blank=True)
+    short_closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name=_("short closed by"),
+    )
 
     # Project-ID fields — placeholders in Phase 3; populated by the workflow
     # engine at Task 12 / Task 16 (Tech Req §4.3, §13; Phase 6).
@@ -108,16 +190,120 @@ class Lead(models.Model):
         related_name="created_leads",
         verbose_name=_("created by"),
     )
+    # Lead lifecycle span for dashboards/reports (meeting decision 2026-07-27):
+    # ``lead_start_dt`` = when the lead was created; ``lead_end_dt`` = when it
+    # first reached a terminal status (Completed or Dropped), NULL while active.
+    # ``lead_end_dt`` is stamped centrally in :meth:`save` so every terminal
+    # path (completion, auto-drop, manual drop) is covered without editing each.
+    lead_start_dt = models.DateTimeField(_("lead start"), default=timezone.now)
+    lead_end_dt = models.DateTimeField(_("lead end"), null=True, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
     class Meta:
+        db_table = "lead"
         ordering = ["-created_at"]
         verbose_name = _("lead")
         verbose_name_plural = _("leads")
 
     def __str__(self):
         return f"{self.company_name} — {self.project_name}"
+
+    def save(self, *args, **kwargs):
+        # Stamp the lifecycle end the first time the lead reaches a terminal
+        # status; keep it in ``update_fields`` so a targeted save still persists.
+        terminal = self.status in (self.Status.COMPLETE, self.Status.DROPPED)
+        if terminal and self.lead_end_dt is None:
+            self.lead_end_dt = timezone.now()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = set(update_fields) | {"lead_end_dt"}
+        super().save(*args, **kwargs)
+
+
+class LeadStage(models.Model):
+    """A stage the lead's workflow passes through (Tech Req §4.4 / PRD §5.3).
+
+    Stage becomes a first-class tracked entity in v4.0/v17.0: every ``Task``
+    belongs to a stage, and the derived display Project ID's suffix is resolved
+    from the lead's open stage(s) (§13). **Multiple rows may be ``in_progress``
+    at once** for a lead — Mining ∥ Extension run in parallel — so there is no
+    unique-open constraint here.
+
+    R2 introduces the model, generates the ``base_code`` and opens the **initial**
+    stage at lead creation. The per-task stage open/close transitions as the
+    28-task workflow advances are wired in R3 (they reuse :func:`ensure_stage`),
+    which is why the fixed stage codes are constants here rather than a strict
+    ``choices=`` set — the Extension loop codes (``E0``, ``E1``, …) are dynamic.
+    """
+
+    # Fixed stage codes (the Extension loops ``E0``/``E1``/… are formed at
+    # runtime, so ``stage`` is a plain code string rather than a choices field).
+    BD = "BD"
+    TWO_HR = "2HR"
+    SNT = "SnT"
+    IM = "IM"  # Implementation
+    MINING = "M"
+    CLOSURE = "Closure"
+
+    class Status(models.TextChoices):
+        IN_PROGRESS = "in_progress", _("in progress")
+        CLOSED = "closed", _("closed")
+        # The flow routed around this whole stage (flow_of_tasks stage-skips, R3).
+        SKIPPED = "skipped", _("skipped")
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="stages",
+        verbose_name=_("lead"),
+    )
+    # The stage code drives the Project-ID suffix directly (§13): the suffix is
+    # ``-{stage}`` (e.g. BD → ``-BD``, IM → ``-IM``, E0 → ``-E0``, M → ``-M``).
+    stage = models.CharField(
+        _("stage"),
+        max_length=10,
+        help_text=_("BD, 2HR, SnT, IM, E0/E1/…, M, or Closure (§4.4)."),
+    )
+    # Stored display Project ID **snapshot** for this specific stage
+    # (``base_code`` + this stage's own suffix, e.g. ``NPD26001-IM``). Persisted
+    # per meeting decision (2026-07-27) so the value is visible directly in the
+    # table; it remains a **display snapshot only** — joins still key on numeric
+    # PKs, never on this string (§13). Populated when the stage row is created
+    # (``projects.project_id_for_stage``); the lead's *live* current-suffix ID
+    # is still derived per request via ``projects.derived_project_id``.
+    project_id = models.CharField(
+        _("project ID"),
+        max_length=50,
+        blank=True,
+        default="",
+        help_text=_("Display snapshot for this stage (base_code + suffix); not a join key (§13)."),
+    )
+    stage_start_dt = models.DateTimeField(_("stage start"), default=timezone.now)
+    stage_end_dt = models.DateTimeField(_("stage end"), null=True, blank=True)
+    status = models.CharField(
+        _("status"),
+        max_length=15,
+        choices=Status.choices,
+        default=Status.IN_PROGRESS,
+    )
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("updated at"), auto_now=True)
+
+    class Meta:
+        db_table = "lead_stage"
+        # Chronological — the order stages opened (a mining/extension pair keeps
+        # its natural start order for the stepper and dashboard).
+        ordering = ["lead", "stage_start_dt", "id"]
+        verbose_name = _("lead stage")
+        verbose_name_plural = _("lead stages")
+
+    def __str__(self):
+        return f"[{self.lead_id}] {self.stage} ({self.status})"
+
+    @property
+    def is_open(self):
+        return self.status == self.Status.IN_PROGRESS
 
 
 class Workflow(models.Model):
@@ -190,6 +376,18 @@ class Task(models.Model):
         related_name="tasks",
         verbose_name=_("lead"),
     )
+    # The stage this task belongs to (Tech Req §4.5) — spec says "always set",
+    # but it is nullable until R3's 28-task workflow populates it as each task
+    # opens (the current 17-task engine is non-functional between R1 and R3 and
+    # creates tasks without a stage). Never a join key for the Project ID.
+    stage = models.ForeignKey(
+        "LeadStage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tasks",
+        verbose_name=_("stage"),
+    )
     task_no = models.PositiveIntegerField(_("task no"))
     task_name = models.CharField(_("task name"), max_length=255)
     assigned_to = models.ForeignKey(
@@ -207,9 +405,30 @@ class Task(models.Model):
         default=Status.OPEN,
     )
     is_allocation_task = models.BooleanField(_("is allocation task"), default=False)
+    # v4.0/v17.0 task flags (Tech Req §4.5). Populated from the workflow JSON when
+    # a task opens (R3). ``is_finance_gate`` — tasks 7/15/28, an Accounts gate that
+    # can re-open its preceding task on a "No" answer (the re-open transition itself
+    # is R4). ``is_hanging_task`` — Task 18, non-blocking: it opens in parallel and
+    # its being open never holds up the sequence or the stage close. ``reopened_count``
+    # increments each time a Finance gate bounces this task back to ``open`` (R4).
+    is_finance_gate = models.BooleanField(_("is finance gate"), default=False)
+    is_hanging_task = models.BooleanField(_("is hanging task"), default=False)
+    reopened_count = models.PositiveIntegerField(_("reopened count"), default=0)
     extra_fields = models.JSONField(_("extra field values"), default=dict, blank=True)
-    opened_at = models.DateTimeField(_("opened at"), null=True, blank=True)
-    closed_at = models.DateTimeField(_("closed at"), null=True, blank=True)
+    # Stored display Project ID **snapshot** for this task, copied from its
+    # stage when the task is created/opened (meeting decision 2026-07-27). Same
+    # rule as ``LeadStage.project_id``: display only, never a join key (§13).
+    project_id = models.CharField(
+        _("project ID"),
+        max_length=50,
+        blank=True,
+        default="",
+        help_text=_("Display snapshot copied from the task's stage; not a join key (§13)."),
+    )
+    # ``task_start_dt``/``task_end_dt`` are the spec's column names (§4.5); the
+    # verbose names keep the plain "opened/closed" wording the UI uses.
+    task_start_dt = models.DateTimeField(_("opened at"), null=True, blank=True)
+    task_end_dt = models.DateTimeField(_("closed at"), null=True, blank=True)
     # Total active (non-hold) time — computed in Phase 5 (hold/unhold).
     elapsed_time = models.DurationField(_("elapsed time"), null=True, blank=True)
     # True when this row was swept from open/hold/pending to `skipped` by a
@@ -220,6 +439,7 @@ class Task(models.Model):
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
     class Meta:
+        db_table = "task_details"
         # Creation order == chronological workflow progression (loops/cycles
         # append later instances) — clearer for the stepper than task_no order.
         ordering = ["id"]
@@ -267,10 +487,35 @@ class WorkflowTriggerConfig(models.Model):
         max_length=100,
         help_text=_("Field key on the reference task holding the date (e.g. expected_start_date)."),
     )
-    offset_days = models.PositiveIntegerField(
+    offset_days = models.IntegerField(
         _("offset days"),
         default=0,
-        help_text=_("Days before the reference date the task opens. 0 = opens on the date itself."),
+        help_text=_(
+            "Signed. The task opens on reference_date − offset_days: a positive "
+            "value opens it that many days BEFORE the reference date, a negative "
+            "value that many days AFTER (e.g. Task 21 opens months after the "
+            "engagement start). 0 = opens on the date itself."
+        ),
+    )
+    # Task-21 two-rule variant (Tech Req §4.12): a second config row can carry a
+    # condition so a shorter offset applies only when the reference task's duration
+    # is short. When ``condition_field_key`` is set, this rule is eligible only if
+    # that numeric field on the reference task is ≤ ``condition_max``. A row with no
+    # condition is the unconditional default. R3 seeds the pair; admin tunes them (D8).
+    condition_field_key = models.CharField(
+        _("condition field key"),
+        max_length=100,
+        blank=True,
+        default="",
+        help_text=_("Optional: numeric field on the reference task this rule is gated on (e.g. period_months)."),
+    )
+    condition_max = models.DecimalField(
+        _("condition max"),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("This rule applies only when the condition field is ≤ this value."),
     )
     is_active = models.BooleanField(_("is active"), default=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
@@ -278,10 +523,13 @@ class WorkflowTriggerConfig(models.Model):
 
     class Meta:
         ordering = ["workflow", "task_no"]
+        # No unique (workflow, task_no) constraint: Task 21's two-rule variant needs
+        # two rows for one task_no (a conditional one + the default). Seeding keys on
+        # (workflow, task_no, condition_field_key) so re-runs stay idempotent (§4.12).
         constraints = [
             models.UniqueConstraint(
-                fields=["workflow", "task_no"],
-                name="uniq_trigger_per_workflow_task",
+                fields=["workflow", "task_no", "condition_field_key"],
+                name="uniq_trigger_per_workflow_task_condition",
             )
         ]
         verbose_name = _("workflow trigger config")
@@ -373,67 +621,62 @@ class TaskHold(HoldRecord):
 
 
 class ResourceAllocation(models.Model):
-    """Resources allocated for one workflow stage (Tech Req §4.7 / PRD §5.7).
+    """Append-only resource-allocation history (Tech Req §4.7 / PRD §5.7 — R5 rebuild).
 
-    A row is created the moment an allocation task (2/6/11/15) opens — in
-    ``Pending`` status, with all resource FKs empty and ``man_power_required``
-    copied from the triggering stage's upstream manpower fields. The Resource
-    Manager fills it in and submits (``Open``); resources free up automatically
-    (``Closed``) per the type-specific auto-close rules (2HR@Task 4, SNT@Task 9,
-    Implementation/Extension@lead-Complete). Owned and edited by the Resource
-    Manager only.
+    One row per resource, per slot, per stage — **never overwritten**. Filling a
+    slot inserts an ``allocated`` row; moving a person off it releases that row
+    (``released_on`` stamped) and, for a reassignment, the new row's ``replaces``
+    links back to it — so who held a slot, for how long, and who replaced them
+    all survive for the resource-history dashboard.
+
+    Replaces the old wide single-row-per-cycle table (``Type`` + 16 single-
+    holder slots incl. ``project_member1..10``/``auditor3-4``), retired in
+    migration ``0020``. The 5 slots below are the full set per Tech Req §4.7;
+    White is the only slot a stage may need more than one of at a time — every
+    other slot holds at most one currently-``allocated`` row
+    (:data:`SINGLE_OCCUPANCY_SLOTS`).
     """
 
-    # Single-holder resource slots (one user each), in form order. Execution
-    # Red drives the next task's assignee (``latest_execution_red``). Execution
-    # Brown is a single holder too (Phase 12, per the user — one Brown per
-    # stage). Only White is multi-select (``MULTI_RESOURCE_FIELDS``).
-    SINGLE_RESOURCE_FIELDS = (
-        "execution_red",
-        "execution_brown",
-        "auditor1",
-        "auditor2",
-        "auditor3",
-        "auditor4",
-        "project_member1",
-        "project_member2",
-        "project_member3",
-        "project_member4",
-        "project_member5",
-        "project_member6",
-        "project_member7",
-        "project_member8",
-        "project_member9",
-        "project_member10",
-    )
-    # Multi-holder slots (many users each) — only White now. White may be left
-    # empty ("TBD allowed", PRD §5.7).
-    MULTI_RESOURCE_FIELDS = (
-        "whites",
-    )
-    # All resource-holding field names (kept for callers that iterate every slot).
-    RESOURCE_FIELDS = SINGLE_RESOURCE_FIELDS + MULTI_RESOURCE_FIELDS
+    class Slot(models.TextChoices):
+        EXECUTION_RED = "execution_red", _("Execution Red")
+        EXECUTION_BROWN = "execution_brown", _("Execution Brown")
+        WHITE = "white", _("White")
+        AUDITOR_1 = "auditor_1", _("Auditor 1")
+        AUDITOR_2 = "auditor_2", _("Auditor 2")
 
-    class Type(models.TextChoices):
-        TWO_HR = "2HR", _("2Hr Study & Presentation")
-        SNT = "SNT", _("Solution Blueprint")
-        IMPLEMENTATION = "Implementation", _("Implementation")
-        EXTENSION = "Extension", _("Extension")
+    # Slots capped at one *currently allocated* row — a second fill must go
+    # through reassignment (release + replace), never a second concurrent row.
+    SINGLE_OCCUPANCY_SLOTS = (
+        Slot.EXECUTION_RED,
+        Slot.EXECUTION_BROWN,
+        Slot.AUDITOR_1,
+        Slot.AUDITOR_2,
+    )
 
     class Status(models.TextChoices):
-        PENDING = "Pending", _("Pending")  # row created, not yet filled
-        OPEN = "Open", _("Open")  # submitted — resources actively allocated
-        CLOSED = "Closed", _("Closed")  # freed up (auto-close rules)
+        ALLOCATED = "allocated", _("Allocated")  # currently occupying the slot
+        RELEASED = "released", _("Released")  # freed — history only
 
     lead = models.ForeignKey(
         Lead,
         on_delete=models.CASCADE,
         related_name="resource_allocations",
         verbose_name=_("lead"),
+        help_text=_("Denormalized for reporting (§4.7)."),
     )
-    # The allocation task instance that spawned this row (traceability; a lead
-    # can have repeat rows of a type across extension cycles).
-    allocation_task = models.ForeignKey(
+    stage = models.ForeignKey(
+        LeadStage,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resource_allocations",
+        verbose_name=_("stage"),
+        help_text=_("Which stage this slot's occupant is working (§4.7)."),
+    )
+    # The allocation task instance that created this row (traceability; a lead
+    # gets a fresh row per allocation task across BD/SnT/Implementation/Extension
+    # cycles — 3/10/17/18/24/25). DB column is ``task_id`` (the spec's name, §4.7).
+    task = models.ForeignKey(
         Task,
         on_delete=models.SET_NULL,
         null=True,
@@ -441,163 +684,86 @@ class ResourceAllocation(models.Model):
         related_name="resource_allocations",
         verbose_name=_("allocation task"),
     )
-    type = models.CharField(_("type"), max_length=20, choices=Type.choices)
-
-    execution_red = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("execution red"),
+    slot = models.CharField(_("slot"), max_length=20, choices=Slot.choices)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name=_("user"),
     )
-    # Execution Brown is a single holder (Phase 12). White is multi-select: a
-    # stage can need several, and White may be left empty — TBD is allowed
-    # (PRD §5.7).
-    execution_brown = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("execution brown"),
+    is_tbd = models.BooleanField(
+        _("is TBD"),
+        default=False,
+        help_text=_("White only — a slot may be left to-be-decided (PRD §5.7)."),
     )
-    whites = models.ManyToManyField(
-        settings.AUTH_USER_MODEL, related_name="+", blank=True,
-        verbose_name=_("whites"),
-        help_text=_("May be left empty — TBD is allowed (PRD §5.7)."),
-    )
-    auditor1 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("auditor 1"),
-    )
-    auditor2 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("auditor 2"),
-    )
-    auditor3 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("auditor 3"),
-    )
-    auditor4 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("auditor 4"),
-    )
-    project_member1 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 1"),
-    )
-    project_member2 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 2"),
-    )
-    project_member3 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 3"),
-    )
-    project_member4 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 4"),
-    )
-    project_member5 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 5"),
-    )
-    # Project Member slots 6–10 (Tech Req §4.7 v13 — 10 slots total).
-    project_member6 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 6"),
-    )
-    project_member7 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 7"),
-    )
-    project_member8 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 8"),
-    )
-    project_member9 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 9"),
-    )
-    project_member10 = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="+", verbose_name=_("project member 10"),
-    )
-
-    remark = models.TextField(_("remark"), blank=True)
+    # Denormalized display name of the occupant (meeting decision 2026-07-27) —
+    # a snapshot of ``user.name`` (or "TBD" for a TBD White slot, "" when empty)
+    # kept alongside the ``user`` FK so dashboards/reports can read the name
+    # without a join. Written on allocate/reassign; the FK stays the source of truth.
+    names = models.CharField(_("names"), max_length=255, blank=True, default="")
     status = models.CharField(
-        _("status"), max_length=10, choices=Status.choices, default=Status.PENDING,
+        _("status"), max_length=10, choices=Status.choices, default=Status.ALLOCATED,
+    )
+    allocated_on = models.DateTimeField(_("allocated on"), default=timezone.now)
+    released_on = models.DateTimeField(_("released on"), null=True, blank=True)
+    replaces = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replaced_by",
+        verbose_name=_("replaces"),
+        help_text=_("Set when this row replaces a reassigned one — the replaced "
+                     "row is set to released (§4.7)."),
     )
     man_power_required = models.PositiveIntegerField(
         _("man power required"),
         default=0,
-        help_text=_("Total headcount captured from the triggering stage (Brown + White)."),
+        help_text=_("Headcount required for this slot, captured from the "
+                     "triggering stage's manpower fields — feeds the "
+                     "over/under-allocation indicators."),
     )
-    # The Brown/White split of the required man-power, captured upstream and
-    # preserved so the Resource Manager sees exactly how many of each is needed
-    # (not just the total) and over-allocation is checked per belt.
-    man_power_brown = models.PositiveIntegerField(_("man power required — brown"), default=0)
-    man_power_white = models.PositiveIntegerField(_("man power required — white"), default=0)
+    remark = models.TextField(_("remark"), blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
-    closed_at = models.DateTimeField(_("closed at"), null=True, blank=True)
+    updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
     class Meta:
-        ordering = ["-created_at", "-id"]
+        db_table = "resource_table"
+        ordering = ["-allocated_on", "-id"]
         verbose_name = _("resource allocation")
         verbose_name_plural = _("resource allocations")
 
     def __str__(self):
-        return f"[{self.lead_id}] {self.type} ({self.status})"
-
-    @property
-    def brown_count(self):
-        return 1 if self.execution_brown_id else 0
-
-    @property
-    def white_count(self):
-        return self.whites.count()
-
-    @property
-    def allocated_count(self):
-        """Total resources the Resource Manager has assigned (single slots incl.
-        Execution Brown, plus the White multi-select members)."""
-        singles = sum(
-            1 for f in self.SINGLE_RESOURCE_FIELDS if getattr(self, f"{f}_id") is not None
-        )
-        return singles + self.white_count
-
-    @property
-    def is_over_allocated(self):
-        """Red exceeded-indicator (§4.7): more Whites assigned than the upstream
-        man-power figure calls for (Brown is a single holder now, capped at 1).
-        Checked per belt; a required figure of 0 means "not captured", so it
-        never flags.
-        """
-        brown_over = self.man_power_brown > 0 and self.brown_count > self.man_power_brown
-        white_over = self.man_power_white > 0 and self.white_count > self.man_power_white
-        return brown_over or white_over
-
-    @property
-    def is_under_allocated(self):
-        """Amber below-required indicator (§4.7 v14): fewer Browns/Whites
-        assigned than the upstream man-power figure calls for. Like the over
-        check, a required figure of 0 means "not captured" and never flags.
-        """
-        brown_under = self.man_power_brown > 0 and self.brown_count < self.man_power_brown
-        white_under = self.man_power_white > 0 and self.white_count < self.man_power_white
-        return brown_under or white_under
+        who = self.user.name if self.user_id else ("TBD" if self.is_tbd else "—")
+        return f"[{self.lead_id}] {self.get_slot_display()} — {who} ({self.status})"
 
 
 class ProjectDetails(models.Model):
-    """One row per implementation/extension cycle — the Project ID history
-    (Tech Req §4.8 / PRD §5.15).
+    """One row per implementation/extension cycle — the commercial history
+    (Tech Req §4.8 / PRD §5.15, §9.2 — R6 rebuild).
 
-    ``leads.project_id`` only ever holds the *current* value, so every Project
-    ID a lead has had is preserved here — inserted when Task 12 (Implementation)
-    closes and again on each Task 16 (Extension Implementation) closure. Backs
-    the one-row-per-cycle Project Closure screen (§9.2).
+    Inserted when Task 20 (Implementation) or Task 26 (Extension Implementation)
+    closes: one immutable snapshot per completed IM/E{n} cycle, keyed to the
+    :class:`LeadStage` it closed (never a stored join key elsewhere — see
+    ``projects.derived_project_id``). Backs the Project Closure screen (§9.2),
+    which lists every cycle across a project's ``base_code`` family (a parent
+    lead plus any Mining children share one ``base_code`` — §13) together, so
+    implementation, each extension loop, and any mining lead's own cycles all
+    show up without a special case.
+
+    Display ``status`` for the closure screen is **derived** from
+    ``stage.status`` (in_progress/closed/skipped) rather than duplicated here —
+    Tech Req §4.8's field list is exactly the six below. A cycle that a
+    short-close cut short before its closing task ever completed gets no row
+    here (there are no finalized commercials to snapshot — see
+    ``engine.open_project_closure``); the short-close stamp lives on
+    :attr:`Lead.short_close_remark` instead, since short-close is a lead-scoped
+    action now, not a per-cycle one (R5→R6: the old wide shape — ``extension_no``
+    / ``project_id_base`` / ``status`` / ``is_current`` / the short-close
+    columns — is retired).
     """
-
-    class Status(models.TextChoices):
-        IN_PROGRESS = "In Progress", _("In Progress")  # the active cycle
-        EXTENDED = "Extended", _("Extended")  # superseded by a further extension
-        COMPLETE = "Complete", _("Complete")  # final closure happened here
-        # Terminal — this cycle was short-closed (Phase 16 follow-up); it stays
-        # Short Closed instead of flipping to Complete when Task 17 closes.
-        SHORT_CLOSED = "Short Closed", _("Short Closed")
 
     lead = models.ForeignKey(
         Lead,
@@ -605,21 +771,36 @@ class ProjectDetails(models.Model):
         related_name="project_details",
         verbose_name=_("lead"),
     )
-    resource_allocation = models.ForeignKey(
-        ResourceAllocation,
+    stage = models.ForeignKey(
+        LeadStage,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="project_details",
-        verbose_name=_("resource allocation"),
+        verbose_name=_("stage"),
+        help_text=_("The IM/E{n} cycle this commercial record belongs to (§4.8)."),
     )
-    extension_no = models.CharField(_("extension no"), max_length=2, default="00")
-    project_id = models.CharField(_("project ID"), max_length=50)
-    project_id_base = models.CharField(_("project ID base"), max_length=50)
-    status = models.CharField(
-        _("status"), max_length=15, choices=Status.choices, default=Status.IN_PROGRESS,
+    project_id = models.CharField(
+        _("project ID"),
+        max_length=50,
+        help_text=_("The derived display Project ID, snapshotted at generation time."),
     )
-    is_current = models.BooleanField(_("is current"), default=True)
+    # Explicit stage-code label for this cycle (meeting decision 2026-07-27):
+    # ``IM`` / ``E0``/``E1``… / ``M`` — a denormalized copy of ``stage.stage`` so
+    # reports can read the cycle type directly without joining to lead_stage.
+    project = models.CharField(
+        _("project"),
+        max_length=10,
+        blank=True,
+        default="",
+        help_text=_("Stage code for this cycle (IM / E{n} / M); copy of stage.stage."),
+    )
+    fixed_fee = models.DecimalField(
+        _("fixed fee"), max_digits=14, decimal_places=2, default=0,
+    )
+    variable_fee = models.DecimalField(
+        _("variable fee"), max_digits=14, decimal_places=2, default=0,
+    )
     generated_at = models.DateTimeField(_("generated at"), default=timezone.now)
     generated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -629,32 +810,15 @@ class ProjectDetails(models.Model):
         related_name="generated_project_details",
         verbose_name=_("generated by"),
     )
-    # Short-close (Phase 16, PRD §5.12 / Tech Req §9.2): the Resource Manager
-    # opened the closure task ahead of the engagement's natural end. Recorded
-    # on this cycle row (short-close always acts on `is_current`) so the Lead
-    # detail banner and the Project Closure screen can both key off it.
-    short_closed = models.BooleanField(_("short closed"), default=False)
-    short_closed_at = models.DateTimeField(_("short closed at"), null=True, blank=True)
-    short_closed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="+",
-        verbose_name=_("short closed by"),
-    )
-    # Mandatory reason captured by the short-close popup (Phase 16 follow-up) —
-    # required so a project is never short-closed by accident. Mirrors the
-    # hold/unhold ``reason`` pattern (§4.9) but is compulsory, not optional.
-    short_close_remark = models.TextField(_("short close remark"), blank=True)
 
     class Meta:
-        ordering = ["lead", "extension_no"]
+        db_table = "project_details"
+        ordering = ["lead", "generated_at", "id"]
         verbose_name = _("project details")
         verbose_name_plural = _("project details")
 
     def __str__(self):
-        return f"{self.project_id} ({self.status})"
+        return self.project_id
 
 
 class Followup(models.Model):

@@ -1,8 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as resourcesApi from '@/api/resources'
 
-// Backend-wired resource-allocation + project-closure hooks (Phase 6),
-// replacing the old mock resource-request hooks.
+// Backend-wired resource-allocation + project-closure hooks (R5 rebuild —
+// append-only allocation history, slot actions on allocation tasks).
+
+export function useAllocationTasks(filters = {}) {
+  return useQuery({
+    queryKey: ['allocation-tasks', filters],
+    queryFn: () => resourcesApi.listAllocationTasks(filters),
+  })
+}
 
 export function useResourceAllocations(filters = {}) {
   return useQuery({
@@ -19,13 +26,14 @@ export function useLeadResourceAllocations(leadId) {
   })
 }
 
-// `field` scopes the list to that dropdown's belt (execution_red /
-// execution_brown / whites); omit for the unfiltered auditor/project-member
-// list (Phase 17).
-export function useAllocationUsers(field) {
+// `task` scopes the list to that allocation task's lead (D12); `slot` further
+// scopes to the matching belt (Red/Brown/White + Potential) — omit for the
+// unfiltered auditor list.
+export function useAllocationUsers({ taskId, slot } = {}) {
   return useQuery({
-    queryKey: ['allocation-users', field],
-    queryFn: () => resourcesApi.listAllocationUsers(field),
+    queryKey: ['allocation-users', taskId, slot],
+    queryFn: () => resourcesApi.listAllocationUsers({ taskId, slot }),
+    enabled: !!taskId,
     staleTime: 5 * 60 * 1000,
   })
 }
@@ -35,7 +43,9 @@ function useAllocationMutation(mutationFn) {
   return useMutation({
     mutationFn,
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['allocation-tasks'] })
       qc.invalidateQueries({ queryKey: ['resource-allocations'] })
+      qc.invalidateQueries({ queryKey: ['lead-resource-allocations'] })
       qc.invalidateQueries({ queryKey: ['project-closure'] })
       qc.invalidateQueries({ queryKey: ['lead-tasks'] })
       qc.invalidateQueries({ queryKey: ['leads'] })
@@ -43,29 +53,25 @@ function useAllocationMutation(mutationFn) {
   })
 }
 
-export function useUpdateAllocation() {
-  return useAllocationMutation(({ id, patch }) => resourcesApi.updateResourceAllocation(id, patch))
+export function useAllocateSlot() {
+  return useAllocationMutation(({ taskId, ...payload }) => resourcesApi.allocateSlot(taskId, payload))
 }
 
-export function useSubmitAllocation() {
-  return useAllocationMutation(({ id }) => resourcesApi.submitResourceAllocation(id))
+export function useReassignSlot() {
+  return useAllocationMutation(({ taskId, ...payload }) => resourcesApi.reassignSlot(taskId, payload))
+}
+
+export function useReleaseSlot() {
+  return useAllocationMutation(({ taskId, allocationId }) => resourcesApi.releaseSlot(taskId, allocationId))
+}
+
+export function useSubmitAllocationTask() {
+  return useAllocationMutation(({ taskId }) => resourcesApi.submitAllocationTask(taskId))
 }
 
 export function useProjectClosure(filters = {}) {
   return useQuery({
     queryKey: ['project-closure', filters],
     queryFn: () => resourcesApi.listProjectClosure(filters),
-  })
-}
-
-export function useShortCloseProject() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, remark }) => resourcesApi.shortCloseProject(id, remark),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['project-closure'] })
-      qc.invalidateQueries({ queryKey: ['lead-tasks'] })
-      qc.invalidateQueries({ queryKey: ['leads'] })
-    },
   })
 }

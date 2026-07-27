@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Users2, Bell, Boxes, Wallet, UserCog, PauseCircle, ListChecks, ListTodo, FileCheck2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { LayoutDashboard, Users2, Bell, Boxes, History, Wallet, UserCog, PauseCircle, ListChecks, ListTodo, FileCheck2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
-import { hasRole, canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks } from '@/api/scope'
+import { hasRole, canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Logo } from './Logo'
@@ -18,7 +18,8 @@ const NAV_ITEMS = [
   { to: '/other-tasks', label: 'Follow up', icon: ListTodo, show: canSeeFollowUps },
   { to: '/held-leads', label: 'Hold Leads', icon: PauseCircle, show: canSeeHeldLeads },
   { to: '/held-tasks', label: 'Hold Tasks', icon: ListChecks, show: canSeeHeldTasks },
-  { to: '/resources', label: 'Resources', icon: Boxes, roles: ['Resource Manager'] },
+  { to: '/resources', label: 'Resources', icon: Boxes, show: canSeeResources },
+  { to: '/resource-history', label: 'Resource History', icon: History, roles: ['Resource Manager'] },
   { to: '/project-closure', label: 'Project Closure', icon: FileCheck2, roles: ['Resource Manager'] },
   { to: '/finance', label: 'Finance', icon: Wallet, roles: ['Finance'] },
   { to: '/users', label: 'Users', icon: UserCog, roles: ['User Management'] },

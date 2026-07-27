@@ -8,6 +8,7 @@ from .models import (
     FollowupUpdate,
     Lead,
     LeadHold,
+    LeadStage,
     Notification,
     ProjectDetails,
     ResourceAllocation,
@@ -22,19 +23,36 @@ from .models import (
 class LeadAdmin(admin.ModelAdmin):
     list_display = (
         "id",
+        "base_code",
         "company_name",
         "project_name",
         "lead_type",
+        "flow_of_tasks",
+        "type_of_project",
         "status",
         "assigned_to",
         "created_by",
         "created_at",
     )
-    list_filter = ("lead_type", "status", "country", "industry", "domain")
-    search_fields = ("company_name", "project_name", "division")
-    autocomplete_fields = ("country", "industry", "domain")
-    raw_id_fields = ("assigned_to", "created_by")
-    readonly_fields = ("project_id", "project_id_base", "extension", "created_at", "updated_at")
+    list_filter = ("lead_type", "flow_of_tasks", "type_of_project", "status", "industry", "domain")
+    search_fields = ("base_code", "company_name", "project_name", "division")
+    autocomplete_fields = ("industry", "domain")
+    raw_id_fields = ("assigned_to", "created_by", "parent_lead", "short_closed_by")
+    readonly_fields = (
+        "base_code", "project_id", "project_id_base", "extension",
+        "short_closed_at", "created_at", "updated_at",
+    )
+
+
+@admin.register(LeadStage)
+class LeadStageAdmin(admin.ModelAdmin):
+    """The stage history driving the derived Project ID suffix (Tech Req §4.4)."""
+
+    list_display = ("id", "lead", "stage", "project_id", "status", "stage_start_dt", "stage_end_dt")
+    list_filter = ("stage", "status")
+    search_fields = ("lead__company_name", "lead__project_name", "lead__base_code", "project_id")
+    raw_id_fields = ("lead",)
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(Workflow)
@@ -61,17 +79,22 @@ class TaskAdmin(admin.ModelAdmin):
         "lead",
         "task_no",
         "task_name",
+        "stage",
         "status",
         "assigned_to",
         "is_allocation_task",
+        "is_finance_gate",
+        "is_hanging_task",
+        "reopened_count",
         "short_closed",
-        "opened_at",
-        "closed_at",
+        "project_id",
+        "task_start_dt",
+        "task_end_dt",
     )
-    list_filter = ("status", "is_allocation_task", "short_closed", "task_no")
-    search_fields = ("task_name", "lead__company_name", "lead__project_name")
-    raw_id_fields = ("lead", "assigned_to")
-    readonly_fields = ("opened_at", "closed_at", "elapsed_time", "created_at", "updated_at")
+    list_filter = ("status", "is_allocation_task", "is_finance_gate", "is_hanging_task", "short_closed", "task_no")
+    search_fields = ("task_name", "lead__company_name", "lead__project_name", "project_id")
+    raw_id_fields = ("lead", "stage", "assigned_to")
+    readonly_fields = ("task_start_dt", "task_end_dt", "elapsed_time", "created_at", "updated_at")
     inlines = [ChecklistInline]
 
 
@@ -86,11 +109,13 @@ class WorkflowTriggerConfigAdmin(admin.ModelAdmin):
         "reference_task_no",
         "reference_field_key",
         "offset_days",
+        "condition_field_key",
+        "condition_max",
         "is_active",
     )
     list_filter = ("is_active", "workflow", "task_no")
     list_editable = ("offset_days", "is_active")
-    search_fields = ("reference_field_key",)
+    search_fields = ("reference_field_key", "condition_field_key")
     readonly_fields = ("created_at", "updated_at")
 
 
@@ -111,26 +136,25 @@ class TaskHoldAdmin(admin.ModelAdmin):
 @admin.register(ResourceAllocation)
 class ResourceAllocationAdmin(admin.ModelAdmin):
     list_display = (
-        "id", "lead", "type", "status", "man_power_required",
-        "allocated_count", "is_over_allocated", "created_at", "closed_at",
+        "id", "lead", "stage", "slot", "user", "is_tbd", "status",
+        "man_power_required", "allocated_on", "released_on",
     )
-    list_filter = ("type", "status")
+    list_filter = ("slot", "status", "is_tbd")
     search_fields = ("lead__company_name", "lead__project_name")
-    raw_id_fields = ("lead", "allocation_task", *ResourceAllocation.RESOURCE_FIELDS)
-    readonly_fields = ("created_at", "closed_at")
+    raw_id_fields = ("lead", "stage", "task", "user", "replaces")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(ProjectDetails)
 class ProjectDetailsAdmin(admin.ModelAdmin):
     list_display = (
-        "id", "lead", "project_id", "extension_no", "status",
-        "is_current", "generated_at", "generated_by",
-        "short_closed", "short_closed_at", "short_closed_by",
+        "id", "lead", "stage", "project_id",
+        "fixed_fee", "variable_fee", "generated_at", "generated_by",
     )
-    list_filter = ("status", "is_current", "short_closed")
-    search_fields = ("project_id", "project_id_base", "lead__company_name")
-    raw_id_fields = ("lead", "resource_allocation", "generated_by", "short_closed_by")
-    readonly_fields = ("generated_at", "short_closed_at")
+    list_filter = ("stage__stage",)
+    search_fields = ("project_id", "lead__company_name")
+    raw_id_fields = ("lead", "stage", "generated_by")
+    readonly_fields = ("generated_at",)
 
 
 class FollowupUpdateInline(admin.TabularInline):

@@ -140,16 +140,16 @@ def drop_lead(lead, user, *, remark=""):
 def compute_elapsed_time(task, *, closed_at=None):
     """Active (non-hold) duration of a task: total span minus held intervals.
 
-    ``elapsed_time = (closed_at - opened_at) - Σ(unhold_at - hold_at)`` (§4.9).
+    ``elapsed_time = (task_end_dt - task_start_dt) - Σ(unhold_at - hold_at)`` (§4.9).
     Returns a ``timedelta`` or None if the task never opened. An interval still
     open at computation time is measured up to ``closed_at``/now (defensive; a
     held task cannot normally be closed).
     """
-    if task.opened_at is None:
+    if task.task_start_dt is None:
         return None
-    end = closed_at or task.closed_at or timezone.now()
+    end = closed_at or task.task_end_dt or timezone.now()
     held = timezone.timedelta()
     for hold in task.holds.all():
         stop = hold.unhold_at or end
         held += stop - hold.hold_at
-    return (end - task.opened_at) - held
+    return (end - task.task_start_dt) - held

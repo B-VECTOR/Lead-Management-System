@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { TaskStateBadge } from '@/components/shared/StatusBadge'
+import { TaskStateBadge, StageBadge } from '@/components/shared/StatusBadge'
 import { ChecklistItemRow } from './ChecklistItemRow'
 import { HoldActionButton } from './HoldActionButton'
 import { TaskStepFields } from './TaskStepFields'
@@ -215,6 +215,15 @@ export function LeadTaskTab({ leadId }) {
                 <span className="text-muted-foreground">Task {activeTask.task_no}.</span> {activeTask.task_name}
               </CardTitle>
               <div className="flex items-center gap-2">
+                {activeTask.stage_code && <StageBadge stage={activeTask.stage_code} />}
+                {activeTask.reopened_count > 0 && (
+                  <span
+                    title="Re-opened by a Finance payment-approval gate"
+                    className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  >
+                    Re-opened {activeTask.reopened_count}×
+                  </span>
+                )}
                 <TaskStateBadge status={activeTask.status} />
                 {activeTask.can_hold && (activeTask.status === 'open' || activeTask.status === 'hold') && (
                   <TaskHoldButton task={activeTask} leadId={leadId} />
@@ -227,7 +236,10 @@ export function LeadTaskTab({ leadId }) {
             <p className="text-xs text-muted-foreground">
               {activeTask.assigned_to_name
                 ? `Assigned to ${activeTask.assigned_to_name}`
-                : 'Not assigned — assignment handled during resource allocation (Phase 6).'}
+                : activeTask.is_finance_gate
+                  ? 'Not assigned — worked by Finance from the Accounts queue.'
+                  : 'Not assigned — allocation tasks are worked by the Resource Manager or the lead owner from the Resources screen.'}
+              {activeTask.is_hanging_task && ' · Parallel task — it can be completed alongside the rest of the stage.'}
               {!canEdit && activeTask.status === 'open' && " · View only (you don't have edit access to this task)."}
             </p>
           </CardHeader>
@@ -278,8 +290,9 @@ export function LeadTaskTab({ leadId }) {
             )}
             {activeTask.is_allocation_task && activeTask.status !== 'skipped' && (
               <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
-                Resource-allocation step — the Resource Manager fills the allocation
-                form here (built in Phase 6). It carries no checklist.
+                Resource-allocation step — the Resource Manager or the Default BD Person
+                staffs its slots from the Resources screen. It carries no checklist;
+                submitting it opens the next task{!activeTask.is_hanging_task ? ' for the chosen Execution Red' : ''}.
               </p>
             )}
             {items.length === 0 && !activeTask.is_allocation_task && !['skipped', 'dropped'].includes(activeTask.status) && (

@@ -1,16 +1,13 @@
 import { cn } from '@/lib/utils'
 
-// Lead status = the single execution status now that 1 lead = 1 project (§21 rework).
+// Lead status — collapsed to four values in the v4.0/v17.0 rebuild (§4.3.2):
+// In Progress / Hold / Dropped / Completed. Hybernation and Short Closed were
+// retired (short-close is now an action that ends Completed).
 const LEAD_STATUS_STYLES = {
   'In Progress': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
-  'On Hold': 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+  Hold: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   Dropped: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
-  Hybernation: 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300',
-  // v12 uses "Complete"; keep "Completed" for any legacy mock data.
-  Complete: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
   Completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
-  // Terminal early-closure — orange, distinct from natural Complete (emerald).
-  'Short Closed': 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
 }
 
 // Individual task-step status within the Task tab's checklist workspace —
@@ -51,22 +48,21 @@ const CHECKLIST_ITEM_STYLES = {
 }
 const CHECKLIST_ITEM_LABELS = { not_started: 'Not started', inprogress: 'In progress', complete: 'Complete' }
 
-// Resource-allocation status (§5.7): Pending (not yet allocated) / Open
-// (resources tied up) / Closed (freed/released). Callers may override the
-// displayed label — e.g. the RM's Resources page shows Closed as "Freed".
+// Resource-allocation row status (§4.7, R5 append-only rebuild): allocated
+// (currently occupying the slot) / released (freed — history only). Callers
+// may override the displayed label.
 const ALLOCATION_STATUS_STYLES = {
-  Pending: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  Open: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
-  Closed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  allocated: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  released: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
 }
 
-// Project-closure row status (§5.16): In Progress / Extended / Complete /
-// Short Closed (Phase 16 follow-up — kept once a cycle is short-closed).
+// Project-closure row status (§9.2, R6) — derived from the cycle's own
+// LeadStage lifecycle (in_progress/closed/skipped) rather than a stored
+// column: In Progress / Complete / Skipped.
 const PROJECT_CLOSURE_STATUS_STYLES = {
   'In Progress': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
-  Extended: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   Complete: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
-  'Short Closed': 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
+  Skipped: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
 }
 
 const PRIORITY_STYLES = {
@@ -74,6 +70,36 @@ const PRIORITY_STYLES = {
   Medium: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
   High: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   Urgent: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+}
+
+// Workflow stage (v4.0/v17.0, §4.4) — the stage each task belongs to; used to
+// group the task stepper. Extension loops (E0/E1/…) share one style.
+const STAGE_STYLES = {
+  BD: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300',
+  '2HR': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  SnT: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300',
+  IM: 'bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300',
+  M: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300',
+  Extension: 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300',
+  Closure: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+}
+const STAGE_LABELS = {
+  BD: 'BD', '2HR': '2HR Study', SnT: 'Solution & Blueprint',
+  IM: 'Implementation', M: 'Mining', Closure: 'Closure',
+}
+
+// Resolve the style/label for a stage code, treating E0/E1/… as Extension.
+function stageKey(code) {
+  return code && code.startsWith('E') && !STAGE_STYLES[code] ? 'Extension' : code
+}
+
+// Display label for a stage code — shared by the stepper's StageBadge and the
+// Leads-list "Current Stage" filter dropdown (R7, §4.3.3), so both read the
+// same Extension-loop naming without duplicating the STAGE_LABELS map.
+export function stageLabel(code) {
+  if (!code) return ''
+  const key = stageKey(code)
+  return STAGE_LABELS[code] || (key === 'Extension' ? `Extension ${code}` : code)
 }
 
 const LEAD_TYPE_STYLES = {
@@ -154,6 +180,15 @@ export function ProjectClosureStatusBadge({ status }) {
 
 export function PriorityBadge({ priority }) {
   return <Pill className={PRIORITY_STYLES[priority] || 'bg-neutral-100 text-neutral-700'}>{priority}</Pill>
+}
+
+// Stage pill for the stepper / lead detail. Extension loops keep their exact
+// code (E0, E1…) as the label but share the Extension colour.
+export function StageBadge({ stage }) {
+  if (!stage) return null
+  const key = stageKey(stage)
+  const label = STAGE_LABELS[stage] || (key === 'Extension' ? `Extension ${stage}` : stage)
+  return <Pill className={STAGE_STYLES[key] || 'bg-neutral-100 text-neutral-700'}>{label}</Pill>
 }
 
 export function LeadTypeBadge({ type }) {

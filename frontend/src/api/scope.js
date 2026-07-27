@@ -37,6 +37,13 @@ export const canSeeFollowUps = (user) =>
 export const canSeeHeldLeads = (user) =>
   LEAD_MODULE_ROLES.some((r) => hasRole(user, r))
 
+// Resources is the Resource Manager's screen, but D12 (R5) lets the lead's own
+// Default BD Person work its allocation tasks too — so the whole lead-facing
+// set (which is exactly who can be a lead's `assigned_to`, plus Lead Admin/
+// Marketing who share the module) also gets the nav item. The backend scopes
+// what each caller actually sees/can act on; this only gates the link/route.
+export const canSeeResources = (user) => hasRole(user, 'Resource Manager') || canSeeLeadModule(user)
+
 // Held Tasks is open to every user except User Management (Phase 13, per the
 // user, later narrowed): an assignee/Employee needs to see the tasks of theirs
 // that are on hold, a Lead Manager reviews the hold reason + trail, and the
@@ -78,6 +85,9 @@ export const PERMISSIONS = {
   deleteAttachment: (user, lead) =>
     hasRole(user, 'Lead Admin') ||
     (hasRole(user, 'Lead Manager') && (lead?.created_by === user?.id || lead?.assigned_to === user?.id)),
+  // Short-close (R6, §9.2/§5.12) — Resource Manager only; the backend's
+  // `lead.can_short_close` gates *when* it's actually available.
+  shortCloseLead: (user) => hasRole(user, 'Resource Manager'),
   manageUsers: (user) => hasRole(user, 'User Management'),
   // Lead Admin: global visibility, read-only across the lead screens.
   viewFollowupPreview: (user) => hasRole(user, 'Lead Admin'),

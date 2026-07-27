@@ -51,6 +51,23 @@ export function useDropLead() {
   })
 }
 
+// Short-close (R6, §9.2/§5.12) — opens Project Closure ahead of its natural
+// trigger; invalidates the closure list too since it may create/close cycles.
+export function useShortCloseLead() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, remark }) => leadsApi.shortCloseLead(id, remark),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: ['leads'] })
+      qc.invalidateQueries({ queryKey: ['lead', id] })
+      qc.invalidateQueries({ queryKey: ['lead-tasks', String(id)] })
+      qc.invalidateQueries({ queryKey: ['activities', 'lead', id] })
+      qc.invalidateQueries({ queryKey: ['project-closure'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+  })
+}
+
 export function useAssignLeadOwner() {
   const qc = useQueryClient()
   return useMutation({

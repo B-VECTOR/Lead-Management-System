@@ -7,17 +7,35 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCreateLead, useLead, useUpdateLead } from '@/hooks/useLeads'
-import { useCountries, useIndustries, useAreas, useAssignableUsers } from '@/hooks/useLookups'
+import { useIndustries, useAreas, useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
 import { toast } from 'sonner'
 
-// Two lead types only (Decision #6 — Extension is a BD workflow cycle, not a type).
-const LEAD_TYPES = ['BD', 'Mining']
+// Three lead types (v4.0/§4.3.4): Extension is now a first-class type that
+// enters directly at the Extension stage.
+const LEAD_TYPES = ['BD', 'Extension', 'Mining']
+
+// Flow of tasks — which stages run for a BD/Mining lead (§5.3.2). Values match
+// the backend Lead.FlowOfTasks choices. Not applicable to Extension leads.
+const FLOW_OPTIONS = [
+  { value: 'DEFAULT', label: 'DEFAULT (2HR → SnT → Proposal)' },
+  { value: '2HR_PROPOSAL', label: '2HR → Project Proposal' },
+  { value: 'DIRECT_PROPOSAL', label: 'Direct Proposal' },
+  { value: 'SNT_PROPOSAL', label: 'SnT → Project Proposal' },
+]
+
+// Type of Project — reporting/filter label only (§5.2.2). Matches the backend
+// Lead.TypeOfProject choices (stored as the display string).
+const TYPE_OF_PROJECT_OPTIONS = [
+  'Consulting Full Fledged', 'AMC', 'Upgrade',
+  'Vectorflow Lite', 'Audit only', 'Consulting Lite + No software',
+]
 
 const emptyForm = {
-  country: '', company_name: '', project_name: '', industry: '', domain: '',
+  company_name: '', project_name: '', industry: '', domain: '',
   division: '', scope: '', assigned_to: '', lead_type: 'BD',
+  flow_of_tasks: 'DEFAULT', type_of_project: '',
 }
 
 export default function LeadForm() {
@@ -26,7 +44,6 @@ export default function LeadForm() {
   const navigate = useNavigate()
   const { user } = useAuth()
 
-  const { data: countries = [] } = useCountries()
   const { data: industries = [] } = useIndustries()
   const { data: areas = [] } = useAreas()
   const { data: existingLead } = useLead(isEdit ? id : undefined)
@@ -58,7 +75,6 @@ export default function LeadForm() {
   useEffect(() => {
     if (isEdit && existingLead) {
       setForm({
-        country: existingLead.country || '',
         company_name: existingLead.company_name || '',
         project_name: existingLead.project_name || '',
         industry: existingLead.industry || '',
@@ -67,6 +83,8 @@ export default function LeadForm() {
         scope: existingLead.scope || '',
         assigned_to: existingLead.assigned_to || '',
         lead_type: existingLead.lead_type || 'BD',
+        flow_of_tasks: existingLead.flow_of_tasks || 'DEFAULT',
+        type_of_project: existingLead.type_of_project || '',
       })
     }
   }, [isEdit, existingLead])
@@ -82,11 +100,13 @@ export default function LeadForm() {
     if (value) set(key, value)
   }
 
+  // Flow of tasks does not apply to Extension leads (they enter at Task 22).
+  const isExtension = form.lead_type === 'Extension'
+
   async function handleSubmit(e) {
     e.preventDefault()
     // Build the payload; only send assigned_to when this user controls it.
     const payload = {
-      country: form.country,
       company_name: form.company_name.trim(),
       project_name: form.project_name.trim(),
       industry: form.industry,
@@ -94,6 +114,9 @@ export default function LeadForm() {
       division: form.division.trim(),
       scope: form.scope.trim(),
       lead_type: form.lead_type,
+      // Extension leads carry no flow (backend clears it); send it otherwise.
+      flow_of_tasks: isExtension ? '' : form.flow_of_tasks,
+      type_of_project: form.type_of_project,
     }
     if (canAssignOwner) payload.assigned_to = form.assigned_to || null
 
@@ -114,8 +137,9 @@ export default function LeadForm() {
 
   const saving = createLead.isPending || updateLead.isPending
   const canSubmit =
-    form.country && form.company_name.trim() && form.project_name.trim() &&
-    form.industry && form.domain && form.lead_type &&
+    form.company_name.trim() && form.project_name.trim() &&
+    form.industry && form.domain && form.lead_type && form.type_of_project &&
+    (isExtension || form.flow_of_tasks) &&
     (!ownerRequired || form.assigned_to)
 
   if (!isEdit && !PERMISSIONS.createLead(user)) return null
@@ -138,16 +162,6 @@ export default function LeadForm() {
         <CardHeader><CardTitle className="text-base">Lead details</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <Label>Country *</Label>
-            <Select value={form.country ? String(form.country) : ''} onValueChange={(v) => setIfPresent('country', Number(v))}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select country" /></SelectTrigger>
-              <SelectContent>
-                {countries.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
             <Label>Lead type *</Label>
             <Select value={form.lead_type} onValueChange={(v) => setIfPresent('lead_type', v)}>
               <SelectTrigger className="w-full"><SelectValue placeholder="Select type" /></SelectTrigger>
@@ -156,6 +170,29 @@ export default function LeadForm() {
               </SelectContent>
             </Select>
           </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Type of project *</Label>
+            <Select value={form.type_of_project} onValueChange={(v) => setIfPresent('type_of_project', v)}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select type of project" /></SelectTrigger>
+              <SelectContent>
+                {TYPE_OF_PROJECT_OPTIONS.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {!isExtension && (
+            <div className="flex flex-col gap-1.5">
+              <Label>Flow of tasks *</Label>
+              <Select value={form.flow_of_tasks} onValueChange={(v) => setIfPresent('flow_of_tasks', v)}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Select flow" /></SelectTrigger>
+                <SelectContent>
+                  {FLOW_OPTIONS.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Decides which stages run. Not applicable to Extension leads.</p>
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label>Company name *</Label>

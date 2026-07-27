@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework import serializers
 
-from . import engine
+from . import engine, projects, resources
 from .models import (
     ActivityLog,
     Attachment,
@@ -10,6 +10,7 @@ from .models import (
     Followup,
     FollowupUpdate,
     Lead,
+    LeadStage,
     Notification,
     ProjectDetails,
     ResourceAllocation,
@@ -42,10 +43,10 @@ class LeadSerializer(serializers.ModelSerializer):
     """Lead CRUD serializer with role-aware ``assigned_to`` and status guards.
 
     Read responses carry ``*_name`` convenience fields so the frontend list can
-    render country/industry/domain/owner without a second lookup. Writes still
-    use the FK ids. ``created_by`` and the Project-ID fields are system-managed
-    (read-only); ``status`` is writable but may not be set to a system-only
-    value (Tech Req §4.3.2).
+    render industry/domain/owner without a second lookup. Writes still use the
+    FK ids. ``created_by``, ``base_code`` and the Project-ID fields are
+    system-managed (read-only); ``status`` is writable but may not be set to a
+    system-only value (Tech Req §4.3.2).
     """
 
     # Only active, non-deleted users may own a lead. ("BD users" is not further
@@ -56,7 +57,6 @@ class LeadSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
-    country_name = serializers.CharField(source="country.name", read_only=True)
     industry_name = serializers.CharField(source="industry.name", read_only=True)
     domain_name = serializers.CharField(source="domain.name", read_only=True)
     assigned_to_name = serializers.CharField(source="assigned_to.name", read_only=True, default=None)
@@ -81,17 +81,30 @@ class LeadSerializer(serializers.ModelSerializer):
     # The still-open hold interval while the lead is On Hold (Tech Req §5.8/§4.9
     # v16) — drives the amber "on hold" banner (reason + who/when) on detail.
     active_hold = serializers.SerializerMethodField()
-    # The current project cycle's short-close stamp (Phase 16, PRD §5.12) —
-    # drives the blue "short-closed" banner on detail while the lead is still
-    # working its way to Complete.
+    # The lead's short-close stamp (R6, PRD §5.12/§9.2) — drives the blue
+    # "short-closed" banner on detail. Short-close is a lead-scoped action now
+    # (it opens the shared Project Closure task), so this reads straight off
+    # the lead's own columns rather than a "current" project_details row.
     short_close_info = serializers.SerializerMethodField()
+    # Whether the Resource Manager's short-close action is currently available
+    # (engine.can_short_close) — surfaced so the Lead Detail action button can
+    # gate itself without a second lookup.
+    can_short_close = serializers.SerializerMethodField()
+    # R2 (Tech Req §13): the stage-legible **derived** Project ID
+    # (``base_code [+ -M] + -{current_stage}``) and the lead's current stage.
+    # Both are computed from the ``base_code`` + open ``lead_stage`` rows on
+    # every read — never stored as a join key. Replaces the old stored
+    # ``project_id`` for display (that column is left empty by the retired
+    # 17-task path and is redone per-cycle in R4/R6).
+    project_id_display = serializers.SerializerMethodField()
+    current_stage = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
         fields = [
             "id",
-            "country",
-            "country_name",
+            "base_code",
+            "parent_lead",
             "company_name",
             "project_name",
             "industry",
@@ -103,6 +116,8 @@ class LeadSerializer(serializers.ModelSerializer):
             "assigned_to",
             "assigned_to_name",
             "lead_type",
+            "flow_of_tasks",
+            "type_of_project",
             "status",
             "progress",
             "task_progress",
@@ -112,9 +127,14 @@ class LeadSerializer(serializers.ModelSerializer):
             "drop_remark",
             "active_hold",
             "short_close_info",
+            "can_short_close",
+            "project_id_display",
+            "current_stage",
             "project_id",
             "project_id_base",
             "extension",
+            "lead_start_dt",
+            "lead_end_dt",
             "created_by",
             "created_by_name",
             "created_at",
@@ -122,6 +142,10 @@ class LeadSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "base_code",
+            "parent_lead",
+            "lead_start_dt",
+            "lead_end_dt",
             "progress",
             "task_progress",
             "current_task",
@@ -130,6 +154,9 @@ class LeadSerializer(serializers.ModelSerializer):
             "drop_remark",
             "active_hold",
             "short_close_info",
+            "can_short_close",
+            "project_id_display",
+            "current_stage",
             "project_id",
             "project_id_base",
             "extension",
@@ -199,16 +226,25 @@ class LeadSerializer(serializers.ModelSerializer):
         }
 
     def get_short_close_info(self, obj):
-        if obj.status == Lead.Status.COMPLETE:
-            return None
-        detail = obj.project_details.filter(is_current=True, short_closed=True).first()
-        if detail is None:
+        if obj.short_closed_at is None:
             return None
         return {
-            "short_closed_at": detail.short_closed_at,
-            "short_closed_by_name": detail.short_closed_by.name if detail.short_closed_by else None,
-            "remark": detail.short_close_remark,
+            "short_closed_at": obj.short_closed_at,
+            "short_closed_by_name": obj.short_closed_by.name if obj.short_closed_by else None,
+            "remark": obj.short_close_remark,
         }
+
+    def get_can_short_close(self, obj):
+        return engine.can_short_close(obj)
+
+    def get_project_id_display(self, obj):
+        return projects.derived_project_id(obj)
+
+    def get_current_stage(self, obj):
+        stage = projects.current_stage(obj)
+        if stage is None:
+            return None
+        return {"stage": stage.stage, "status": stage.status}
 
     def validate_status(self, value):
         if value in Lead.SYSTEM_ONLY_STATUSES:
@@ -235,6 +271,24 @@ class LeadSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         roles = user_role_names(user)
         is_create = self.instance is None
+
+        # Flow of tasks / Type of Project (§4.3 v17). Type of Project is a
+        # required label on every lead. Flow of tasks decides which stages run
+        # for BD/Mining leads and is ignored for Extension (which enters at
+        # Task 22) — required for the former, cleared for the latter.
+        effective_type = attrs.get(
+            "lead_type", getattr(self.instance, "lead_type", Lead.LeadType.BD)
+        )
+        if is_create and not attrs.get("type_of_project"):
+            raise serializers.ValidationError(
+                {"type_of_project": "Type of Project is required."}
+            )
+        if effective_type == Lead.LeadType.EXTENSION:
+            attrs["flow_of_tasks"] = ""  # not applicable to Extension leads
+        elif is_create and not attrs.get("flow_of_tasks"):
+            raise serializers.ValidationError(
+                {"flow_of_tasks": "Flow of tasks is required for BD and Mining leads."}
+            )
 
         if is_create:
             attrs["status"] = Lead.Status.IN_PROGRESS  # always system-default
@@ -330,6 +384,10 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.CharField(
         source="assigned_to.name", read_only=True, default=None
     )
+    # The stage this task belongs to (R3) — its code drives the stage-grouped
+    # stepper and the Project-ID suffix (§4.4/§13). None for a not-yet-opened
+    # (pending) trigger task, whose stage opens only when it does.
+    stage_code = serializers.CharField(source="stage.stage", read_only=True, default=None)
     # Lead labels so cross-lead views (e.g. the Held Tasks menu) can show which
     # lead each task belongs to without a second fetch.
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
@@ -344,6 +402,11 @@ class TaskSerializer(serializers.ModelSerializer):
     # For a trigger-`pending` task: when it will open and how many days out, so
     # the frontend can show the offset instead of an unexplained pending state.
     scheduled_open = serializers.SerializerMethodField()
+    # R5: the append-only slot picture for an allocation task (3/10/17/18/24/25)
+    # — which slots it manages, how many of each are required, who currently
+    # occupies each, and cross-cycle prefill suggestions. None for a non-
+    # allocation task.
+    allocation = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -352,12 +415,16 @@ class TaskSerializer(serializers.ModelSerializer):
             "lead",
             "task_no",
             "task_name",
+            "stage_code",
             "assigned_to",
             "assigned_to_name",
             "lead_company_name",
             "lead_project_name",
             "status",
             "is_allocation_task",
+            "is_finance_gate",
+            "is_hanging_task",
+            "reopened_count",
             "extra_fields",
             "field_schema",
             "checklist_items",
@@ -366,9 +433,11 @@ class TaskSerializer(serializers.ModelSerializer):
             "can_hold",
             "can_reassign",
             "scheduled_open",
+            "allocation",
             "short_closed",
-            "opened_at",
-            "closed_at",
+            "project_id",
+            "task_start_dt",
+            "task_end_dt",
             "elapsed_time",
             "created_at",
             "updated_at",
@@ -381,9 +450,13 @@ class TaskSerializer(serializers.ModelSerializer):
             "assigned_to",
             "status",
             "is_allocation_task",
+            "is_finance_gate",
+            "is_hanging_task",
+            "reopened_count",
             "short_closed",
-            "opened_at",
-            "closed_at",
+            "project_id",
+            "task_start_dt",
+            "task_end_dt",
             "elapsed_time",
             "created_at",
             "updated_at",
@@ -431,6 +504,29 @@ class TaskSerializer(serializers.ModelSerializer):
             "reference_task_no": info["reference_task_no"],
         }
 
+    def get_allocation(self, obj):
+        tdef = self._task_def(obj)
+        ctx = resources.allocation_context(obj, tdef)
+        if ctx is None:
+            return None
+        prefill_users = User.objects.in_bulk(list(ctx["prefill"].values()))
+        return {
+            "slots": ctx["slots"],
+            "slot_labels": {s: ResourceAllocation.Slot(s).label for s in ctx["slots"]},
+            "single_occupancy_slots": [
+                s for s in ctx["slots"] if s in ResourceAllocation.SINGLE_OCCUPANCY_SLOTS
+            ],
+            "required": ctx["required"],
+            "occupants": {
+                slot: ResourceAllocationSerializer(rows, many=True, context=self.context).data
+                for slot, rows in ctx["occupants"].items()
+            },
+            "prefill": {
+                slot: _user_label(prefill_users.get(uid))
+                for slot, uid in ctx["prefill"].items()
+            },
+        }
+
     def validate_extra_fields(self, value):
         if not isinstance(value, dict):
             raise serializers.ValidationError("Expected an object of field values.")
@@ -447,57 +543,29 @@ def _user_label(user):
     return {"id": user.id, "name": user.name, "username": user.username} if user else None
 
 
-def _latest_field(lead, task_no, key):
-    """Latest captured value of ``key`` on a lead's most-recent task ``task_no``."""
-    task = (
-        lead.tasks.filter(task_no=task_no)
-        .exclude(extra_fields={})
-        .order_by("-id")
-        .first()
-    )
-    if task is None:
-        return None
-    return (task.extra_fields or {}).get(key)
-
-
 class ResourceAllocationSerializer(serializers.ModelSerializer):
-    """A resource_allocation row — the Resource Manager's allocation form + list
-    entry (Tech Req §4.7 / PRD §5.7).
+    """One append-only resource_allocation row (Tech Req §4.7 / PRD §5.7 — R5).
 
-    Single slots (Execution Red, Auditors, Project Members), the multi-select
-    Browns/Whites, and ``remark`` are writable; ``type``/``status``/man-power
-    figures are system-managed. Read responses carry the lead context
-    (company/project, owner, the Brown/White man-power split) for the accordion,
-    the resolved resource names, and the per-belt ``is_over_allocated`` flag.
+    Read-only/history-oriented — a row is never edited in place; slot actions
+    (allocate/reassign/release/submit, all on the parent allocation task) are
+    what create and release rows. Carries the lead + stage context so the
+    Resource-Manager reporting screen and the resource-history dashboard don't
+    need a second fetch.
     """
 
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
-    # Lead/project context for the Resource Manager's accordion (PRD §5.7) — the
-    # RM can't fetch the lead directly (it's role-scoped), so the detail they
-    # need to staff with clarity travels on the allocation row itself.
-    lead_display_id = serializers.SerializerMethodField()
-    lead_country = serializers.CharField(source="lead.country.name", read_only=True, default=None)
-    lead_industry = serializers.CharField(source="lead.industry.name", read_only=True, default=None)
-    lead_domain = serializers.CharField(source="lead.domain.name", read_only=True, default=None)
-    lead_division = serializers.CharField(source="lead.division", read_only=True, default="")
-    lead_scope = serializers.CharField(source="lead.scope", read_only=True, default="")
-    lead_type = serializers.CharField(source="lead.lead_type", read_only=True)
-    lead_status = serializers.CharField(source="lead.status", read_only=True)
-    lead_project_id = serializers.CharField(source="lead.project_id", read_only=True, default="")
+    lead_project_id = serializers.SerializerMethodField()
     lead_manager = serializers.SerializerMethodField()
-    resource_names = serializers.SerializerMethodField()
-    allocated_count = serializers.IntegerField(read_only=True)
-    is_over_allocated = serializers.BooleanField(read_only=True)
-    is_under_allocated = serializers.BooleanField(read_only=True)
-    brown_count = serializers.IntegerField(read_only=True)
-    white_count = serializers.IntegerField(read_only=True)
-    # Execution Brown is a single FK (auto-generated from RESOURCE_FIELDS, like
-    # Execution Red / the auditors). Only White stays a multi-select — a list of
-    # user ids in, a list out.
-    whites = serializers.PrimaryKeyRelatedField(
-        many=True, required=False, queryset=exclude_user_management(User.objects.all())
-    )
+    stage_code = serializers.CharField(source="stage.stage", read_only=True, default=None)
+    task_no = serializers.IntegerField(source="task.task_no", read_only=True, default=None)
+    slot_label = serializers.CharField(source="get_slot_display", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    # Resource-history dashboard support (§4.7/§9.1): days worked so far (open-
+    # ended rows use "now"), and the id of whatever row replaced this one (if
+    # any) so the frontend can walk a reassignment chain without extra fetches.
+    days_worked = serializers.SerializerMethodField()
+    replaced_by_id = serializers.SerializerMethodField()
 
     class Meta:
         model = ResourceAllocation
@@ -506,89 +574,76 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "lead",
             "lead_company_name",
             "lead_project_name",
-            "lead_display_id",
-            "lead_country",
-            "lead_industry",
-            "lead_domain",
-            "lead_division",
-            "lead_scope",
-            "lead_type",
-            "lead_status",
             "lead_project_id",
             "lead_manager",
-            "allocation_task",
-            "type",
+            "stage",
+            "stage_code",
+            "task",
+            "task_no",
+            "slot",
+            "slot_label",
+            "names",
+            "user",
+            "user_name",
+            "is_tbd",
             "status",
+            "allocated_on",
+            "released_on",
+            "replaces",
+            "replaced_by_id",
+            "days_worked",
             "man_power_required",
-            "man_power_brown",
-            "man_power_white",
-            "allocated_count",
-            "brown_count",
-            "white_count",
-            "is_over_allocated",
-            "is_under_allocated",
             "remark",
-            "resource_names",
             "created_at",
-            "closed_at",
-            *ResourceAllocation.RESOURCE_FIELDS,
+            "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "lead",
-            "allocation_task",
-            "type",
-            "status",
-            "man_power_required",
-            "man_power_brown",
-            "man_power_white",
-            "created_at",
-            "closed_at",
-        ]
+        read_only_fields = fields
 
-    def validate_execution_red(self, value):
-        # Phase 17: once a row has an Execution Red, it can be swapped but never
-        # cleared back to blank — the next/current workflow task depends on it.
-        if self.instance and self.instance.execution_red_id and value is None:
-            raise serializers.ValidationError(
-                "Execution Red cannot be cleared once assigned — choose a replacement instead."
-            )
-        return value
-
-    def get_lead_display_id(self, obj):
-        return f"LD-{obj.lead.created_at.year}-{obj.lead.id:05d}"
+    def get_lead_project_id(self, obj):
+        return projects.derived_project_id(obj.lead)
 
     def get_lead_manager(self, obj):
         return _user_label(obj.lead.assigned_to)
 
-    def get_resource_names(self, obj):
-        names = {
-            f: _user_label(getattr(obj, f)) for f in ResourceAllocation.SINGLE_RESOURCE_FIELDS
-        }
-        for f in ResourceAllocation.MULTI_RESOURCE_FIELDS:
-            names[f] = [_user_label(u) for u in getattr(obj, f).all()]
-        return names
+    def get_user_name(self, obj):
+        return _user_label(obj.user)
+
+    def get_days_worked(self, obj):
+        end = obj.released_on or timezone.now()
+        return round((end - obj.allocated_on).total_seconds() / 86400, 1)
+
+    def get_replaced_by_id(self, obj):
+        row = obj.replaced_by.order_by("id").first()
+        return row.id if row else None
 
 
 class ProjectDetailsSerializer(serializers.ModelSerializer):
-    """One project cycle for the Project Closure screen (Tech Req §4.8, §9.2).
+    """One project cycle for the Project Closure screen (Tech Req §4.8, §9.2 —
+    R6 rebuild).
 
-    Lists one row per implementation/extension cycle with its own Project ID,
-    extension number, and status, plus the resource + fee context pulled from
-    the linked allocation and the workflow. ``can_short_close`` is true only on
-    the current cycle of a not-yet-complete lead.
+    One row per completed Implementation (``IM``) or Extension-loop (``E{n}``)
+    cycle, listed across a project's whole ``base_code`` family (parent lead +
+    any Mining children share one ``base_code``, §13) so implementation, every
+    extension, and any mining cycle show up together without a special case —
+    see ``views.ProjectClosureListView``. ``status`` is **derived** from the
+    linked stage's own lifecycle (``in_progress``/``closed``/``skipped``)
+    rather than duplicated on this row (Tech Req §4.8's field list is exactly
+    the six model fields). ``execution_red``/``execution_brown``/``whites`` are
+    derived live from ``ResourceAllocation.objects.filter(stage=...)`` now that
+    this row carries ``stage_id`` (the R5 note this class used to carry — the
+    old direct FK pointed at a wide-table shape that no longer exists).
     """
 
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
+    lead_base_code = serializers.CharField(source="lead.base_code", read_only=True)
+    lead_type = serializers.CharField(source="lead.lead_type", read_only=True)
+    stage_code = serializers.CharField(source="stage.stage", read_only=True, default=None)
     lead_manager = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
     execution_red = serializers.SerializerMethodField()
     execution_brown = serializers.SerializerMethodField()
     whites = serializers.SerializerMethodField()
-    fixed_fee = serializers.SerializerMethodField()
-    variable_fee = serializers.SerializerMethodField()
-    fixed_fee_upto = serializers.SerializerMethodField()
-    can_short_close = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectDetails
@@ -597,76 +652,60 @@ class ProjectDetailsSerializer(serializers.ModelSerializer):
             "lead",
             "lead_company_name",
             "lead_project_name",
+            "lead_base_code",
+            "lead_type",
             "lead_manager",
-            "resource_allocation",
-            "extension_no",
-            "project_id",
-            "project_id_base",
+            "stage",
+            "stage_code",
+            "project",
             "status",
-            "is_current",
+            "project_id",
             "execution_red",
             "execution_brown",
             "whites",
             "fixed_fee",
             "variable_fee",
-            "fixed_fee_upto",
-            "can_short_close",
-            "short_closed",
-            "short_closed_at",
-            "short_close_remark",
             "generated_at",
         ]
 
     def get_lead_manager(self, obj):
         return _user_label(obj.lead.assigned_to)
 
-    def _alloc_user(self, obj, field):
-        alloc = obj.resource_allocation
-        return _user_label(getattr(alloc, field)) if alloc else None
+    # Derived from the linked stage's own status — no separate column (§4.8).
+    _STAGE_STATUS_LABELS = {
+        LeadStage.Status.IN_PROGRESS: "In Progress",
+        LeadStage.Status.CLOSED: "Complete",
+        LeadStage.Status.SKIPPED: "Skipped",
+    }
+
+    def get_status(self, obj):
+        if obj.stage is None:
+            return None
+        return self._STAGE_STATUS_LABELS.get(obj.stage.status, obj.stage.status)
+
+    def _stage_occupants(self, obj, slot):
+        if obj.stage_id is None:
+            return []
+        return list(
+            ResourceAllocation.objects.filter(stage_id=obj.stage_id, slot=slot)
+            .select_related("user")
+            .order_by("id")
+        )
 
     def get_execution_red(self, obj):
-        return self._alloc_user(obj, "execution_red")
-
-    def _alloc_users(self, obj, field):
-        alloc = obj.resource_allocation
-        return [_user_label(u) for u in getattr(alloc, field).all()] if alloc else []
+        rows = self._stage_occupants(obj, ResourceAllocation.Slot.EXECUTION_RED)
+        return _user_label(rows[-1].user) if rows and rows[-1].user_id else None
 
     def get_execution_brown(self, obj):
-        return self._alloc_user(obj, "execution_brown")
+        rows = self._stage_occupants(obj, ResourceAllocation.Slot.EXECUTION_BROWN)
+        return _user_label(rows[-1].user) if rows and rows[-1].user_id else None
 
     def get_whites(self, obj):
-        return self._alloc_users(obj, "whites")
-
-    # Fee context — "latest captured value from the workflow" (§9.2). Fixed fee
-    # is summed from Task 10/14's fixed_fee_blocks; variable fee is Task 10's
-    # total cap. "Fixed Fee Upto" has no dedicated workflow field, so it is
-    # surfaced as null (documented — see PLAN Phase-6 interpretation note).
-    def get_fixed_fee(self, obj):
-        for task_no in (14, 10):
-            blocks = _latest_field(obj.lead, task_no, "fixed_fee_blocks")
-            if blocks:
-                total = 0
-                for row in blocks:
-                    try:
-                        total += float(row.get("fee") or 0)
-                    except (TypeError, ValueError):
-                        continue
-                return total
-        return None
-
-    def get_variable_fee(self, obj):
-        return _latest_field(obj.lead, 10, "variable_fee_cap_total")
-
-    def get_fixed_fee_upto(self, obj):
-        return None
-
-    def get_can_short_close(self, obj):
-        return (
-            obj.is_current
-            and not obj.short_closed
-            and obj.lead.status
-            not in (Lead.Status.COMPLETE, Lead.Status.SHORT_CLOSED)
-        )
+        rows = [
+            r for r in self._stage_occupants(obj, ResourceAllocation.Slot.WHITE)
+            if r.status == ResourceAllocation.Status.ALLOCATED and r.user_id
+        ]
+        return [_user_label(r.user) for r in rows]
 
 
 class FollowupUpdateSerializer(serializers.ModelSerializer):
