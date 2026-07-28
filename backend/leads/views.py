@@ -371,9 +371,13 @@ class TaskScopeMixin:
 class LeadTaskListView(TaskScopeMixin, generics.ListAPIView):
     """All tasks the caller may see under one lead — the stepper's data source.
 
-    ``pending`` (trigger-gated, not yet due) rows are hidden: task lists show
-    only steps that have actually opened, plus ``skipped``/``dropped`` ones
-    (Tech Req §6 rule 8 v14 — supersedes the Phase-13e pending banner).
+    ``pending`` (trigger-gated, not yet due) rows are **included** so that
+    trigger-scheduled steps — notably the allocation tasks (Task 3 etc.) that
+    open ``pending`` weeks before their reference date — are staffable inline in
+    the lead's task stepper instead of only from the Resources queue. Each
+    pending row carries its ``scheduled_open`` banner (see
+    ``TaskSerializer.get_scheduled_open``). This re-activates the Phase-13e
+    pending banner that Tech Req §6 rule 8 v14 had suppressed (per user, 2026-07-28).
     """
 
     serializer_class = TaskSerializer
@@ -382,9 +386,7 @@ class LeadTaskListView(TaskScopeMixin, generics.ListAPIView):
 
     def get_queryset(self):
         return self._scoped_tasks(
-            Task.objects.filter(lead_id=self.kwargs["lead_id"]).exclude(
-                status=Task.Status.PENDING
-            )
+            Task.objects.filter(lead_id=self.kwargs["lead_id"])
         )
 
     def get_serializer_context(self):

@@ -24,6 +24,7 @@ from .permissions import (
     can_edit_task,
     can_hold_task,
     can_reassign_task,
+    can_work_allocation_task,
     exclude_user_management,
     user_role_names,
 )
@@ -399,6 +400,10 @@ class TaskSerializer(serializers.ModelSerializer):
     can_edit = serializers.SerializerMethodField()
     can_hold = serializers.SerializerMethodField()
     can_reassign = serializers.SerializerMethodField()
+    # Whether the current user may staff this task's slots (D12: Resource
+    # Manager or the lead's Default BD Person). Only meaningful for allocation
+    # tasks, which open unassigned so `can_edit` is always False for them.
+    can_staff = serializers.SerializerMethodField()
     # For a trigger-`pending` task: when it will open and how many days out, so
     # the frontend can show the offset instead of an unexplained pending state.
     scheduled_open = serializers.SerializerMethodField()
@@ -432,6 +437,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "can_edit",
             "can_hold",
             "can_reassign",
+            "can_staff",
             "scheduled_open",
             "allocation",
             "short_closed",
@@ -490,6 +496,14 @@ class TaskSerializer(serializers.ModelSerializer):
         if not request:
             return False
         return can_reassign_task(request.user, obj)
+
+    def get_can_staff(self, obj):
+        if not obj.is_allocation_task:
+            return False
+        request = self.context.get("request")
+        if not request:
+            return False
+        return can_work_allocation_task(request.user, obj)
 
     def get_scheduled_open(self, obj):
         info = engine.pending_open_info(obj)

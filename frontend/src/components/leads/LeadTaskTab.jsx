@@ -13,7 +13,9 @@ import { HoldActionButton } from './HoldActionButton'
 import { TaskStepFields } from './TaskStepFields'
 import { TaskStepper } from './TaskStepper'
 import { TaskStepperVertical } from './TaskStepperVertical'
+import { AllocationSlots, isRedMissing } from '@/components/resources/AllocationSlots'
 import { useLeadTasks, useCompleteTask, useReassignTask } from '@/hooks/useTasks'
+import { useSubmitAllocationTask } from '@/hooks/useResources'
 import { useHoldTask, useUnholdTask } from '@/hooks/useHolds'
 import { useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
@@ -122,6 +124,53 @@ function TaskHoldButton({ task, leadId }) {
   )
 }
 
+// The inline resource-allocation step for an allocation task (3/10/17/18/24/25).
+// R9: staffing happens right here in the lead's task stepper — the per-slot
+// grid (shared `AllocationSlots`) plus the "Submit allocation" action — instead
+// of a separate Resources popup/tab. Staffing rights follow D12 (`can_staff`:
+// Resource Manager or the lead's Default BD Person); everyone else sees the
+// slots read-only. Submitting completes the task and opens the successor for the
+// chosen Execution Red.
+function AllocationStep({ task, onSubmitted }) {
+  const submit = useSubmitAllocationTask()
+  // Editable only while the task is workable and the user has D12 rights.
+  const disabled = !task.can_staff || !['open', 'pending'].includes(task.status)
+  const redMissing = isRedMissing(task)
+
+  async function handleSubmit() {
+    try {
+      const res = await submit.mutateAsync({ taskId: task.id })
+      toast.success('Resources allocated — next task opened')
+      onSubmitted?.(res)
+    } catch (e) {
+      toast.error(e.message)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
+        Resource-allocation step — staff each slot below. It carries no checklist;
+        submitting it opens the next task{!task.is_hanging_task ? ' for the chosen Execution Red' : ''}.
+        {!task.can_staff && ' You can view the allocation but only the Resource Manager or the lead owner can staff it.'}
+      </p>
+      <AllocationSlots task={task} disabled={disabled} />
+      {!disabled && (
+        <div className="flex items-center justify-end">
+          <Button
+            onClick={handleSubmit}
+            disabled={submit.isPending || redMissing}
+            title={redMissing ? 'Select an Execution Red first' : undefined}
+          >
+            <CheckCircle2 className="size-4" />
+            {submit.isPending ? 'Submitting…' : 'Submit allocation'}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function LeadTaskTab({ leadId }) {
   const { data: tasks = [], isLoading } = useLeadTasks(leadId)
   const { data: owners = [] } = useAssignableUsers(true)
@@ -193,6 +242,16 @@ export function LeadTaskTab({ leadId }) {
     }
   }
 
+  // After an allocation task is submitted, advance to the successor it opened
+  // (mirrors handleComplete's auto-advance) — the response carries opened_tasks.
+  function handleAllocationSubmitted(res) {
+    const opened = res?.opened_tasks || []
+    if (opened.length) {
+      awaitingId.current = opened[0].id
+      setActiveId(opened[0].id)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start">
       <Card className="md:hidden py-0">
@@ -238,7 +297,7 @@ export function LeadTaskTab({ leadId }) {
                 ? `Assigned to ${activeTask.assigned_to_name}`
                 : activeTask.is_finance_gate
                   ? 'Not assigned — worked by Finance from the Accounts queue.'
-                  : 'Not assigned — allocation tasks are worked by the Resource Manager or the lead owner from the Resources screen.'}
+                  : 'Not assigned — staff its slots below (Resource Manager or the lead owner).'}
               {activeTask.is_hanging_task && ' · Parallel task — it can be completed alongside the rest of the stage.'}
               {!canEdit && activeTask.status === 'open' && " · View only (you don't have edit access to this task)."}
             </p>
@@ -288,12 +347,8 @@ export function LeadTaskTab({ leadId }) {
                 Dropped — this task was open when the lead was dropped.
               </p>
             )}
-            {activeTask.is_allocation_task && activeTask.status !== 'skipped' && (
-              <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
-                Resource-allocation step — the Resource Manager or the Default BD Person
-                staffs its slots from the Resources screen. It carries no checklist;
-                submitting it opens the next task{!activeTask.is_hanging_task ? ' for the chosen Execution Red' : ''}.
-              </p>
+            {activeTask.is_allocation_task && !['skipped', 'dropped'].includes(activeTask.status) && (
+              <AllocationStep task={activeTask} onSubmitted={handleAllocationSubmitted} />
             )}
             {items.length === 0 && !activeTask.is_allocation_task && !['skipped', 'dropped'].includes(activeTask.status) && (
               <p className="text-sm text-muted-foreground">No checklist items for this task.</p>
