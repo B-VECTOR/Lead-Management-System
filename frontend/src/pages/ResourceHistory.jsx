@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ChevronRight, ExternalLink, Link2 } from 'lucide-react'
+import { ChevronRight, Link2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -119,9 +118,12 @@ function RowGroup({ group, isOpen, onToggle, allRows }) {
           <TableCell />
           <TableCell colSpan={4}>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 py-1 text-sm">
-              <Link to={`/leads/${r.lead}`} className="inline-flex items-center gap-1 font-medium hover:underline">
-                {r.lead_project_name}<ExternalLink className="size-3 text-muted-foreground" />
-              </Link>
+              {/* R12-1: this screen is Resource-Manager-only and the role no
+                  longer has a lead page, so the project is a plain label — the
+                  Project ID + stage identify the engagement, and staffing is
+                  reached from the Resources queue. */}
+              <span className="font-medium">{r.lead_project_name}</span>
+              <span className="text-muted-foreground tabular-nums">{r.project_id || r.lead_project_id}</span>
               <span className="text-muted-foreground">{r.lead_company_name}</span>
               <StageBadge stage={r.stage_code} />
               <span className="text-muted-foreground">{r.slot_label}</span>

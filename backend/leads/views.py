@@ -713,7 +713,13 @@ class LeadResourceAllocationListView(LeadQuerysetMixin, generics.ListAPIView):
         return get_object_or_404(super().get_queryset(), pk=self.kwargs["lead_id"])
 
     def get_queryset(self):
-        return _allocation_row_qs().filter(lead=self.get_lead())
+        qs = _allocation_row_qs().filter(lead=self.get_lead())
+        # R12: the named extras (Auditors 3–4, Project Members 1–10) are the
+        # Resource Manager's own working detail — this lead-facing tab shows the
+        # Red/Brown/White picture only.
+        if not resources.is_resource_manager(self.request.user):
+            qs = qs.exclude(slot__in=ResourceAllocation.EXTENDED_SLOTS)
+        return qs
 
 
 class AllocationTaskListView(generics.ListAPIView):
@@ -721,6 +727,11 @@ class AllocationTaskListView(generics.ListAPIView):
     the Resources screen's main list. The Resource Manager sees every one
     (across every lead); the Default BD Person (D12) sees only their own
     leads'. Optional ``?status=`` (defaults to every status) / ``?lead=``.
+
+    ``?status=`` accepts a comma-separated list (R12) — the screen's "To do"
+    filter is ``open,pending``, since a trigger-gated allocation task is
+    staffable *in advance*, while still pending (that's how the auditors get
+    allocated before Task 18's date arrives).
     """
 
     serializer_class = TaskSerializer
@@ -738,7 +749,8 @@ class AllocationTaskListView(generics.ListAPIView):
             qs = qs.filter(lead_id=lead_id)
         status_val = self.request.query_params.get("status")
         if status_val:
-            qs = qs.filter(status=status_val)
+            wanted = [s.strip() for s in status_val.split(",") if s.strip()]
+            qs = qs.filter(status__in=wanted)
         return qs
 
     def get_serializer_context(self):
@@ -791,7 +803,7 @@ class AllocationAllocateView(AllocationTaskActionView):
         row = resources.allocate(
             task, tdef, request.data.get("slot"),
             user=user, is_tbd=bool(request.data.get("is_tbd")),
-            remark=request.data.get("remark", ""),
+            remark=request.data.get("remark", ""), actor=request.user,
         )
         events.log_activity(
             task.lead, request.user, "resource",
@@ -832,7 +844,7 @@ class AllocationReleaseView(AllocationTaskActionView):
         row = get_object_or_404(
             ResourceAllocation, pk=request.data.get("allocation_id"), task=task,
         )
-        resources.release(row)
+        resources.release(row, actor=request.user)
         events.log_activity(
             task.lead, request.user, "resource",
             f"{ResourceAllocation.Slot(row.slot).label} released — {task.task_name}",

@@ -615,9 +615,14 @@ class WorkflowTestBase(LeadApiTestBase):
 
     # -- shared walk fragments ------------------------------------------------
 
-    def walk_to_task16(self, lead, owner):
+    def walk_to_task16(self, lead, owner, planned_start=None):
         """1 → 20 via the SnT branch (re-presentation No / moved Yes) — the
-        common prefix shared by the full walk and the mining/extension tests."""
+        common prefix shared by the full walk and the mining/extension tests.
+
+        ``planned_start`` overrides Task 16's planned start date; a future one
+        leaves Tasks 17/18 trigger-``pending`` (not yet due), which is the state
+        the R12 advance-allocation tests need.
+        """
         self.complete(owner, self.task(lead, 1), self.f1())
         self.complete(owner, self.task(lead, 2), self.f2())
         self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
@@ -632,7 +637,10 @@ class WorkflowTestBase(LeadApiTestBase):
         self.complete(self.red, self.task(lead, 12), self.f12("No", "Yes"))
         self.complete(self.red, self.task(lead, 14), self.f14())
         self.complete(self.finance, self.task(lead, 15), self.f_gate("Yes"))
-        self.complete(owner, self.task(lead, 16), self.f16())
+        f16 = self.f16()
+        if planned_start:
+            f16["planned_start_date"] = planned_start
+        self.complete(owner, self.task(lead, 16), f16)
 
     def walk_to_task20(self, lead, owner):
         self.walk_to_task16(lead, owner)
@@ -658,7 +666,7 @@ class FullFlowWalkTests(WorkflowTestBase):
         mining = self.task(lead, 21)
         extension = self.task(lead, 22)
         self.assertEqual(mining.stage.stage, LeadStage.MINING)
-        self.assertEqual(extension.stage.stage, "E0")
+        self.assertEqual(extension.stage.stage, "E1")
         self.complete(owner, mining, self.f21("No"))
         self.complete(owner, extension, self.f22("No"))
 
@@ -881,24 +889,24 @@ class MiningSpawnTests(WorkflowTestBase):
 
 class ExtensionLoopTests(WorkflowTestBase):
     """An Extension-type lead is standalone (own ``base_code``, no
-    ``parent_lead``) and enters at Task 22 in stage E0 (D10); the loop can run
-    more than once, incrementing E0 → E1 (R6)."""
+    ``parent_lead``) and enters at Task 22 in stage E1 (D10); the loop can run
+    more than once, incrementing E1 → E2 (R6)."""
 
     def test_extension_lead_is_standalone_and_enters_at_22(self):
         lead = self.create_lead(lead_type=Lead.LeadType.EXTENSION, flow_of_tasks="")
         self.assertIsNone(lead.parent_lead)
         self.assertEqual(lead.flow_of_tasks, "")
-        self.assertEqual(self.task(lead, 22).stage.stage, "E0")
+        self.assertEqual(self.task(lead, 22).stage.stage, "E1")
         for no in range(1, 22):
             self.assertFalse(lead.tasks.filter(task_no=no).exists())
 
-    def test_extension_loop_advances_e0_to_e1_and_snapshots_each_cycle(self):
+    def test_extension_loop_advances_e1_to_e2_and_snapshots_each_cycle(self):
         lead = self.create_lead(lead_type=Lead.LeadType.EXTENSION, flow_of_tasks="")
         owner = self.lead_manager
 
         self.complete(owner, self.task(lead, 22), self.f22("Yes"))
         task23 = self.task(lead, 23)
-        self.assertEqual(task23.stage.stage, "E0")
+        self.assertEqual(task23.stage.stage, "E1")
         # Fresh standalone Extension lead — no Execution Red has ever been
         # allocated on it, so Task 23 opens unassigned; hand it to the Red.
         self.complete(self.red, self.ensure_assignee(task23, self.red), self.f23())
@@ -907,14 +915,14 @@ class ExtensionLoopTests(WorkflowTestBase):
             self.resource_manager, self.task(lead, 25),
             {"auditor_1": self.auditor1, "auditor_2": self.auditor2},
         )
-        task26_e0 = self.task(lead, 26)
-        self.assertEqual(task26_e0.stage.stage, "E0")
-        self.complete(self.red, task26_e0, self.f26())
+        task26_e1 = self.task(lead, 26)
+        self.assertEqual(task26_e1.stage.stage, "E1")
+        self.complete(self.red, task26_e1, self.f26())
 
-        self.assertEqual(lead.stages.get(stage="E0").status, LeadStage.Status.CLOSED)
+        self.assertEqual(lead.stages.get(stage="E1").status, LeadStage.Status.CLOSED)
         self.assertTrue(
-            lead.project_details.filter(stage__stage="E0").exists(),
-            "Task 26 close snapshots the closing E0 cycle",
+            lead.project_details.filter(stage__stage="E1").exists(),
+            "Task 26 close snapshots the closing E1 cycle",
         )
         # can_short_close is granted the moment Task 26 first opens, and stays
         # granted through the loop-back (R6, DD-R6-5).
@@ -932,7 +940,7 @@ class ExtensionLoopTests(WorkflowTestBase):
         loop_back = self.task(lead, 22, expect_status=Task.Status.PENDING)
         engine.open_pending_task(loop_back)  # simulate the admin/data workaround
         loop_back.refresh_from_db()
-        self.assertEqual(loop_back.stage.stage, "E1", "loop-back opens the next E{n}")
+        self.assertEqual(loop_back.stage.stage, "E2", "loop-back opens the next E{n}")
         self.complete(owner, loop_back, self.f22("No"))
         self.assertEqual(self.task(lead, 27).status, "open")
 
@@ -951,7 +959,7 @@ class MiningExtensionParallelTests(WorkflowTestBase):
 
         # Open the parent's Extension loop instead of declining it.
         self.complete(owner, self.task(lead, 22), self.f22("Yes"))
-        self.assertEqual(lead.stages.filter(status=LeadStage.Status.IN_PROGRESS, stage="E0").count(), 1)
+        self.assertEqual(lead.stages.filter(status=LeadStage.Status.IN_PROGRESS, stage="E1").count(), 1)
         self.assertEqual(child.stages.filter(status=LeadStage.Status.IN_PROGRESS).count(), 2)  # M + BD
 
         # Both lines of work move independently.
@@ -1181,10 +1189,12 @@ class ExecutionRedContinuityTests(WorkflowTestBase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(resources.latest_execution_red(lead), self.red)
 
-    def test_resource_manager_reaches_the_allocation_step_from_the_leads_list(self):
-        """R10-1: the Resource Manager gets the Leads tab, so the lead they open
-        from it must carry its allocation step in the stepper — not an empty one.
-        Their other steps stay hidden (they are not the lead's owner or Red)."""
+    def test_resource_manager_sees_the_allocation_step_and_nothing_else(self):
+        """R10-1(b), retained through R12-1: the *backend* still scopes an
+        allocation lead and its allocation steps to the Resource Manager — the
+        resource module's own endpoints depend on it — even though R12-1 took the
+        Leads *tab* away again and staffing moved into `/resources`. Their other
+        steps stay hidden (they are not the lead's owner or Red)."""
         lead, _owner, alloc = self._to_first_allocation()
         self.client.force_authenticate(self.resource_manager)
         listing = self.client.get(LIST_URL)
@@ -1241,6 +1251,248 @@ class ExecutionRedContinuityTests(WorkflowTestBase):
         self.assertEqual(resources.latest_execution_red(lead), self.red)
         self.client.force_authenticate(self.red)
         self.assertEqual(self.client.get(detail_url(lead.id)).status_code, status.HTTP_200_OK)
+
+
+class RestoredNamedSlotTests(WorkflowTestBase):
+    """R12-2/R12-3: Auditors 3–4 and Project Members 1–10 are back as slots, are
+    optional, and are the Resource Manager's alone — to see and to fill."""
+
+    def _to_team_allocation(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        return lead, owner, self.task(lead, 3)
+
+    def _slots(self, actor, task_obj, lead):
+        self.client.force_authenticate(actor)
+        res = self.client.get(f"/api/allocation-tasks/?lead={lead.id}")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        row = next(r for r in res.data if r["id"] == task_obj.id)
+        return row["allocation"]
+
+    def test_team_task_offers_the_ten_project_member_slots_to_the_rm_only(self):
+        lead, owner, alloc = self._to_team_allocation()
+
+        rm_alloc = self._slots(self.resource_manager, alloc, lead)
+        self.assertIn("project_member_1", rm_alloc["slots"])
+        self.assertIn("project_member_10", rm_alloc["slots"])
+        self.assertEqual(
+            rm_alloc["slot_labels"]["project_member_1"], "Project Member 1"
+        )
+        # Optional: required 0, so an empty one is neither under-allocation nor a
+        # submit blocker.
+        self.assertEqual(rm_alloc["required"]["project_member_1"], 0)
+
+        owner_alloc = self._slots(owner, alloc, lead)
+        self.assertEqual(
+            owner_alloc["slots"], ["execution_red", "execution_brown", "white"],
+            "the lead's Default BD Person keeps Red/Brown/White only",
+        )
+        self.assertNotIn("project_member_1", owner_alloc["required"])
+
+    def test_auditor_task_offers_four_auditor_slots(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.walk_to_task16(lead, owner)
+        gate18 = self.task(lead, 18)
+        alloc = self._slots(self.resource_manager, gate18, lead)
+        self.assertEqual(
+            alloc["slots"], ["auditor_1", "auditor_2", "auditor_3", "auditor_4"]
+        )
+        # 1–2 mandatory (required 1), 3–4 optional extras (required 0).
+        self.assertEqual(alloc["required"]["auditor_2"], 1)
+        self.assertEqual(alloc["required"]["auditor_4"], 0)
+        # Submitting with only the mandatory pair filled still works.
+        self.staff_and_submit(
+            self.resource_manager, gate18,
+            {"auditor_1": self.auditor1, "auditor_2": self.auditor2},
+        )
+
+    def test_only_the_resource_manager_can_fill_a_named_extra(self):
+        lead, owner, alloc = self._to_team_allocation()
+        payload = {"slot": "project_member_1", "user_id": self.white.id}
+
+        # The BD owner may staff this task (D12) but not that slot.
+        self.client.force_authenticate(owner)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/", payload, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.assertIn("Resource Manager", str(res.data))
+
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/", payload, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        row = ResourceAllocation.objects.get(task=alloc, slot="project_member_1")
+        self.assertEqual(row.user_id, self.white.id)
+        self.assertEqual(row.names, self.white.name, "denormalized name snapshot")
+
+        # …and the BD owner cannot reassign or release it either.
+        self.client.force_authenticate(owner)
+        for action, body in (
+            ("reassign", {"allocation_id": row.id, "user_id": self.brown.id}),
+            ("release", {"allocation_id": row.id}),
+        ):
+            res = self.client.post(
+                f"/api/allocation-tasks/{alloc.id}/{action}/", body, format="json"
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, action)
+
+    def test_lead_resources_tab_hides_the_named_extras(self):
+        lead, owner, alloc = self._to_team_allocation()
+        self.client.force_authenticate(self.resource_manager)
+        for slot, who in (("execution_red", self.red), ("project_member_1", self.white)):
+            res = self.client.post(
+                f"/api/allocation-tasks/{alloc.id}/allocate/",
+                {"slot": slot, "user_id": who.id}, format="json",
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        url = f"/api/leads/{lead.id}/resource-allocations/"
+        self.client.force_authenticate(owner)
+        slots = {r["slot"] for r in self.client.get(url).data}
+        self.assertIn("execution_red", slots)
+        self.assertNotIn("project_member_1", slots, "extras stay out of the lead tab")
+
+        self.client.force_authenticate(self.resource_manager)
+        slots = {r["slot"] for r in self.client.get(url).data}
+        self.assertIn("project_member_1", slots)
+
+
+class AdvanceAuditorAllocationTests(WorkflowTestBase):
+    """R12-4: the auditors can be allocated before Task 18 is due, and the task
+    then completes itself when it opens (``auto_close_when_staffed``)."""
+
+    def _pending_task_18(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        future = (date.today() + timedelta(days=30)).isoformat()
+        self.walk_to_task16(lead, owner, planned_start=future)
+        return lead, self.task(lead, 18, expect_status=Task.Status.PENDING)
+
+    def _allocate_auditors(self, task_obj):
+        self.client.force_authenticate(self.resource_manager)
+        for slot, who in (("auditor_1", self.auditor1), ("auditor_2", self.auditor2)):
+            res = self.client.post(
+                f"/api/allocation-tasks/{task_obj.id}/allocate/",
+                {"slot": slot, "user_id": who.id}, format="json",
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_pending_auditor_task_is_listed_and_staffable_in_advance(self):
+        lead, gate18 = self._pending_task_18()
+        self.client.force_authenticate(self.resource_manager)
+        # The queue's "To do" filter spans open + pending, so it is reachable.
+        res = self.client.get("/api/allocation-tasks/?status=open,pending")
+        row = next(r for r in res.data if r["id"] == gate18.id)
+        self.assertTrue(row["can_staff"])
+        self.assertTrue(row["auto_closes_when_staffed"])
+        self.assertIsNotNone(row["scheduled_open"], "the UI shows when it opens")
+        self._allocate_auditors(gate18)
+        gate18.refresh_from_db()
+        self.assertEqual(gate18.status, Task.Status.PENDING, "still not due")
+
+    def test_task_18_closes_itself_when_it_opens_already_staffed(self):
+        lead, gate18 = self._pending_task_18()
+        self._allocate_auditors(gate18)
+
+        opened = engine.open_pending_task(gate18)  # the scheduler's action
+        self.assertEqual(opened.status, Task.Status.CLOSED)
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                lead=lead, summary__contains="closed automatically"
+            ).exists()
+        )
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.resource_manager, message__contains=gate18.task_name
+            ).exists(),
+            "no 'allocation needed' ping for work that was already done",
+        )
+
+    def test_task_18_opens_and_waits_when_the_auditors_were_not_pre_allocated(self):
+        lead, gate18 = self._pending_task_18()
+        opened = engine.open_pending_task(gate18)
+        self.assertEqual(opened.status, Task.Status.OPEN)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.resource_manager, message__contains=gate18.task_name
+            ).exists(),
+            "the Resource Manager is told it needs staffing",
+        )
+        # It then closes the ordinary way, by submitting it.
+        self.staff_and_submit(
+            self.resource_manager, opened,
+            {"auditor_1": self.auditor1, "auditor_2": self.auditor2},
+        )
+        opened.refresh_from_db()
+        self.assertEqual(opened.status, Task.Status.CLOSED)
+
+
+class MidEngagementReassignmentTests(WorkflowTestBase):
+    """R12-5: a submitted (closed) allocation task's slots stay changeable — for
+    the Resource Manager, for as long as the allocation is live."""
+
+    def _closed_allocation(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        alloc = self.task(lead, 3)
+        self.staff_and_submit(self.resource_manager, alloc, {"execution_red": self.red})
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, Task.Status.CLOSED)
+        return lead, owner, alloc
+
+    def test_rm_can_swap_the_red_after_submitting_and_the_work_follows(self):
+        lead, owner, alloc = self._closed_allocation()
+        task4 = self.task(lead, 4)
+        self.complete(owner, task4)
+        task5 = self.task(lead, 5)
+        self.assertEqual(task5.assigned_to_id, self.red.id)
+
+        current = ResourceAllocation.objects.get(
+            task=alloc, slot="execution_red", status=ResourceAllocation.Status.ALLOCATED
+        )
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/reassign/",
+            {"allocation_id": current.id, "user_id": self.brown.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task5.refresh_from_db()
+        self.assertEqual(task5.assigned_to_id, self.brown.id, "the handover cascades")
+        current.refresh_from_db()
+        self.assertEqual(current.status, ResourceAllocation.Status.RELEASED)
+        self.assertEqual(
+            ResourceAllocation.objects.get(replaces=current).user_id, self.brown.id
+        )
+
+    def test_the_bd_owner_cannot_change_slots_once_the_task_is_closed(self):
+        lead, owner, alloc = self._closed_allocation()
+        current = ResourceAllocation.objects.get(
+            task=alloc, slot="execution_red", status=ResourceAllocation.Status.ALLOCATED
+        )
+        self.client.force_authenticate(owner)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/reassign/",
+            {"allocation_id": current.id, "user_id": self.brown.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_skipped_allocation_task_is_nobody_s_to_staff(self):
+        lead, owner, alloc = self._closed_allocation()
+        alloc.status = Task.Status.SKIPPED
+        alloc.save(update_fields=["status"])
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/",
+            {"slot": "execution_brown", "user_id": self.brown.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class LeadReassignmentCascadeTests(WorkflowTestBase):

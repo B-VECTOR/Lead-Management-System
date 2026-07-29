@@ -25,8 +25,8 @@ creation and then **frozen** — editing the lead's country/industry/domain/type
 afterwards deliberately does *not* rewrite the ID, which is already printed on
 every stage, task, allocation and activity row (decision 2026-07-28).
 
-R6 adds: the dynamic extension-loop stage (``ensure_extension_stage``, ``E0 →
-E1 → …``), spawning a Mining child lead off Task 21 (``spawn_mining_lead``),
+R6 adds: the dynamic extension-loop stage (``ensure_extension_stage``, ``E1 →
+E2 → …``), spawning a Mining child lead off Task 21 (``spawn_mining_lead``),
 and recording a ``project_details`` commercial snapshot per closed IM/E{n}
 cycle (``record_project_cycle`` — TR §4.8).
 """
@@ -43,10 +43,10 @@ def _initial_stage_code(lead):
     """The stage a freshly-created lead enters (§4.4).
 
     Extension-type leads (decision D10) enter at the first extension loop
-    ``E0``; Mining leads open a ``M`` cycle; everything else starts in ``BD``.
+    ``E1``; Mining leads open a ``M`` cycle; everything else starts in ``BD``.
     """
     if lead.lead_type == Lead.LeadType.EXTENSION:
-        return "E0"
+        return "E1"
     if lead.lead_type == Lead.LeadType.MINING:
         return LeadStage.MINING
     return LeadStage.BD
@@ -132,7 +132,7 @@ def project_id_for_stage(lead, stage_code):
     Unlike :func:`derived_project_id` — which picks the lead's *current* open
     stage — this composes the ID for the stage code passed in, so each
     ``lead_stage`` row can store its own stable value (``IN-PHNPDCFF26001-IM``,
-    ``…-E0``, a Mining lead's ``…-M`` / ``…-M-E0``).
+    ``…-E1``, a Mining lead's ``…-M`` / ``…-M-E1``).
     Returns ``""`` until ``base_code`` exists. Display only, never a join key.
     """
     if not lead.base_code:
@@ -198,10 +198,19 @@ def initialize_new_lead(lead, *, when=None):
 # --- R6: dynamic extension-loop stage + mining spawn + project_details -------
 
 
-def extension_stage_count(lead):
-    """How many extension-loop stages (any status) this lead has ever opened —
-    the next one is ``E{count}`` (§4.3.1/TR row 26: ``E0 → E1 → …``)."""
-    return lead.stages.filter(stage__regex=r"^E\d+$").count()
+def next_extension_stage_code(lead):
+    """The code for this lead's **next** extension loop (§4.3.1/TR row 26).
+
+    Numbering starts at ``E1`` — the first extension loop, whether the lead
+    reached it from Implementation or entered as an Extension-type lead, is
+    ``E1``, then ``E2 → E3 → …`` (decision 2026-07-29; loops used to start at
+    ``E0``). Derived from the highest loop the lead has ever opened rather than
+    a plain count so legacy ``E0`` rows continue into ``E1`` instead of
+    repeating a number.
+    """
+    codes = lead.stages.filter(stage__regex=r"^E\d+$").values_list("stage", flat=True)
+    highest = max((int(code[1:]) for code in codes), default=0)
+    return f"E{highest + 1}"
 
 
 def current_extension_stage(lead):
@@ -219,14 +228,14 @@ def ensure_extension_stage(lead, *, when=None):
     Unlike :func:`ensure_stage`, the code is resolved dynamically rather than
     passed in: reuse the currently **open** ``E{n}`` stage if there is one
     (Tasks 23–26 continuing the loop Task 22 just opened/reused), otherwise
-    open the **next** one (``E{count}`` — Task 22 starting a new loop, whether
-    the lead's very first entry or a loop-back after Task 26 closed and closed
-    its own stage). Idempotent within one open loop pass.
+    open the **next** one (:func:`next_extension_stage_code` — Task 22 starting
+    a new loop, whether the lead's very first entry or a loop-back after Task 26
+    closed and closed its own stage). Idempotent within one open loop pass.
     """
     current = current_extension_stage(lead)
     if current is not None:
         return current
-    stage_code = f"E{extension_stage_count(lead)}"
+    stage_code = next_extension_stage_code(lead)
     return LeadStage.objects.create(
         lead=lead,
         stage=stage_code,

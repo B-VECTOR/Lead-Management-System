@@ -16,7 +16,7 @@ A companion engineering document, `LMS_Technical_Requirements_updated.md`, provi
 - Every task now belongs to a **Stage** (BD, 2HR, SnT, Implementation, Extension, Mining). Stage is a first-class, tracked concept — a lead can have **more than one stage open at once** (Mining and Extension run in **parallel**).
 - The lead now carries a **Flow of tasks** selector (which stages run) and a **Type of Project** label, alongside **Type** (BD / Extension / Mining).
 - **Resource Manager** (Shailesh) and **Finance** (Abhay) are both **live roles**. Finance now owns three **payment-approval gate tasks** (7, 15, 28). Resource allocation is done through workflow tasks, and the full allocation history (who worked which slot, for how long, including reassignments) is retained for the dashboard.
-- **Project ID** is auto-generated at lead creation with the **current stage shown as a suffix** (e.g. `IN-PHNPDCFF26001-2HR`, `…-IM`, `…-E0`, `…-M`). ~~Now `Area + YY + Sequence`; Country and Industry codes are no longer part of the ID.~~ **Composition finalized by the user 2026-07-28:** Country Code + Industry + Area + Type of Project + Year + auto-generated number + stage of intervention — see §5.15.
+- **Project ID** is auto-generated at lead creation with the **current stage shown as a suffix** (e.g. `IN-PHNPDCFF26001-2HR`, `…-IM`, `…-E1`, `…-M`). ~~Now `Area + YY + Sequence`; Country and Industry codes are no longer part of the ID.~~ **Composition finalized by the user 2026-07-28:** Country Code + Industry + Area + Type of Project + Year + auto-generated number + stage of intervention — see §5.15.
 - Lead **Status** is simplified to **In Progress / Hold / Dropped / Completed**. "Hybernation" and "Short Closed" statuses are removed; short-close remains as an **action** that routes to closure.
 - ~~**Country** is dropped from the lead.~~ **Superseded 2026-07-28:** Country is captured on the lead again and leads the Project ID (§5.15). **Domain** is now **multi-select** *(built single-select per decision D2)*.
 
@@ -169,7 +169,7 @@ The full 28-task table — names, assignees, checklists, extra fields, stage, an
 **Stage entry & conditional allocation**
 
 - **Task 2 (2HR Study Agreement)** asks *"Is manpower support required from the resource allocation team?"* If **Yes**, Task 3 (2HR Team Allocation) opens against the Resource Manager and captures manpower. If **No**, Task 3 is **skipped** and the **Default BD Person** carries the study (Task 5) themselves.
-- **Allocation tasks** (3, 10, 17, 18, 24, 25) are worked by **Shailesh + the Default BD Person** — two people can allocate. They capture Execution Red / Execution Brown / White (TBD is allowed for White). **Auditor allocation is split into its own tasks** (18 for implementation, 25 for extension); Task 18 is a **hanging task** (non-blocking — it can be completed in parallel and does not hold up the sequence).
+- **Allocation tasks** (3, 10, 17, 18, 24, 25) are worked by **Shailesh + the Default BD Person** — two people can allocate. They capture Execution Red / Execution Brown / White (TBD is allowed for White), plus the Resource Manager's own named team slots Project Member 1–10 (optional). **Auditor allocation is split into its own tasks** (18 for implementation, 25 for extension) and captures Auditor 1–4 (1–2 required, 3–4 optional); Task 18 is a **hanging task** (non-blocking — it can be completed in parallel and does not hold up the sequence), and it closes itself if the auditors were already allocated in advance. See §5.7.
 
 **Branch points**
 
@@ -181,7 +181,7 @@ The full 28-task table — names, assignees, checklists, extra fields, stage, an
   - **No** + *"Has project moved to the next stage?"* = **Yes** → open **Task 14 (Solution Blueprint Payment)** and **Task 16 (Project Proposal Submission)**.
   - **No** + moved to next stage = **No** → open **Task 27 (Project Closure)** directly.
 - **Task 21 (Exploit Mining Opportunities):** *"Client go-ahead for a new project?"* — **Yes** → a **new Project ID with a `-M` marker** is opened and a **fresh BD cycle begins from Task 1** (see §5.15, Mining). Mining runs **in parallel** with any ongoing extension.
-- **Task 22 (Extension Proposal):** *"Extension approved?"* — **Yes** → Task 23 (Extension Detail) and the extension cycle. **No** → Task 27 (Project Closure). The extension cycle can loop (an extension of an extension); each loop increments the extension marker `-E0 → -E1 → -E2` (§5.15).
+- **Task 22 (Extension Proposal):** *"Extension approved?"* — **Yes** → Task 23 (Extension Detail) and the extension cycle. **No** → Task 27 (Project Closure). The extension cycle can loop (an extension of an extension); each loop increments the extension marker `-E1 → -E2 → -E3` (§5.15).
 
 **Closure**
 
@@ -203,8 +203,11 @@ Each checklist item has two editable fields: status (not_started / inprogress / 
 
 Resource allocation is performed through the workflow allocation tasks (3, 10, 17, 18, 24, 25), worked by **Shailesh (Resource Manager) + the Default BD Person**. Each allocation captures the resources for that stage:
 
-- **Team allocation** (3, 10, 17, 24): Execution Red, Execution Brown, White. **TBD is allowed for White** (a slot may be marked to-be-decided).
-- **Auditor allocation** (18, 25): Auditor 1, Auditor 2. Task 18 is a **hanging task** — non-blocking, completable in parallel.
+- **Team allocation** (3, 10, 17, 24): Execution Red, Execution Brown, White, **plus the named team slots Project Member 1–10**. **TBD is allowed for White** (a slot may be marked to-be-decided).
+- **Auditor allocation** (18, 25): **Auditor 1–4** — 1 and 2 are required to submit, 3 and 4 are optional. Task 18 is a **hanging task** — non-blocking, completable in parallel.
+- **The named extras (Project Member 1–10, Auditor 3–4) are the Resource Manager's own.** Only that role sees or fills them — the Default BD Person, who may also staff an allocation task, works Execution Red / Brown / White only, and a lead's Resources tab shows just those three. They are always optional: leaving one empty is neither under-allocation nor a submit blocker.
+- **Allocation in advance.** An allocation task that is scheduled but not yet due can be staffed early from the Resources screen. For **Task 18** this is final: if both auditors are allocated by the time the task's date arrives, the task **completes itself on opening** and never appears as outstanding work; if they are not, it opens and waits to be staffed as normal.
+- **Changing a person mid-engagement.** Submitting an allocation does not freeze it. For as long as the resources are still allocated (i.e. until they are released), the **Resource Manager** can change who holds a slot; the outgoing person's allocation is released and a new one opened in its place (see Resource History below), and any open task the outgoing Execution Red was working moves to the incoming one. The Default BD Person's own staffing rights end when the allocation task closes.
 
 **Resource History (dashboard requirement).** The system keeps a full, append-only history of allocations — not just whether a resource is currently occupied or free, but **who was allocated to which slot (Red / Brown / White / Auditor), on which stage, from when to when, and every reassignment**. A reassignment does not overwrite the previous record: the old allocation is **released** (with a release date) and a **new** allocation is opened, linked to the one it replaces. This lets the dashboard later report how many days each resource worked on each stage, and how the allocation changed over time.
 
@@ -212,7 +215,7 @@ Resource allocation is performed through the workflow allocation tasks (3, 10, 1
 
 **Release of resources.** A stage's resources are released when that stage's work ends. In particular, the Implementation/Extension resources default to showing as occupied on the project **until Task 27 (Project Closure) opens**, at which point the currently allocated resources are released.
 
-**Screen access.** The Resource Manager (Shailesh) can view the lead-flow screen and see where allocation is required, and act on it through a CTA that opens the allocation popup. A dedicated Resource Allocation reporting screen lists allocations with their status and the over/under indicators.
+**Screen access.** The Resource Manager works **entirely inside the Resource module** — they do not get the Leads tab. Their Resources screen lists every allocation task waiting on them (including ones **not yet due**, so a team or the auditors can be staffed ahead of time) and each row opens in place to the slots and the submit action. Alongside it they have **Resource History** (days worked per resource, per slot and stage, with reassignment chains) and **Project Closure**. The lead's Default BD Person staffs their own lead's allocation from the lead's task list, as before.
 
 ## 5.8 Lead & Task Hold / Unhold
 
@@ -293,12 +296,12 @@ Type-of-Project codes: Consulting Full Fledged `CFF`, AMC `AMC`, Upgrade `UPG`, 
 | 2HR stage | `IN-PHNPDCFF26001-2HR` |
 | SnT stage | `IN-PHNPDCFF26001-SnT` |
 | Implementation | `IN-PHNPDCFF26001-IM` |
-| First extension loop | `IN-PHNPDCFF26001-E0` |
-| Second extension loop | `IN-PHNPDCFF26001-E1` |
+| First extension loop | `IN-PHNPDCFF26001-E1` |
+| Second extension loop | `IN-PHNPDCFF26001-E2` |
 | Mining cycle | `IN-PHNPDCFF26001-M` |
 | Mining cycle that itself extends | `IN-PHNPDCFF26001-M-E1` |
 
-- **Extension marker `-E0 / -E1 / -E2 …`** — the number is the extension **loop counter**; the **first** extension shows `-E0`. It increments each time the extension cycle repeats.
+- **Extension marker `-E1 / -E2 / -E3 …`** — the number is the extension **loop counter**; the **first** extension shows `-E1` (numbering starts at 1 — user decision 2026-07-29). It increments each time the extension cycle repeats.
 - **Mining (`-M`)** — when Task 21 = Yes, a **new lead record is created for the same project** (same base code, so no new number is consumed), carrying the `-M` marker and a link back to the parent lead, and a fresh BD cycle begins from Task 1. Because it is a separate lead record, its Mining stage can run **in parallel** with the parent's Extension stage; the data for each is tracked independently.
 - The stage suffix is **derived** from the lead's current stage — it is display logic, not a stored key. Internally the system joins on stable identifiers, never on the suffixed string.
 

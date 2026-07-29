@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { toast } from 'sonner'
-import { X } from 'lucide-react'
+import { ChevronDown, ChevronRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -30,15 +31,38 @@ function isPool(slot) {
   return slot === 'white'
 }
 
+// R12 — the restored named extras (Auditors 3–4, Project Members 1–10). They are
+// optional (`required` 0) and the backend only sends them to a Resource Manager,
+// so the UI just renders whatever slots it is given; these are grouped into their
+// own collapsible block to keep the core Red/Brown/White picture up front.
+const PROJECT_MEMBER_PREFIX = 'project_member_'
+const EXTRA_AUDITOR_SLOTS = ['auditor_3', 'auditor_4']
+
+function isProjectMember(slot) {
+  return slot.startsWith(PROJECT_MEMBER_PREFIX)
+}
+
+function isExtendedSlot(slot) {
+  return isProjectMember(slot) || EXTRA_AUDITOR_SLOTS.includes(slot)
+}
+
+function filledCount(alloc, slots) {
+  return slots.filter((s) => (alloc.occupants?.[s] || []).length > 0).length
+}
+
 // A compact "slot allocated/required" summary line for a task, with over/under
 // flags — shared by the Resources grid and the My-Tasks (Resource) list.
+// Empty optional slots are skipped, and the ten Project Member slots collapse
+// into one figure so a fully-staffed team doesn't produce an unreadable line.
 export function slotSummary(task) {
   const alloc = task.allocation
   if (!alloc) return null
   const parts = []
+  const projectMembers = (alloc.slots || []).filter(isProjectMember)
   let over = false
   let under = false
   for (const slot of alloc.slots || []) {
+    if (isProjectMember(slot)) continue
     const required = alloc.required?.[slot] || 0
     const count = (alloc.occupants?.[slot] || []).length
     if (required === 0 && count === 0) continue
@@ -46,6 +70,8 @@ export function slotSummary(task) {
     if (required > 0 && count < required) under = true
     parts.push(`${alloc.slot_labels?.[slot] || slot} ${count}/${required || count}`)
   }
+  const pmFilled = filledCount(alloc, projectMembers)
+  if (pmFilled > 0) parts.push(`Project Members ${pmFilled}/${projectMembers.length}`)
   return { text: parts.join(' · '), over, under }
 }
 
@@ -166,15 +192,18 @@ function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, on
 }
 
 // The per-slot staffing grid for one allocation task. `disabled` freezes it into
-// a read-only view (a closed/skipped task, or a user without D12 rights).
+// a read-only view (a skipped/dropped task, or a user without D12 rights).
 export function AllocationSlots({ task, disabled }) {
   const allocate = useAllocateSlot()
   const reassign = useReassignSlot()
   const release = useReleaseSlot()
+  const [showExtras, setShowExtras] = useState(false)
 
   const alloc = task.allocation || {}
   const slots = alloc.slots || []
   const singleSlots = alloc.single_occupancy_slots || []
+  const coreSlots = slots.filter((s) => !isExtendedSlot(s))
+  const extraSlots = slots.filter(isExtendedSlot)
 
   const { data: redUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_red' })
   const { data: brownUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_brown' })
@@ -210,33 +239,65 @@ export function AllocationSlots({ task, disabled }) {
     }
   }
 
+  const singleControl = (slot) => (
+    <SingleSlotControl
+      key={slot}
+      slot={slot}
+      label={alloc.slot_labels?.[slot] || slot}
+      required={alloc.required?.[slot] || 0}
+      occupant={(alloc.occupants?.[slot] || [])[0]}
+      users={usersFor(slot)}
+      disabled={disabled}
+      onAllocate={handleAllocate}
+      onReassign={handleReassign}
+      onRelease={handleRelease}
+    />
+  )
+
+  const extrasFilled = filledCount(alloc, extraSlots)
+
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      {slots.filter((s) => singleSlots.includes(s)).map((slot) => (
-        <SingleSlotControl
-          key={slot}
-          slot={slot}
-          label={alloc.slot_labels?.[slot] || slot}
-          required={alloc.required?.[slot] || 0}
-          occupant={(alloc.occupants?.[slot] || [])[0]}
-          users={usersFor(slot)}
-          disabled={disabled}
-          onAllocate={handleAllocate}
-          onReassign={handleReassign}
-          onRelease={handleRelease}
-        />
-      ))}
-      {slots.filter((s) => isPool(s)).map((slot) => (
-        <WhiteSlotControl
-          key={slot}
-          required={alloc.required?.[slot] || 0}
-          occupants={alloc.occupants?.[slot] || []}
-          users={usersFor(slot)}
-          disabled={disabled}
-          onAllocate={handleAllocate}
-          onRelease={handleRelease}
-        />
-      ))}
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {coreSlots.filter((s) => singleSlots.includes(s)).map(singleControl)}
+        {coreSlots.filter((s) => isPool(s)).map((slot) => (
+          <WhiteSlotControl
+            key={slot}
+            required={alloc.required?.[slot] || 0}
+            occupants={alloc.occupants?.[slot] || []}
+            users={usersFor(slot)}
+            disabled={disabled}
+            onAllocate={handleAllocate}
+            onRelease={handleRelease}
+          />
+        ))}
+      </div>
+
+      {/* R12 — the named extras, Resource-Manager-only (the backend omits them
+          for anyone else, so their mere presence means the viewer may fill them).
+          Optional, and collapsed by default so they don't bury the core slots. */}
+      {extraSlots.length > 0 && (
+        <div className="rounded-md border">
+          <button
+            type="button"
+            onClick={() => setShowExtras((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-accent/50"
+          >
+            <span className="flex items-center gap-2">
+              {showExtras ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+              Named team &amp; auditor slots
+            </span>
+            <span className="text-xs font-normal text-muted-foreground">
+              {extrasFilled} of {extraSlots.length} filled · optional · Resource Manager only
+            </span>
+          </button>
+          {showExtras && (
+            <div className="grid grid-cols-1 gap-3 border-t p-3 sm:grid-cols-2">
+              {extraSlots.map(singleControl)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

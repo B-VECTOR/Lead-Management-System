@@ -16,7 +16,7 @@ Top-level keys
 - ``name`` / ``type`` — identity (``type = "BD"``; the graph is unified, so this
   one row serves Mining/Extension leads too — see ``engine.active_workflow``).
 - ``stage_sequence`` — the main linear stage order (``BD → 2HR → SnT → IM →
-  Closure``). Parallel stages (``M`` mining, ``E0`` extension) are deliberately
+  Closure``). Parallel stages (``M`` mining, ``E1`` extension) are deliberately
   **not** listed; they never auto-close a prior stage nor get auto-closed in R3.
 - ``flows`` — per ``flow_of_tasks`` code (plus the ``EXTENSION`` lead-type):
   ``{entry: [task_no…], skip: [task_no…], edges: {from_no: [to_no…]}}``.
@@ -28,7 +28,7 @@ Top-level keys
 Per-task keys
 -------------
 - ``task_no`` int, ``name`` str, ``stage`` (a ``LeadStage`` code: ``BD``/``2HR``/
-  ``SnT``/``IM``/``M``/``E0``/``Closure``) — the engine ``ensure_stage``s it and
+  ``SnT``/``IM``/``M``/``E1``/``Closure``) — the engine ``ensure_stage``s it and
   links ``task.stage`` when the task opens.
 - ``assignee``: how the engine resolves ``Task.assigned_to`` on open —
   ``default_bd_person`` (the lead's owner), ``execution_red`` (the Red the
@@ -46,10 +46,20 @@ Per-task keys
 - ``is_allocation_task`` / ``allocation_slots`` / ``manpower_source`` (R5): the
   append-only ``resource_allocation`` slot model. ``allocation_slots`` lists
   which ``ResourceAllocation.Slot`` codes this task manages — team tasks
-  (3/10/17/24) manage ``execution_red``/``execution_brown``/``white``; auditor
-  tasks (18/25) manage ``auditor_1``/``auditor_2``. ``manpower_source`` (team
+  (3/10/17/24) manage ``execution_red``/``execution_brown``/``white`` **plus the
+  ten ``project_member_*`` slots** (R12); auditor tasks (18/25) manage
+  ``auditor_1``–``auditor_4`` (R12). The ``project_member_*``/``auditor_3``/
+  ``auditor_4`` extras are Resource-Manager-only and optional — see
+  ``resources.visible_slots`` / ``slot_requirements``. ``manpower_source`` (team
   tasks only) points at the upstream task/field-keys the Brown/White headcount
   is read from (§7, ``resources.slot_requirements``).
+- ``auto_close_when_staffed`` (R12, Task 18 only): an allocation task carrying
+  this flag **completes itself the moment it opens** if its mandatory slots are
+  already filled — the Resource Manager may allocate the auditors in advance
+  (while the task is still trigger-``pending``), and Task 18 then never lands in
+  anyone's queue. Data, not a task-number check in the engine
+  (``resources.auto_close_if_staffed``). Deliberately not set on Task 25, whose
+  close opens Task 26 (see PLAN.md DD-R12-3).
 - ``is_finance_gate`` (7/15/28) + ``reopen_on_no`` (data pointer to the preceding
   task): a "No" answer closes the gate with a mandatory ``remark`` and re-opens
   the preceding task (R4, §5.10). ``completes_lead`` (Task 28) flips the lead to
@@ -90,7 +100,7 @@ Per-task keys
 **R6** adds mining spawn, the dynamic extension loop, per-cycle project_details,
 and short-close-as-an-action (see the ``on_close``/``spawn_lead``/
 ``grants_short_close``/``is_project_closure`` keys above) — the loop counter
-itself (``E0 → E1 → …``) is **not** data here; it lives in
+itself (``E1 → E2 → …``) is **not** data here; it lives in
 ``projects.ensure_extension_stage``, resolved from existing ``LeadStage`` rows
 rather than the workflow JSON, since a task's ``stage`` value can't express "one
 more than however many loops have run so far."
@@ -100,6 +110,19 @@ more than however many loops have run so far."
 def _cl(*pairs):
     """`("1.1", "Label"), ...` -> checklist item dicts."""
     return [{"key": k, "label": v} for k, v in pairs]
+
+
+# The two ``allocation_slots`` sets (R12). Kept as constants so the six
+# allocation tasks can't drift apart; the values must match
+# ``ResourceAllocation.Slot`` (not imported — this module is plain data, loaded
+# before the app registry in some paths).
+_TEAM_ALLOCATION_SLOTS = [
+    "execution_red",
+    "execution_brown",
+    "white",
+] + [f"project_member_{n}" for n in range(1, 11)]
+
+_AUDITOR_ALLOCATION_SLOTS = ["auditor_1", "auditor_2", "auditor_3", "auditor_4"]
 
 
 # Reused column set for the "Name | Role" stakeholder row-groups.
@@ -230,7 +253,7 @@ BD_WORKFLOW = {
                 },
             ],
             "is_allocation_task": True,
-            "allocation_slots": ["execution_red", "execution_brown", "white"],
+            "allocation_slots": list(_TEAM_ALLOCATION_SLOTS),
             "manpower_source": {"task_no": 2, "fields": ["manpower_brown", "manpower_white"]},
             "checklist": [],
             "extra_fields": [],
@@ -362,7 +385,7 @@ BD_WORKFLOW = {
             "stage": "SnT",
             "assignee": "resource_manager",
             "is_allocation_task": True,
-            "allocation_slots": ["execution_red", "execution_brown", "white"],
+            "allocation_slots": list(_TEAM_ALLOCATION_SLOTS),
             "manpower_source": {"task_no": 9, "fields": ["manpower_brown", "manpower_white"]},
             "checklist": [],
             "extra_fields": [],
@@ -501,7 +524,7 @@ BD_WORKFLOW = {
             "stage": "IM",
             "assignee": "resource_manager",
             "is_allocation_task": True,
-            "allocation_slots": ["execution_red", "execution_brown", "white"],
+            "allocation_slots": list(_TEAM_ALLOCATION_SLOTS),
             "manpower_source": {"task_no": 16, "fields": ["manpower_brown", "manpower_white"]},
             "checklist": [],
             "extra_fields": [],
@@ -518,7 +541,13 @@ BD_WORKFLOW = {
             "assignee": "resource_manager",
             "is_hanging_task": True,
             "is_allocation_task": True,
-            "allocation_slots": ["auditor_1", "auditor_2"],
+            "allocation_slots": list(_AUDITOR_ALLOCATION_SLOTS),
+            # R12: the Resource Manager may staff the auditors *in advance* —
+            # while this task is still trigger-``pending``. If both mandatory
+            # auditor slots are filled by the time the trigger fires, the task
+            # completes itself on open instead of queueing (it routes to nothing,
+            # so nothing else is set in motion).
+            "auto_close_when_staffed": True,
             "checklist": [],
             "extra_fields": [],
             "trigger": {"reference_task_no": 16, "reference_field_key": "planned_start_date"},
@@ -587,12 +616,12 @@ BD_WORKFLOW = {
         {
             "task_no": 22,
             "name": "Extension Proposal",
-            # R6: this literal "E0" is a placeholder — the engine resolves the
-            # *actual* extension-loop stage dynamically (E0 → E1 → …, entry
+            # R6: this literal "E1" is a placeholder — the engine resolves the
+            # *actual* extension-loop stage dynamically (E1 → E2 → …, entry
             # point or loop-back), see ``engine._attach_stage``. Tasks 23–26
             # below carry the same placeholder and always reuse whichever
             # stage Task 22 just resolved.
-            "stage": "E0",
+            "stage": "E1",
             # D5: either Default BD Person or Execution Red may work it; opener =
             # Default BD (the co-assignee permission is a later-phase concern).
             "assignee": "default_bd_person",
@@ -617,7 +646,7 @@ BD_WORKFLOW = {
         {
             "task_no": 23,
             "name": "Extension Detail",
-            "stage": "E0",
+            "stage": "E1",
             "assignee": "execution_red",
             "checklist": _cl(
                 ("23.1", "Addendum Agreement"),
@@ -641,10 +670,10 @@ BD_WORKFLOW = {
         {
             "task_no": 24,
             "name": "Project Extension Team Allocation",
-            "stage": "E0",
+            "stage": "E1",
             "assignee": "resource_manager",
             "is_allocation_task": True,
-            "allocation_slots": ["execution_red", "execution_brown", "white"],
+            "allocation_slots": list(_TEAM_ALLOCATION_SLOTS),
             "manpower_source": {"task_no": 23, "fields": ["manpower_brown", "manpower_white"]},
             "checklist": [],
             "extra_fields": [],
@@ -658,12 +687,12 @@ BD_WORKFLOW = {
         {
             "task_no": 25,
             "name": "Project Extension Auditor Allocation",
-            "stage": "E0",
+            "stage": "E1",
             # R5: real auditor allocation slots, like Task 18 but not hanging (DD7)
             # — sequential (24 → 25 → 26), not opened in parallel with 24.
             "assignee": "resource_manager",
             "is_allocation_task": True,
-            "allocation_slots": ["auditor_1", "auditor_2"],
+            "allocation_slots": list(_AUDITOR_ALLOCATION_SLOTS),
             "checklist": [],
             "extra_fields": [],
             "routing": [{"open": [26]}],
@@ -671,7 +700,7 @@ BD_WORKFLOW = {
         {
             "task_no": 26,
             "name": "Extension Implementation",
-            "stage": "E0",
+            "stage": "E1",
             "assignee": "execution_red",
             "checklist": _IMPLEMENTATION_CHECKLIST,
             "extra_fields": _implementation_fields("Ext."),

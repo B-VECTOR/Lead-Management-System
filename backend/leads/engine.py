@@ -46,8 +46,8 @@ from .models import (
     WorkflowTriggerConfig,
 )
 
-# Extension-loop stage codes (E0, E1, …) — a task's literal ``stage`` value in
-# the workflow JSON ("E0" on Tasks 22–26) is a placeholder; the *actual* stage
+# Extension-loop stage codes (E1, E2, …) — a task's literal ``stage`` value in
+# the workflow JSON ("E1" on Tasks 22–26) is a placeholder; the *actual* stage
 # for a given pass is resolved dynamically (R6, §4.3.1) — see ``_attach_stage``.
 _EXTENSION_STAGE_RE = re.compile(r"^E\d+$")
 
@@ -145,10 +145,10 @@ def _attach_stage(lead, tdef):
     None. Idempotent via :func:`projects.ensure_stage`, so opening several tasks
     of one stage reuses a single stage row.
 
-    R6: Tasks 22–26's ``stage`` is a literal ``"E0"`` in the JSON, but the
+    R6: Tasks 22–26's ``stage`` is a literal ``"E1"`` in the JSON, but the
     *actual* extension-loop stage for a given pass is resolved dynamically via
     :func:`projects.ensure_extension_stage` — Task 22 reuses the loop's
-    currently-open stage (or starts the next one, ``E0``/``E1``/…, the first
+    currently-open stage (or starts the next one, ``E1``/``E2``/…, the first
     time or after a loop-back), Tasks 23–26 always reuse whichever one Task 22
     just resolved. This keeps the loop counter (§4.3.1) out of workflow data.
     """
@@ -199,8 +199,12 @@ def open_task(lead, tdef, *, status=Task.Status.OPEN):
             # anyone is notified, so the task is never presented with an empty
             # mandatory Red slot.
             resources.carry_forward_red(task, tdef)
-            resources.notify_allocation_task_open(task)
         _apply_on_open(task, tdef)
+        if tdef.get("is_allocation_task"):
+            # R12: an ``auto_close_when_staffed`` task (18) that opens already
+            # staffed closes itself — and is not announced as work waiting.
+            if resources.auto_close_if_staffed(task, tdef) is None:
+                resources.notify_allocation_task_open(task)
     return task
 
 
@@ -223,10 +227,14 @@ def open_pending_task(task):
     task.save(update_fields=["status", "task_start_dt", "stage", "project_id", "assigned_to", "updated_at"])
     if tdef.get("is_allocation_task"):
         resources.carry_forward_red(task, tdef)  # R9 (DD-R9-4)
-        resources.notify_allocation_task_open(task)
     _apply_on_open(task, tdef)
     if wf is not None:
         _reconcile_stages(task.lead, wf)
+    if tdef.get("is_allocation_task"):
+        # R12: staffed in advance (the whole point of the pending window) → the
+        # trigger firing closes the task rather than queueing it.
+        if resources.auto_close_if_staffed(task, tdef) is None:
+            resources.notify_allocation_task_open(task)
     return task
 
 

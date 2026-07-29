@@ -15,7 +15,7 @@ This is a structural rework, not an increment. The major changes:
 - **Stage is now a first-class, tracked entity** (`lead_stage`). Every task belongs to a stage (BD / 2HR / SnT / Implementation / Extension / Mining / Closure). **A lead can have two stages open at once** — Mining and Extension run in **parallel**.
 - **New lead fields:** `flow_of_tasks` (which stages run) and `type_of_project` (label only). `lead_type` is now **BD / Extension / Mining**.
 - ~~**`country` is removed** from the lead and from Project ID generation.~~ **Superseded 2026-07-28:** `country` is **back on the lead** and is the Project ID's leading segment (§13). **`domain` is now multi-select** (M2M into `areas`) — *note: built single-select per decision D2.*
-- **Project ID redesigned:** generated at **lead creation** as a stable base, with the **current stage as a derived display suffix** (`-BD`, `-2HR`, `-SnT`, `-IM`, `-E0/-E1…`, `-M`). ~~Base `{AreaCode}{YY}{Seq}`, no country/industry code.~~ **Composition finalized by the user 2026-07-28:** `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}` — e.g. `IN-PHNPDCFF26001` — i.e. Country Code, Industry, Area, Type of Project, Year, auto-generated number, stage of intervention (§13).
+- **Project ID redesigned:** generated at **lead creation** as a stable base, with the **current stage as a derived display suffix** (`-BD`, `-2HR`, `-SnT`, `-IM`, `-E1/-E2…`, `-M`). ~~Base `{AreaCode}{YY}{Seq}`, no country/industry code.~~ **Composition finalized by the user 2026-07-28:** `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}` — e.g. `IN-PHNPDCFF26001` — i.e. Country Code, Industry, Area, Type of Project, Year, auto-generated number, stage of intervention (§13).
 - **Finance (Abhay) is a live role** with three payment-approval gate tasks (7, 15, 28). A "No" at a gate **re-opens the preceding task** — a closed task can be re-opened, and task history retains every close→re-open→close cycle.
 - **Resource allocation redesigned as append-only history** — one row per resource per slot, with allocate/release dates and reassignment linkage, to power the resource dashboard (who worked which slot, for how long, including reassignments). Auditor allocation is **split into its own tasks** (18, 25); Task 18 is a **hanging (non-blocking) task**.
 - **Conditional 2HR allocation:** Task 3 opens only if Task 2's "manpower support required?" = Yes; otherwise the Default BD Person carries the study.
@@ -210,13 +210,13 @@ The stage history — drives the dashboard and the Project ID suffix. **Multiple
 | id | auto (PK) | |
 | lead_id | FK → `lead` | |
 | project_id | text | **stored display snapshot** for this stage (`base_code` + this stage's suffix, e.g. `NPD26001-IM`), stamped when the row is created (decision 2026-07-27). Display only — **never a join key** (§13). |
-| stage | dropdown | `BD`, `2HR`, `SnT`, `IM` (Implementation), `E0`/`E1`/`E2`… (Extension loops), `M` (Mining), `Closure` |
+| stage | dropdown | `BD`, `2HR`, `SnT`, `IM` (Implementation), `E1`/`E2`/`E3`… (Extension loops), `M` (Mining), `Closure` |
 | stage_start_dt | date/timestamp | when the first task of this stage opens |
 | stage_end_dt | date/timestamp, nullable | when the stage's tasks all close/skip |
 | status | dropdown | `in_progress` / `closed` (`skipped` if the flow routes around the whole stage) |
 | + audit columns | | |
 
-The extension loop counter is encoded in the stage value: the **first** extension is `E0`, then `E1`, `E2`… (matches the Project ID suffix, §13).
+The extension loop counter is encoded in the stage value: the **first** extension is `E1`, then `E2`, `E3`… — numbering starts at 1, not 0 (user decision 2026-07-29) — and matches the Project ID suffix (§13).
 
 ### 4.5 `task_details`
 
@@ -254,7 +254,7 @@ This replaces the wide single-row allocation table. **One row per resource, per 
 | task_id | FK → `task_details` | the allocation task that created this row (3 / 10 / 17 / 18 / 24 / 25) |
 | stage_id | FK → `lead_stage` | which stage the resource is working |
 | lead_id | FK → `lead` | denormalized for reporting |
-| slot | dropdown | `execution_red`, `execution_brown`, `white`, `auditor_1`, `auditor_2` |
+| slot | dropdown | `execution_red`, `execution_brown`, `white`, `auditor_1`–`auditor_4`, `project_member_1`–`project_member_10` (17 values). The **named extras** — `auditor_3`/`auditor_4` and every `project_member_*` — are **Resource-Manager-only** (see the visibility note below) and always optional (`man_power_required` 0). Every slot except `white` holds at most one `allocated` row at a time. |
 | user_id | FK → users, nullable | the allocated person; **NULL when `is_tbd` = true** |
 | names | text | denormalized display-name snapshot of the occupant (`user.name`, or `TBD`/empty) — for dashboards/reports without a join (decision 2026-07-27); the FK stays the source of truth |
 | is_tbd | boolean, default false | **White** may be allocated as TBD (to-be-decided) |
@@ -281,6 +281,18 @@ This replaces the wide single-row allocation table. **One row per resource, per 
 
 **Extension prefill:** when an Extension loop's team allocation opens (Task 24), its slots are prefilled from the previous cycle's allocations (Implementation for the first extension, the previous Extension loop afterwards) — the Resource Manager only adjusts what changed (each change is still an append: release old + allocate new).
 
+**Slot visibility (R12).** Which slots an allocation task exposes is filtered per viewer, server-side (`resources.visible_slots`, enforced again in `allocate`/`reassign`/`release`):
+
+| Viewer | Slots |
+|---|---|
+| Resource Manager | every slot the task manages, incl. `auditor_3`/`auditor_4` and `project_member_1`–`10` |
+| The lead's Default BD Person (also allowed to staff, §7.5) | `execution_red`, `execution_brown`, `white` only |
+| Anyone else who can view the lead (its Resources tab, read-only) | `execution_red`, `execution_brown`, `white` only — extra-slot rows are filtered out of `/api/leads/<id>/resource-allocations/` |
+
+**Advance allocation + auto-close (R12).** A trigger-gated allocation task is staffable while still `pending`, from the Resources queue (`?status=open,pending`). A task whose workflow def carries **`auto_close_when_staffed`** (Task 18 only — it routes to nothing) **completes itself the moment it opens** if its mandatory slots (`execution_red`, `auditor_1`, `auditor_2`) are already filled: `resources.auto_close_if_staffed` closes it, writes an activity-log row, and the "allocation needed" notification is suppressed. Not staffed in advance → it opens and waits normally.
+
+**Post-close changes (R12).** Submitting an allocation task does not freeze its slots. `permissions.can_work_allocation_task` keeps allocate/reassign/release open to the **Resource Manager** on a `closed` task (the allocation is still live until released — this is the mid-engagement person swap, and an `execution_red` swap still cascades onto that Red's open tasks); the Default BD Person's rights end at `open`/`pending`/`hold`, and a `skipped`/`dropped` task is closed to everyone.
+
 ### 4.8 `project_details` (per-cycle commercials)
 
 The commercial record captured for the project, one row per implementation/extension/mining cycle (keyed to the cycle's stage). Detailed fee-cap / tranche / invoice-block capture lives in task field data (§4.6); this table holds the headline commercials for reporting and the Project Closure screen.
@@ -289,8 +301,8 @@ The commercial record captured for the project, one row per implementation/exten
 |---|---|---|
 | id | auto (PK) | |
 | lead_id | FK → `lead` | |
-| stage_id | FK → `lead_stage` | the cycle this commercial record belongs to (`IM`, `E0`/`E1`…, `M`) |
-| project_id | text | the derived display Project ID for this cycle at the time (e.g. `NPD26001-IM`, `NPD26001-E0`) — stored for the closure screen/history |
+| stage_id | FK → `lead_stage` | the cycle this commercial record belongs to (`IM`, `E1`/`E2`…, `M`) |
+| project_id | text | the derived display Project ID for this cycle at the time (e.g. `NPD26001-IM`, `NPD26001-E1`) — stored for the closure screen/history |
 | project | text | the cycle's **stage code** (`IM` / `E{n}` / `M`), a denormalized copy of `stage.stage` so reports read the cycle type without a join (decision 2026-07-27) |
 | fixed_fee | numeric (≥ 0) | headline fixed fee for the cycle |
 | variable_fee | numeric (≥ 0) | headline variable fee for the cycle |
@@ -324,36 +336,36 @@ Authoritative sequence, transcribed from `lms_updated_wf.csv`. Encode as the `wo
 |---|---|---|---|---|---|---|
 | 1 | Introduction and First Meeting | Default BD Person | BD | 1.1 Vector's Intro Email · 1.2 Intro presentation to decision maker | Key stakeholder contact (Name·Role ×3 + add more); **Is 2HR study agreed?** If Yes → open Task 2 | First task; opens on `assigned_to` set (§4.3.1). Skipped when Flow = Direct Proposal. |
 | 2 | 2HR Study Agreement | Default BD Person | BD | 2.1 Area of work / objective agreed | Expected start date of next stage; **Is manpower support required from the resource-allocation team?** If **Yes** → capture Manpower (PM + additional; Brown = number, White = number) and **open Task 3 against Shailesh**. If **No** → skip Task 3. | Conditional allocation branch. |
-| 3 | 2Hr Study & Presentation Team Allocation | Shailesh and/or Default BD Person | 2HR | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**) | Opens per trigger-config (X weeks before Task 2's expected start). **Only opens if Task 2 manpower = Yes.** Creates `resource_allocation` rows (2HR). |
+| 3 | 2Hr Study & Presentation Team Allocation | Shailesh and/or Default BD Person | 2HR | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**); Project Member 1–10 *(RM-only, optional)* | Opens per trigger-config (X weeks before Task 2's expected start). **Only opens if Task 2 manpower = Yes.** Creates `resource_allocation` rows (2HR). |
 | 4 | 2HR Study Initiation | Default BD Person | 2HR | 4.1 Email sent to client to initiate study | — | |
 | 5 | 2Hr Study & Presentation | Execution Red (from Task 3) — **or Default BD Person if Task 3 skipped** | 2HR | 5.1 Study Plan · 5.2 NDA · 5.3 Study Interactions · 5.4 Data Received · 5.5 2Hr Presentation date confirmed · 5.6 2Hr Presentation done | Date of 2Hr presentation (linked to 5.5); Key stakeholders mapped (Name·Role ×3 + add more) | Resource occupancy: 2HR. *Note: mail to accounts on close — deferred.* |
 | 6 | 2Hr Study Reimbursement | Execution Red (from Task 3) / Default BD | 2HR | 6.1 Reimbursement Expenses Invoiced · 6.2 Reimbursement Expenses Received | Delay reasons if any; Expected date of receipt | Opens after 5.6. |
 | 7 | 2Hr Study Reimbursement — **Accounts Approval** | **Accounts (Finance/Abhay)** | 2HR | — | **Payment received against all invoices?** Yes → close. No → close + add remark + **re-open Task 6**. | Finance gate (§5.10). |
 | 8 | Solution Blueprint Confirmation | Default BD Person | 2HR | — | **(a) Go-ahead received from client?** No → **status = Dropped**, no further tasks, **Tasks 6 & 7 stay open**. Yes → ask (b). **(b) Is Solution Blueprint required?** Yes → Task 9. No → close & **open Task 16** (Project Proposal Submission). | Opens after 5.6. Drop + SnT branch. |
 | 9 | Solution Blueprint Proposal | Default BD Person | SnT | 9.1 Proposal Submitted · 9.2 Proposal terms agreed | Fee for engagement (allow zero); Manpower (Brown, White); Expected start date of next stage; Number of tranches of payment | Opens after 8(b) = Yes. |
-| 10 | Solution Blueprint Team Allocation | Shailesh + Default BD Person | SnT | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**) | Opens per trigger-config (X days before Task 9's expected start). Creates `resource_allocation` (SnT). *Mail to accounts on close — deferred.* |
+| 10 | Solution Blueprint Team Allocation | Shailesh + Default BD Person | SnT | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**); Project Member 1–10 *(RM-only, optional)* | Opens per trigger-config (X days before Task 9's expected start). Creates `resource_allocation` (SnT). *Mail to accounts on close — deferred.* |
 | 11 | Solution Blueprint Study Initiation | Default BD Person | SnT | 11.1 Email sent to initiate Solution Blueprint study | — | |
 | 12 | Solution Blueprint | Execution Red (from Task 10) | SnT | 12.1 Engagement Start · 12.2 Initial Invoice raised · 12.3 Data Receipt · 12.4 Presentation Dates locked · 12.5 SnT Workshop Done · 12.6 Completion Invoice | Presentation date (linked 12.4); Invoices Raised block (Invoice No / Value / Date ×3 + add more); **Re-presentation required?** Yes → Task 13, else ask; **Has project moved to the next stage?** Yes → open **Task 14 & Task 16**; No → open **Task 27**. | Resource occupancy: SnT. Multi-condition branch. |
 | 13 | Solution Blueprint Repeat Presentation | Execution Red (same block as Task 12, default) | SnT | 13.1 Presentation Dates locked · 13.2 SnT Workshop Done | Presentation date (linked 12.1); **Is re-presentation required?** Yes → Task 13 (loops), else ask; **Has project moved to next stage?** Yes → Task 14 & Task 16; No → Task 27. | Loops on itself. |
 | 14 | Solution Blueprint Payment | Execution Red (same block, default) | SnT | 14.1 Fixed fee invoices received · 14.2 Reimbursement Expenses Invoiced · 14.3 Reimbursement Expenses Received | Delay reasons if any; Expected date of receipt | |
 | 15 | Solution Blueprint Payment — **Accounts Approval** | **Accounts (Finance/Abhay)** | SnT | — | **Payment received against all invoices?** Yes → close. No → close + remark + **re-open Task 14**. | Finance gate. |
 | 16 | Project Proposal Submission | Default BD Person | SnT | 16.1 Proposal Submission · 16.2 Terms agreed | Planned Engagement Start Date; Period (months); Planned Engagement End Date (auto = start + period); Fixed Fee (blocks generated per period-month, capturing fee + manpower); Total Variable Fee Cap; Variable Milestone Fee Cap; Variable Performance Fee Cap; Manpower (Brown, White) | Entry point for Flow = Direct Proposal / 2hr→Proposal (via Task 8 No). |
-| 17 | Project Team Allocation | Shailesh + Default BD Person | Implementation | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**) | Opens per trigger-config (X days before Task 16's Planned Engagement Start Date). Creates `resource_allocation` (Implementation). *Add to Sutradhar — deferred.* |
-| 18 | Project Auditor Allocation | Shailesh + Default BD Person | Implementation | *allocation task* | Auditor 1; Auditor 2 | **Hanging task** — non-blocking; can be completed in parallel and does not hold up the sequence. Opens with Task 17's trigger. *Add to Sutradhar — deferred.* |
+| 17 | Project Team Allocation | Shailesh + Default BD Person | Implementation | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**); Project Member 1–10 *(RM-only, optional)* | Opens per trigger-config (X days before Task 16's Planned Engagement Start Date). Creates `resource_allocation` (Implementation). *Add to Sutradhar — deferred.* |
+| 18 | Project Auditor Allocation | Shailesh + Default BD Person | Implementation | *allocation task* | Auditor 1; Auditor 2; Auditor 3; Auditor 4 *(3–4 RM-only, optional)* | **Hanging task** — non-blocking; can be completed in parallel and does not hold up the sequence. Opens with Task 17's trigger. **`auto_close_when_staffed`:** if both auditors were already allocated in advance (while pending), it closes itself the moment it opens. *Add to Sutradhar — deferred.* |
 | 19 | Project Initiation | Default BD Person | Implementation | 19.1 Email sent to initiate Project | — | |
 | 20 | Implementation | Execution Red (from Task 17) | Implementation | 20.1 Handover & Engagement Start · 20.2 PO from Customer · 20.3 First Fixed fee invoice raised · 20.4 Agreement/Contract · 20.5 Variable Parameter Finalisation · 20.6 Variable Baseline Sign-off · 20.7 Addendum Agreement · 20.8 Expected variable fee over eligible period submitted | Actual Engagement Start Date; Duration (months) *(prefilled & editable from Task 16)*; Modified Planned Engagement End Date (auto = actual start + duration); Fixed Fee + Variable Fee Caps (Total/Milestone/Performance) *(prefilled & editable from Task 16)*; Actual Fixed fee invoice date; Variable Fee Start Date | Resource occupancy: project (shown until Task 27). **On close:** create the `project_details` cycle row (stage `IM`) and enable the downstream Mining (Task 21) and Extension (Task 22) triggers. |
 | 21 | Exploit Mining Opportunities | Default BD Person | BD (Mining origin) | 21.1 Visit to client location · 21.2 Discussion with key stakeholders · 21.3 Area for improvement identified · 21.4 Pitch Proposal to Client? | **Is client go-ahead received for a new project?** Yes → **spawn a new lead row (same `base_code`, `parent_lead_id` = this lead), open a `-M` Mining cycle, and start a fresh BD flow from Task 1**. No → close task. | Opens X months after Task 20's engagement start (Y months if Task 20 duration < 6 months). Mining stage is `M` until 2HR starts. **Runs in parallel with any Extension.** |
 | 22 | Extension Proposal | Default BD Person / Execution Red | Extension | 22.1 Discussion with client stakeholders · 22.2 Identify area of extension · 22.3 Solution design & preparation · 22.4 Pitch Extension proposal | **Extension approved?** Yes → Task 23. No → Task 27. | Opens X months before the engagement end date from **Task 20 or Task 26** (extension-of-extension). Entry point for Type = Extension. |
 | 23 | Extension Detail | Execution Red | Extension | 23.1 Addendum Agreement · 23.2 Expected variable fee over eligible period submitted | Extended Engagement Start Date; Period (months); Planned Ext. Engagement End Date (auto); Fixed Fee (blocks per period-month) — *if a resource is engaged beyond the planned end date, allow **zero** fee to keep them engaged*; Total/Milestone/Performance Variable Fee Cap; Manpower (Brown, White) | Opens if Task 22 = Yes. |
-| 24 | Project Extension Team Allocation | Shailesh + Default BD Person | Extension | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**) | Creates `resource_allocation` (Extension), prefilled from the previous cycle. |
-| 25 | Project Extension Auditor Allocation | Shailesh + Default BD Person | Extension | *allocation task* | Auditor 1; Auditor 2 | Auditor allocation for the extension. |
-| 26 | Extension Implementation | Execution Red (from Task 24) | Extension | 26.1–26.8 (same set as Task 20) | Actual Ext. Engagement Start Date; Duration (months) *(prefilled & editable)*; Modified Planned Ext. Engagement End Date (auto); Fixed Fee + Variable Fee Caps *(prefilled & editable)*; Actual Fixed fee invoice date; Variable Fee Start Date | Opens per the extended engagement start date (Task 23). Resource occupancy: project (until Task 27). **On open, give Shailesh short-close access** (§9.2). **On close:** create the next `project_details` cycle row (stage `E{n}`); the extension loop counter increments (`E0 → E1 → …`); then loops back to Task 22 for a possible further extension. |
+| 24 | Project Extension Team Allocation | Shailesh + Default BD Person | Extension | *allocation task* | Execution Red; Execution Brown; White (**TBD allowed**); Project Member 1–10 *(RM-only, optional)* | Creates `resource_allocation` (Extension), prefilled from the previous cycle. |
+| 25 | Project Extension Auditor Allocation | Shailesh + Default BD Person | Extension | *allocation task* | Auditor 1; Auditor 2; Auditor 3; Auditor 4 *(3–4 RM-only, optional)* | Auditor allocation for the extension. |
+| 26 | Extension Implementation | Execution Red (from Task 24) | Extension | 26.1–26.8 (same set as Task 20) | Actual Ext. Engagement Start Date; Duration (months) *(prefilled & editable)*; Modified Planned Ext. Engagement End Date (auto); Fixed Fee + Variable Fee Caps *(prefilled & editable)*; Actual Fixed fee invoice date; Variable Fee Start Date | Opens per the extended engagement start date (Task 23). Resource occupancy: project (until Task 27). **On open, give Shailesh short-close access** (§9.2). **On close:** create the next `project_details` cycle row (stage `E{n}`); the extension loop counter increments (`E1 → E2 → …`); then loops back to Task 22 for a possible further extension. |
 | 27 | Project Closure | Execution Red | Closure | 27.1 All fixed fee received · 27.2 All variable fee received · 27.3 All reimbursements received | Final closed (checkbox = Yes, mandatory) | Opens when **any** of: engagement end date (Task 20) reached; Task 22 "Extension approved = No"; Shailesh short-closes; Task 12/13 "moved to next stage = No". **On open: release the currently allocated resources** (§4.7). Closing this **alone does not complete the lead** — Task 28 must also close. |
 | 28 | Project Closure — **Accounts Approval** | **Accounts (Finance/Abhay)** | Closure | — | **Payment received against all invoices?** Yes → close. No → close + remark + **re-open Task 27**. | Finance gate. **When both Task 27 and Task 28 are closed → lead & cycle status = `Completed`.** |
 
 **Cross-cutting rules**
 - "Default BD Person" = `lead.assigned_to`.
-- Allocation tasks (3, 10, 17, 18, 24, 25) have no checklist — status only until the Resource Manager (with the BD co-assignee) submits the allocation, which closes the task and opens the next, assigning it to the selected Execution Red.
+- Allocation tasks (3, 10, 17, 18, 24, 25) have no checklist — status only until the Resource Manager (with the BD co-assignee) submits the allocation, which closes the task and opens the next, assigning it to the selected Execution Red. Task 18 is the one exception: staffed in advance, it closes itself on opening (`auto_close_when_staffed`, §4.7).
 - Manpower captured upstream (Tasks 2, 9, 16, 23) is the reference count for the over/under-allocation indicators.
 - All numeric fields ≥ 0; all date fields no-past-date (§3).
 - Finance gates (7, 15, 28) can **re-open** their preceding task on a "No" answer (§5.10).
@@ -398,10 +410,11 @@ Lead-level hold holds all open tasks; unholding restores them. Held tasks are no
 ## 7. Resource Allocation Flow (Detail)
 
 1. An allocation task (3 / 10 / 17 / 18 / 24 / 25) opens per trigger-config (§4.12). Task 3 opens **only if** Task 2 manpower = Yes.
-2. The Resource Manager (Shailesh) — who can see the lead-flow screen and where allocation is needed — opens the allocation via a CTA/popup, alongside the Default BD co-assignee.
-3. The form shows the lead's details (incl. the upstream manpower figure) above the slots. Filling a slot inserts an `allocated` `resource_allocation` row per resource (White may be `is_tbd`).
-4. On submit, the allocation task closes and the next task opens, assigned to the chosen Execution Red.
-5. **Reassignment** = release the old row + insert a new one linked by `replaces_id`.
+2. The Resource Manager (Shailesh) works the allocation **inside the Resource module** — the queue at `/resources` lists every allocation task and expands in place into the slot grid (R12-1; the role has no Leads tab). The lead's Default BD co-assignee staffs the same task from the lead's own task stepper.
+3. The form shows the lead's details (incl. the upstream manpower figure) above the slots. Filling a slot inserts an `allocated` `resource_allocation` row per resource (White may be `is_tbd`). The named extras (Project Member 1–10, Auditor 3–4) render only for the Resource Manager, collapsed and optional.
+4. On submit, the allocation task closes and the next task opens, assigned to the chosen Execution Red. **Mandatory to submit:** `execution_red` on a team task, `auditor_1` + `auditor_2` on an auditor task; every other slot is optional.
+5. **Reassignment** = release the old row + insert a new one linked by `replaces_id`. Available to the Resource Manager **after** the task closes too, for as long as the rows are still `allocated` (R12-5).
+5a. **Advance allocation:** a task that is scheduled but not yet due (`pending`) can be staffed early. Task 18 additionally carries `auto_close_when_staffed`, so if both auditors are allocated before its date it closes itself on opening rather than queueing (R12-4).
 6. **Release**: 2HR/SnT resources release when their stage closes; Implementation/Extension resources release when **Task 27 opens**.
 7. Reporting screen: all rows with status (`allocated`/`released`), over-allocation (red) and under-allocation (amber) indicators, and — for the dashboard — days worked per resource per stage, derived from `allocated_on`/`released_on`, including reassignment chains.
 
@@ -415,7 +428,7 @@ Anyone who can view a lead may add a follow-up (lead Follow-up tab or the global
 ## 9. Resource Manager & Finance Screens
 
 ### 9.1 Resource Allocation
-List + edit as in §7, with the lead-detail/manpower context, status per row, and the over/under indicators. The Resource Manager reaches allocation from the lead-flow screen via a CTA that opens the allocation popup.
+List + edit as in §7, with the lead-detail/manpower context, status per row, and the over/under indicators. The Resource Manager works entirely inside this module (R12-1): the queue lists their allocation tasks — including ones **not yet due**, so auditors and teams can be staffed in advance — and each row expands into the slot grid and Submit. Companion screens: **Resource History** (days worked per resource, incl. reassignment chains) and **Project Closure** (§9.2).
 
 ### 9.2 Project Closure & Short-Close
 **List view:** one row per `project_details` cycle (§4.8) — implementation, each extension loop, and any mining cycle shown together, each with its Project ID, stage, commercials, and status.
@@ -491,12 +504,12 @@ IN  -  PH        NPD    CFF     26     001        -IM
 | 2HR | `-2HR` | `IN-PHNPDCFF26001-2HR` |
 | SnT | `-SnT` | `IN-PHNPDCFF26001-SnT` |
 | Implementation | `-IM` | `IN-PHNPDCFF26001-IM` |
-| Extension loop n (first = 0) | `-E{n}` | `IN-PHNPDCFF26001-E0`, `…-E1` |
+| Extension loop n (first = 1) | `-E{n}` | `IN-PHNPDCFF26001-E1`, `…-E2` |
 | Mining cycle | `-M` | `IN-PHNPDCFF26001-M` |
 | Mining cycle that extends | `-M-E{n}` | `IN-PHNPDCFF26001-M-E1` |
 
 - **Mining:** on Task 21 = Yes, a **new `lead` row** is created for the same `base_code` with `parent_lead_id` set and a `-M` marker; its Mining/`M` stage can run in parallel with the parent's Extension. A shared base does **not** consume a second sequence number.
-- **Extension loops:** the `-E{n}` counter increments each loop; the first extension is `-E0`.
+- **Extension loops:** the `-E{n}` counter increments each loop; the first extension is `-E1` (numbering starts at 1 — user decision 2026-07-29).
 - Because Mining and Extension can be open at once, the "current stage" for display is resolved from the lead's open `lead_stage` rows (the cycle being viewed); a single stored suffix cannot represent parallel stages, which is why the suffix is derived.
 
 ### 13.1 Generation triggers

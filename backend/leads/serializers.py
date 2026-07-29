@@ -408,6 +408,10 @@ class TaskSerializer(serializers.ModelSerializer):
     # occupies each, and cross-cycle prefill suggestions. None for a non-
     # allocation task.
     allocation = serializers.SerializerMethodField()
+    # R12-4: whether this allocation task completes itself the moment it opens
+    # already staffed (Task 18's ``auto_close_when_staffed``) — the UI says so on
+    # a still-pending task, since that's what makes allocating in advance final.
+    auto_closes_when_staffed = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -436,6 +440,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "can_staff",
             "scheduled_open",
             "allocation",
+            "auto_closes_when_staffed",
             "short_closed",
             "project_id",
             "task_start_dt",
@@ -514,9 +519,18 @@ class TaskSerializer(serializers.ModelSerializer):
             "reference_task_no": info["reference_task_no"],
         }
 
+    def get_auto_closes_when_staffed(self, obj):
+        tdef = self._task_def(obj)
+        return bool(tdef and tdef.get("auto_close_when_staffed"))
+
     def get_allocation(self, obj):
         tdef = self._task_def(obj)
-        ctx = resources.allocation_context(obj, tdef)
+        # R12: the slot list is viewer-scoped — the named extras (Auditors 3–4,
+        # Project Members 1–10) are the Resource Manager's alone.
+        request = self.context.get("request")
+        ctx = resources.allocation_context(
+            obj, tdef, viewer=request.user if request else None,
+        )
         if ctx is None:
             return None
         prefill_users = User.objects.in_bulk(list(ctx["prefill"].values()))

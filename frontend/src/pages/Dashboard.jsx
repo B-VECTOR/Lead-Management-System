@@ -137,7 +137,9 @@ function ResourceDashboard() {
   const { data: tasks = [], isLoading: tasksLoading } = useAllocationTasks()
   const { data: rows = [], isLoading: rowsLoading } = useResourceAllocations()
 
-  const awaiting = tasks.filter((t) => t.status === 'open' || t.status === 'hold')
+  // R12-4: `pending` counts as waiting too — a trigger-gated allocation task can
+  // be staffed in advance, which is the point of the pending window.
+  const awaiting = tasks.filter((t) => ['open', 'hold', 'pending'].includes(t.status))
   const staffed = rows.filter((r) => r.status === 'allocated')
 
   return (

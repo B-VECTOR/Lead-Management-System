@@ -210,11 +210,22 @@ def can_work_allocation_task(user, task):
     """Who may allocate/reassign/release/submit an allocation task's slots
     (D12, Tech Req §4.7 / PRD §5.7): the Resource Manager, or the lead's
     Default BD Person (``lead.assigned_to``) — either may complete it.
+
+    **R12-5 — the Resource Manager keeps the slots editable after the task
+    closes.** Staffing isn't a one-shot form: the allocation stays live until its
+    rows are released (D11), and swapping a person mid-engagement is the Resource
+    Manager's standing privilege (it cascades onto the Red's tasks — see
+    ``resources.reassign``). The Default BD Person's D12 rights stay limited to a
+    task still in play, and a ``skipped``/``dropped`` task is nobody's to staff.
     """
     if not user or not user.is_authenticated:
         return False
+    if task.status in (Task.Status.SKIPPED, Task.Status.DROPPED):
+        return False
     if RESOURCE_MANAGER in user_role_names(user):
         return True
+    if task.status not in (Task.Status.OPEN, Task.Status.PENDING, Task.Status.HOLD):
+        return False
     return task.lead.assigned_to_id == user.id
 
 
@@ -231,10 +242,11 @@ class AllocationActionPermission(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if RESOURCE_MANAGER in user_role_names(user):
-            return True
         task = view.get_task()
-        return task is not None and can_work_allocation_task(user, task)
+        if task is None:
+            # The user-picker endpoint carries no task — role alone decides.
+            return RESOURCE_MANAGER in user_role_names(user)
+        return can_work_allocation_task(user, task)
 
 
 class FinancePermission(BasePermission):

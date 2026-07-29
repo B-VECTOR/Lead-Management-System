@@ -73,7 +73,7 @@ const PRIORITY_STYLES = {
 }
 
 // Workflow stage (v4.0/v17.0, §4.4) — the stage each task belongs to; used to
-// group the task stepper. Extension loops (E0/E1/…) share one style.
+// group the task stepper. Extension loops (E1/E2/…) share one style.
 const STAGE_STYLES = {
   BD: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300',
   '2HR': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
@@ -88,7 +88,7 @@ const STAGE_LABELS = {
   IM: 'Implementation', M: 'Mining', Closure: 'Closure',
 }
 
-// Resolve the style/label for a stage code, treating E0/E1/… as Extension.
+// Resolve the style/label for a stage code, treating E1/E2/… as Extension.
 function stageKey(code) {
   return code && code.startsWith('E') && !STAGE_STYLES[code] ? 'Extension' : code
 }
@@ -183,7 +183,7 @@ export function PriorityBadge({ priority }) {
 }
 
 // Stage pill for the stepper / lead detail. Extension loops keep their exact
-// code (E0, E1…) as the label but share the Extension colour.
+// code (E1, E2…) as the label but share the Extension colour.
 export function StageBadge({ stage }) {
   if (!stage) return null
   const key = stageKey(stage)

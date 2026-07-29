@@ -45,6 +45,10 @@ from .models import LeadStage, Notification, ResourceAllocation, Task
 
 RESOURCE_MANAGER_GROUP = "resource_manager"
 
+# Where a Resource Manager's notifications land (R12-1): their own queue, which
+# now staffs the slots in place — not the lead page, which the role no longer has.
+RESOURCE_QUEUE_LINK = "/resources"
+
 
 def occupant_name(user, is_tbd):
     """Display name snapshot for the denormalized ``ResourceAllocation.names``
@@ -62,7 +66,7 @@ def occupant_name(user, is_tbd):
 # the fixed pair this business rule names, not workflow-editable task numbers.
 STAGE_CLOSE_RELEASE_STAGES = {LeadStage.TWO_HR, LeadStage.SNT}
 
-# Implementation + every Extension loop (E0, E1, …) release on Task 27 opening
+# Implementation + every Extension loop (E1, E2, …) release on Task 27 opening
 # instead (D11) — matched by stage code, not by a fixed list (the loop counter
 # is unbounded).
 _EXTENSION_STAGE_RE = re.compile(r"^E\d+$")
@@ -79,8 +83,9 @@ def _notify_resource_managers(task):
     (R9-5: it opens assigned to the lead's Default BD Person instead when Task 2
     answered "no manpower support required"), so the normal "notify the new
     assignee" path may never fire. Best-effort/additive: notify every active
-    Resource Manager — they work the queue at ``/resources``, which links into
-    the lead's task stepper where the slots are staffed.
+    Resource Manager — they work the queue at ``/resources``, which is where the
+    notification points (R12-1: staffing happens in that screen now, and a pure
+    Resource Manager no longer has access to a lead page).
     """
     User = get_user_model()
     lead = task.lead
@@ -93,7 +98,7 @@ def _notify_resource_managers(task):
             Notification.Type.TASK_OPENED,
             f"Resource allocation needed for “{lead.company_name} — {lead.project_name}” "
             f"({task.task_name}).",
-            events.lead_link(lead),
+            RESOURCE_QUEUE_LINK,
         )
 
 
@@ -147,6 +152,9 @@ def slot_requirements(lead, tdef):
     row exists. Execution Red / Auditor 1 / Auditor 2 are always exactly 1
     (fixed named slots); Execution Brown and White come from the upstream
     Brown/White manpower fields (Brown is capped at 1 by its own field schema).
+    The R12 extras (Auditors 3–4, Project Members 1–10) require **0** — they are
+    optional named slots, so leaving them empty is neither under-allocation nor
+    a submit blocker.
     """
     brown, white = _manpower_split(lead, tdef.get("manpower_source"))
     reqs = {}
@@ -155,9 +163,34 @@ def slot_requirements(lead, tdef):
             reqs[slot] = white
         elif slot == ResourceAllocation.Slot.EXECUTION_BROWN:
             reqs[slot] = brown
+        elif slot in ResourceAllocation.EXTENDED_SLOTS:
+            reqs[slot] = 0
         else:
             reqs[slot] = 1
     return reqs
+
+
+def is_resource_manager(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.groups.filter(name=RESOURCE_MANAGER_GROUP).exists()
+    )
+
+
+def visible_slots(user, tdef):
+    """The slots of ``tdef`` that ``user`` may see and fill (R12, decision 3).
+
+    The restored named extras (Auditors 3–4, Project Members 1–10) are the
+    **Resource Manager's** own working detail: the lead's Default BD Person keeps
+    D12 staffing rights but on Red/Brown/White only, and everyone else — the
+    lead's own people reading the Resources tab — sees just those three too.
+    Ordering follows the workflow def, so the form order is stable.
+    """
+    slots = tdef.get("allocation_slots", []) if tdef else []
+    if is_resource_manager(user):
+        return list(slots)
+    return [s for s in slots if s not in ResourceAllocation.EXTENDED_SLOTS]
 
 
 def occupants(task, slot):
@@ -203,33 +236,49 @@ def prefill_suggestions(task, tdef):
     return suggestions
 
 
-def allocation_context(task, tdef):
+def allocation_context(task, tdef, viewer=None):
     """The full allocation picture for one allocation-task instance, or ``None``.
 
     Feeds the Resources screen and the ``TaskSerializer.allocation`` field:
     which slots this task manages, how many of each are required, who
     currently occupies each, and cross-cycle prefill suggestions.
+
+    ``viewer`` (R12) restricts the slot list to what that user may see — the
+    named extras are Resource-Manager-only (:func:`visible_slots`). It defaults
+    to ``None``, which restricts rather than opens up (fail-closed: a caller with
+    no user in hand is not a Resource Manager).
     """
     if not tdef or not tdef.get("is_allocation_task"):
         return None
-    slots = tdef.get("allocation_slots", [])
+    slots = visible_slots(viewer, tdef)
+    allowed = set(slots)
     return {
         "slots": slots,
-        "required": slot_requirements(task.lead, tdef),
+        "required": {
+            s: n for s, n in slot_requirements(task.lead, tdef).items() if s in allowed
+        },
         "occupants": {slot: list(occupants(task, slot)) for slot in slots},
-        "prefill": prefill_suggestions(task, tdef),
+        "prefill": {
+            s: uid for s, uid in prefill_suggestions(task, tdef).items() if s in allowed
+        },
     }
 
 
 @transaction.atomic
-def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark=""):
+def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark="", actor=None):
     """First fill of a slot on ``task`` (§4.7). Raises ``ValidationError`` if the
-    slot doesn't belong to this task, is already occupied (single-occupancy
-    slots must go through :func:`reassign`), or the fill is invalid (TBD is
-    White-only; every other slot needs a user).
+    slot doesn't belong to this task, isn't one ``actor`` may fill, is already
+    occupied (single-occupancy slots must go through :func:`reassign`), or the
+    fill is invalid (TBD is White-only; every other slot needs a user).
     """
-    slots = tdef.get("allocation_slots", [])
+    slots = visible_slots(actor, tdef)
     if slot not in slots:
+        if slot in tdef.get("allocation_slots", []):
+            # It exists on the task but isn't this caller's to fill (R12) — the
+            # named extras belong to the Resource Manager.
+            raise serializers.ValidationError(
+                "Only the Resource Manager can allocate that slot."
+            )
         raise serializers.ValidationError("This task does not manage that slot.")
     if is_tbd and slot != ResourceAllocation.Slot.WHITE:
         raise serializers.ValidationError("Only White may be left TBD.")
@@ -264,6 +313,12 @@ def reassign(task, current, *, user=None, is_tbd=False, actor=None, remark=""):
     """
     if current.status != ResourceAllocation.Status.ALLOCATED:
         raise serializers.ValidationError("This allocation has already been released.")
+    # R12: the named extras are the Resource Manager's alone — to reassign as
+    # much as to fill.
+    if current.slot in ResourceAllocation.EXTENDED_SLOTS and not is_resource_manager(actor):
+        raise serializers.ValidationError(
+            "Only the Resource Manager can reassign that slot."
+        )
     if is_tbd and current.slot != ResourceAllocation.Slot.WHITE:
         raise serializers.ValidationError("Only White may be left TBD.")
     if not is_tbd and user is None:
@@ -334,9 +389,10 @@ def _reassign_execution_red_tasks(lead, old_red, new_red, actor):
 
 
 @transaction.atomic
-def release(row):
+def release(row, *, actor=None):
     """Free a slot with no replacement (e.g. one White too many). Raises if the
-    row is already released, or if it is the Execution Red.
+    row is already released, if it is the Execution Red, or if it is one of the
+    Resource-Manager-only named extras and ``actor`` isn't one (R12).
 
     R9 (DD-R9-9): the Execution Red is mandatory on every stage and drives the
     assignment of every ``execution_red`` task, so it can never be emptied — a
@@ -345,6 +401,10 @@ def release(row):
     """
     if row.status != ResourceAllocation.Status.ALLOCATED:
         raise serializers.ValidationError("This allocation has already been released.")
+    if row.slot in ResourceAllocation.EXTENDED_SLOTS and not is_resource_manager(actor):
+        raise serializers.ValidationError(
+            "Only the Resource Manager can release that slot."
+        )
     if row.slot == ResourceAllocation.Slot.EXECUTION_RED:
         raise serializers.ValidationError(
             "The Execution Red cannot be left empty — reassign it to a different "
@@ -437,17 +497,73 @@ def release_open_engagement_allocations(lead):
     ).update(status=ResourceAllocation.Status.RELEASED, released_on=timezone.now())
 
 
+# The slots an allocation task cannot be submitted (or auto-closed) without: the
+# Execution Red, because the successor task is assigned to whoever fills it, and
+# Auditors 1–2, carried over from their pre-R5 required text fields. Everything
+# else — Brown, the White pool, and the R12 named extras — is optional
+# (TBD/under-allocation are surfaced as indicators, not blockers).
+MANDATORY_SLOTS = frozenset({
+    ResourceAllocation.Slot.EXECUTION_RED,
+    ResourceAllocation.Slot.AUDITOR_1,
+    ResourceAllocation.Slot.AUDITOR_2,
+})
+
+
+def missing_mandatory_slots(task, tdef):
+    """The mandatory slots of ``tdef`` that ``task`` has nobody allocated to."""
+    return [
+        slot
+        for slot in tdef.get("allocation_slots", [])
+        if slot in MANDATORY_SLOTS and not occupants(task, slot).exists()
+    ]
+
+
+@transaction.atomic
+def auto_close_if_staffed(task, tdef, actor=None):
+    """Complete an ``auto_close_when_staffed`` allocation task that opened with
+    its mandatory slots already filled (R12) — else return ``None``.
+
+    This is what makes staffing *in advance* count: the Resource Manager can
+    allocate Task 18's auditors while it is still trigger-``pending``, and when
+    the trigger date arrives the task closes itself instead of sitting in a queue
+    as unfinished work. If the auditors were **not** pre-allocated it opens and
+    waits normally, so the same step is "complete or not" exactly according to
+    whether the allocation was done ahead of time.
+
+    Only tasks whose def carries the flag are eligible (Task 18 — it routes to
+    nothing, so an automatic close sets nothing else in motion).
+    """
+    from . import engine  # lazy: engine imports this module at load time
+
+    if not tdef.get("auto_close_when_staffed"):
+        return None
+    if task.status != Task.Status.OPEN:
+        return None
+    if missing_mandatory_slots(task, tdef):
+        return None
+    events.log_activity(
+        task.lead,
+        actor,
+        "resource",
+        f"{task.task_name} closed automatically — allocated in advance",
+    )
+    engine.complete_task(task, actor)
+    task.refresh_from_db()
+    return task
+
+
 @transaction.atomic
 def submit(task, tdef, user):
     """Resource Manager / Default BD Person (D12) submits a staffed allocation
     task (§7.5): validates the mandatory slots, then completes the task, which
     opens the next workflow task assigned to the selected Execution Red.
 
-    Mandatory: Execution Red (team tasks — the next task depends on it) and
-    both Auditor slots (auditor tasks — carried over from their pre-R5 required
-    text fields). Execution Brown/White stay optional (TBD/under-allocation are
-    surfaced as indicators, not submit blockers). Raises ``ValidationError`` if
-    the task is already submitted/closed or a mandatory slot is empty.
+    Mandatory: :data:`MANDATORY_SLOTS` — Execution Red (team tasks: the next task
+    depends on it) and Auditors 1–2 (auditor tasks: carried over from their
+    pre-R5 required text fields). Everything else, the R12 named extras
+    included, stays optional (TBD/under-allocation are surfaced as indicators,
+    not submit blockers). Raises ``ValidationError`` if the task is already
+    submitted/closed or a mandatory slot is empty.
     """
     from . import engine  # lazy: engine imports this module at load time
 
@@ -455,17 +571,14 @@ def submit(task, tdef, user):
         raise serializers.ValidationError(
             "This allocation has already been submitted or has no open task."
         )
-    slots = tdef.get("allocation_slots", [])
-    mandatory = {
-        ResourceAllocation.Slot.EXECUTION_RED,
-        ResourceAllocation.Slot.AUDITOR_1,
-        ResourceAllocation.Slot.AUDITOR_2,
-    }
-    for slot in slots:
-        if slot in mandatory and not occupants(task, slot).exists():
-            raise serializers.ValidationError(
-                f"Select {ResourceAllocation.Slot(slot).label} before submitting."
-            )
+    for slot in missing_mandatory_slots(task, tdef):
+        raise serializers.ValidationError(
+            f"Select {ResourceAllocation.Slot(slot).label} before submitting."
+        )
     if task.status == Task.Status.PENDING:
         task = engine.open_pending_task(task)
+        # R12: opening it may have closed it on the spot (auto_close_when_staffed
+        # — the slots are filled, which is exactly what submit just validated).
+        if task.status == Task.Status.CLOSED:
+            return []
     return engine.complete_task(task, user)

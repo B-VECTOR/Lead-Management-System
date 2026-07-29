@@ -32,14 +32,24 @@ export const canSeeLeadModule = (user) =>
 export const canSeeFollowUps = (user) =>
   canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
 
-// The Leads *list* (nav item + `/leads` route) is likewise open to the Resource
-// Manager (R10-1, per the user: "add lead tab too for resource person to see the
-// lead and assign resource"). They need it to reach a lead's allocation step in
-// its task stepper rather than only via the Resources queue. It is view-only for
-// them — creating/editing a lead stays on `canSeeLeadModule` + `PERMISSIONS`,
-// and the backend only shows them leads that have reached an allocation task.
-export const canSeeLeadsList = (user) =>
-  canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
+// The Leads *list* follows the Lead module exactly.
+//
+// R10-1 had opened it to the Resource Manager so they could reach a lead's
+// allocation step in its task stepper; **R12-1 reverts that** (per the user:
+// "Resource module: no need for lead tab") because staffing no longer needs a
+// lead page at all — the Resources queue (`pages/MyResourceTasks.jsx`) now
+// expands into the slot grid in place. The role keeps Resources, Resource
+// History, Project Closure and Follow up. The backend's task-visibility widening
+// from R10-1(b) stays — the Resources module's own endpoints depend on it.
+export const canSeeLeadsList = canSeeLeadModule
+
+// Lead *detail* stays open to anyone the backend will show a lead to — a task
+// assignee (e.g. the Execution Red), a Finance user working a payment gate — but
+// **not** a pure Resource Manager (R12-1): their module is self-contained now, so
+// a lead page is neither needed nor theirs to browse. An RM who also holds a
+// lead-facing role keeps it, via `canSeeLeadModule`.
+export const canSeeLeadDetail = (user) =>
+  canSeeLeadModule(user) || !hasRole(user, 'Resource Manager')
 
 // Held Leads is for the lead-facing management roles only (they own the lead's
 // overall hold state).

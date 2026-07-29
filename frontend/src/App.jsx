@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
-import { canSeeLeadModule, canSeeLeadsList, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
+import { canSeeLeadModule, canSeeLeadsList, canSeeLeadDetail, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
 import Login from '@/pages/Login'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
@@ -34,15 +34,17 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/account" element={<Account />} />
 
-        {/* The list is open to the Resource Manager too (R10-1) — read-only; the
-            API scopes their rows to leads that have reached an allocation task. */}
+        {/* R12-1: the list is the Lead module's own again — the Resource Manager
+            staffs from `/resources` and no longer needs a lead page (R10-1
+            reverted). */}
         <Route path="/leads" element={<RequireAuth check={canSeeLeadsList}><LeadsList /></RequireAuth>} />
         <Route path="/leads/new" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
-        {/* Detail is open to any authenticated user — the backend scopes lead
-            visibility, so a task worker (e.g. the assigned Red) or the Resource
-            Manager can open a lead they're entitled to; others get a not-found
-            state. The Leads *list* and edit stay gated. */}
-        <Route path="/leads/:id" element={<LeadDetail />} />
+        {/* Detail is open to any authenticated user *except* a pure Resource
+            Manager (R12-1) — the backend scopes lead visibility, so a task worker
+            (e.g. the assigned Red) or a Finance user working a payment gate can
+            open a lead they're entitled to; others get a not-found state. The
+            Leads *list* and edit stay gated. */}
+        <Route path="/leads/:id" element={<RequireAuth check={canSeeLeadDetail}><LeadDetail /></RequireAuth>} />
         <Route path="/leads/:id/edit" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
 
         <Route path="/other-tasks" element={<RequireAuth check={canSeeFollowUps}><OtherTasks /></RequireAuth>} />

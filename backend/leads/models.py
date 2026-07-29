@@ -287,10 +287,10 @@ class LeadStage(models.Model):
     stage at lead creation. The per-task stage open/close transitions as the
     28-task workflow advances are wired in R3 (they reuse :func:`ensure_stage`),
     which is why the fixed stage codes are constants here rather than a strict
-    ``choices=`` set — the Extension loop codes (``E0``, ``E1``, …) are dynamic.
+    ``choices=`` set — the Extension loop codes (``E1``, ``E2``, …) are dynamic.
     """
 
-    # Fixed stage codes (the Extension loops ``E0``/``E1``/… are formed at
+    # Fixed stage codes (the Extension loops ``E1``/``E2``/… are formed at
     # runtime, so ``stage`` is a plain code string rather than a choices field).
     BD = "BD"
     TWO_HR = "2HR"
@@ -312,11 +312,11 @@ class LeadStage(models.Model):
         verbose_name=_("lead"),
     )
     # The stage code drives the Project-ID suffix directly (§13): the suffix is
-    # ``-{stage}`` (e.g. BD → ``-BD``, IM → ``-IM``, E0 → ``-E0``, M → ``-M``).
+    # ``-{stage}`` (e.g. BD → ``-BD``, IM → ``-IM``, E1 → ``-E1``, M → ``-M``).
     stage = models.CharField(
         _("stage"),
         max_length=10,
-        help_text=_("BD, 2HR, SnT, IM, E0/E1/…, M, or Closure (§4.4)."),
+        help_text=_("BD, 2HR, SnT, IM, E1/E2/…, M, or Closure (§4.4)."),
     )
     # Stored display Project ID **snapshot** for this specific stage
     # (``base_code`` + this stage's own suffix, e.g. ``IN-PHNPDCFF26001-IM``). Persisted
@@ -684,11 +684,12 @@ class ResourceAllocation(models.Model):
     all survive for the resource-history dashboard.
 
     Replaces the old wide single-row-per-cycle table (``Type`` + 16 single-
-    holder slots incl. ``project_member1..10``/``auditor3-4``), retired in
-    migration ``0020``. The 5 slots below are the full set per Tech Req §4.7;
-    White is the only slot a stage may need more than one of at a time — every
-    other slot holds at most one currently-``allocated`` row
-    (:data:`SINGLE_OCCUPANCY_SLOTS`).
+    holder slots), retired in migration ``0020``. R5 kept only 5 slot values of
+    that set; **R12 restores the named extras the old form had** — Auditors 3–4
+    and Project Members 1–10 (:data:`EXTENDED_SLOTS`) — as slot *values* on this
+    same append-only shape rather than as columns. White is the only slot a
+    stage may need more than one of at a time; every other slot holds at most
+    one currently-``allocated`` row (:data:`SINGLE_OCCUPANCY_SLOTS`).
     """
 
     class Slot(models.TextChoices):
@@ -697,15 +698,57 @@ class ResourceAllocation(models.Model):
         WHITE = "white", _("White")
         AUDITOR_1 = "auditor_1", _("Auditor 1")
         AUDITOR_2 = "auditor_2", _("Auditor 2")
+        # R12 — restored named extras. Auditors 3–4 complete the audit team;
+        # Project Members 1–10 are the named implementation-team slots that sit
+        # alongside (not instead of) the manpower-counted White pool, exactly as
+        # the pre-``0020`` form had them.
+        AUDITOR_3 = "auditor_3", _("Auditor 3")
+        AUDITOR_4 = "auditor_4", _("Auditor 4")
+        PROJECT_MEMBER_1 = "project_member_1", _("Project Member 1")
+        PROJECT_MEMBER_2 = "project_member_2", _("Project Member 2")
+        PROJECT_MEMBER_3 = "project_member_3", _("Project Member 3")
+        PROJECT_MEMBER_4 = "project_member_4", _("Project Member 4")
+        PROJECT_MEMBER_5 = "project_member_5", _("Project Member 5")
+        PROJECT_MEMBER_6 = "project_member_6", _("Project Member 6")
+        PROJECT_MEMBER_7 = "project_member_7", _("Project Member 7")
+        PROJECT_MEMBER_8 = "project_member_8", _("Project Member 8")
+        PROJECT_MEMBER_9 = "project_member_9", _("Project Member 9")
+        PROJECT_MEMBER_10 = "project_member_10", _("Project Member 10")
+
+    # The auditor slots, in form order — Auditors 1–2 are mandatory to submit an
+    # auditor-allocation task (§7.5); 3–4 are optional extras.
+    AUDITOR_SLOTS = (
+        Slot.AUDITOR_1,
+        Slot.AUDITOR_2,
+        Slot.AUDITOR_3,
+        Slot.AUDITOR_4,
+    )
+    PROJECT_MEMBER_SLOTS = (
+        Slot.PROJECT_MEMBER_1,
+        Slot.PROJECT_MEMBER_2,
+        Slot.PROJECT_MEMBER_3,
+        Slot.PROJECT_MEMBER_4,
+        Slot.PROJECT_MEMBER_5,
+        Slot.PROJECT_MEMBER_6,
+        Slot.PROJECT_MEMBER_7,
+        Slot.PROJECT_MEMBER_8,
+        Slot.PROJECT_MEMBER_9,
+        Slot.PROJECT_MEMBER_10,
+    )
+    # R12 — the restored named extras, which only the **Resource Manager** sees
+    # or fills (their own working detail: the lead's Default BD Person staffs
+    # Red/Brown/White under D12, and the lead-side Resources tab shows only
+    # those three). Enforced in ``resources.visible_slots`` / ``allocate``, not
+    # by the schema — a row already written stays readable to the RM forever.
+    EXTENDED_SLOTS = (Slot.AUDITOR_3, Slot.AUDITOR_4) + PROJECT_MEMBER_SLOTS
 
     # Slots capped at one *currently allocated* row — a second fill must go
     # through reassignment (release + replace), never a second concurrent row.
+    # Everything except the White pool.
     SINGLE_OCCUPANCY_SLOTS = (
         Slot.EXECUTION_RED,
         Slot.EXECUTION_BROWN,
-        Slot.AUDITOR_1,
-        Slot.AUDITOR_2,
-    )
+    ) + AUDITOR_SLOTS + PROJECT_MEMBER_SLOTS
 
     class Status(models.TextChoices):
         ALLOCATED = "allocated", _("Allocated")  # currently occupying the slot
@@ -841,7 +884,7 @@ class ProjectDetails(models.Model):
         help_text=_("The derived display Project ID, snapshotted at generation time."),
     )
     # Explicit stage-code label for this cycle (meeting decision 2026-07-27):
-    # ``IM`` / ``E0``/``E1``… / ``M`` — a denormalized copy of ``stage.stage`` so
+    # ``IM`` / ``E1``/``E2``… / ``M`` — a denormalized copy of ``stage.stage`` so
     # reports can read the cycle type directly without joining to lead_stage.
     project = models.CharField(
         _("project"),
