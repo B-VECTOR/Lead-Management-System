@@ -34,16 +34,17 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/account" element={<Account />} />
 
-        {/* R12-1: the list is the Lead module's own again — the Resource Manager
-            staffs from `/resources` and no longer needs a lead page (R10-1
-            reverted). */}
+        {/* R13-1: the list is open to the Lead module **and** the Resource
+            Manager again (R10-1 restored) — they staff from either the lead's
+            task stepper or the `/resources` queue, both of which render the same
+            `AllocationPanel`. Read-only for the role: create/edit stay gated. */}
         <Route path="/leads" element={<RequireAuth check={canSeeLeadsList}><LeadsList /></RequireAuth>} />
         <Route path="/leads/new" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
-        {/* Detail is open to any authenticated user *except* a pure Resource
-            Manager (R12-1) — the backend scopes lead visibility, so a task worker
-            (e.g. the assigned Red) or a Finance user working a payment gate can
-            open a lead they're entitled to; others get a not-found state. The
-            Leads *list* and edit stay gated. */}
+        {/* Detail is open to any authenticated user — the backend scopes lead
+            visibility, so a task worker (e.g. the assigned Red), a Finance user
+            working a payment gate, or the Resource Manager working an allocation
+            step can open a lead they're entitled to; others get a not-found
+            state. The Leads *list* and edit stay gated. */}
         <Route path="/leads/:id" element={<RequireAuth check={canSeeLeadDetail}><LeadDetail /></RequireAuth>} />
         <Route path="/leads/:id/edit" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
 
@@ -53,9 +54,9 @@ export default function App() {
         <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldTasks}><HeldTasks /></RequireAuth>} />
 
         {/* R9-3: the resource module is the Resource Manager's own — the
-            cross-lead queue is gated to them (`canSeeResources`). A lead's
-            Default BD Person still staffs that lead's allocation task (D12),
-            inline in the lead's task stepper rather than from here. */}
+            cross-lead queue is gated to them (`canSeeResources`). Staffing is
+            reachable from both here and a lead's task stepper (R13-1); a lead's
+            Default BD Person only gets the stepper route (D12). */}
         <Route path="/resources" element={<RequireAuth check={canSeeResources}><MyResourceTasks /></RequireAuth>} />
         <Route path="/resource-history" element={<RequireAuth roles={['Resource Manager']}><ResourceHistory /></RequireAuth>} />
         <Route path="/project-closure" element={<RequireAuth roles={['Resource Manager']}><ProjectClosure /></RequireAuth>} />

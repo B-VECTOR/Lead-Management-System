@@ -13,7 +13,10 @@ const STATUS_TOOLTIP = { allocated: 'Currently occupying the slot', released: 'F
 // (Tech Req §7 / PRD §5.7); this lead-scoped endpoint lets the lead's own
 // people (assignee/creator/LM/admin) see them in context, read-only.
 export function LeadResourcesTab({ leadId }) {
-  const { data: allocations = [], isLoading } = useLeadResourceAllocations(leadId)
+  const { data: rows = [], isLoading } = useLeadResourceAllocations(leadId)
+  // R14-1: legacy "TBD" rows named nobody — an undecided slot is now simply an
+  // unfilled one, so they are no longer listed as if a person held the slot.
+  const allocations = rows.filter((a) => !a.is_tbd)
 
   return (
     <div className="flex flex-col gap-4">
@@ -45,7 +48,7 @@ export function LeadResourcesTab({ leadId }) {
                   <TableCell><StageBadge stage={a.stage_code} /></TableCell>
                   <TableCell className="font-medium">{a.slot_label}</TableCell>
                   <TableCell className="text-sm">
-                    {a.user_name?.name || (a.is_tbd ? <span className="text-muted-foreground">TBD</span> : <span className="text-muted-foreground">—</span>)}
+                    {a.user_name?.name || <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell>
                     <AllocationStatusBadge status={a.status} title={STATUS_TOOLTIP[a.status] || ''} />

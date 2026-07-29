@@ -791,15 +791,19 @@ class ResourceAllocation(models.Model):
         related_name="+",
         verbose_name=_("user"),
     )
+    # Legacy (R14-1): "to be decided" is no longer an occupant — an undecided
+    # slot is simply an unfilled one (no row), so nothing sets this any more. Kept
+    # only so the handful of pre-R14 rows stay readable/auditable; those rows are
+    # excluded from the resource screens and were released by migration 0029.
     is_tbd = models.BooleanField(
-        _("is TBD"),
+        _("is TBD (legacy)"),
         default=False,
-        help_text=_("White only — a slot may be left to-be-decided (PRD §5.7)."),
+        help_text=_("Legacy — retired in R14-1; every allocation names a person."),
     )
     # Denormalized display name of the occupant (meeting decision 2026-07-27) —
-    # a snapshot of ``user.name`` (or "TBD" for a TBD White slot, "" when empty)
-    # kept alongside the ``user`` FK so dashboards/reports can read the name
-    # without a join. Written on allocate/reassign; the FK stays the source of truth.
+    # a snapshot of ``user.name`` ("" when the row names nobody) kept alongside
+    # the ``user`` FK so dashboards/reports can read the name without a join.
+    # Written on allocate/reassign; the FK stays the source of truth.
     names = models.CharField(_("names"), max_length=255, blank=True, default="")
     status = models.CharField(
         _("status"), max_length=10, choices=Status.choices, default=Status.ALLOCATED,
@@ -834,7 +838,7 @@ class ResourceAllocation(models.Model):
         verbose_name_plural = _("resource allocations")
 
     def __str__(self):
-        who = self.user.name if self.user_id else ("TBD" if self.is_tbd else "—")
+        who = self.user.name if self.user_id else "—"
         return f"[{self.lead_id}] {self.get_slot_display()} — {who} ({self.status})"
 
 

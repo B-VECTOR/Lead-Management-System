@@ -23,7 +23,6 @@ import {
 // Manager's queue (`pages/MyResourceTasks.jsx`), which links into the stepper.
 
 const NONE = '__none__'
-const TBD = '__tbd__'
 
 // Which slots hold at most one currently-allocated resource — the rest (White)
 // is a pool that can carry several concurrent rows.
@@ -93,7 +92,9 @@ export function isRedMissing(task) {
 function SingleSlotControl({ slot, label, required, occupant, users, disabled, onAllocate, onReassign, onRelease }) {
   const value = occupant?.user ? String(occupant.user) : NONE
   return (
-    <div className="flex flex-col gap-1.5">
+    // `max-w-sm`: a name picker never needs to be wider than this, and the hosts
+    // (an expanded table row, the lead's task stepper) are much wider than that.
+    <div className="flex w-full max-w-sm flex-col gap-1.5">
       <Label className="text-xs">
         {label} {required > 0 && <span className="text-muted-foreground">(need {required})</span>}
         {slot === 'execution_red' && <span className="text-red-500"> *</span>}
@@ -140,47 +141,37 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
   )
 }
 
-// White is a pool: several people may be allocated at once, and a slot may be
-// left "TBD" (to-be-decided) instead of naming someone (PRD §5.7).
+// White is a pool: several people may be allocated at once. Every White names a
+// real person — R14-1 retired the old "TBD" (to-be-decided) fill, since TBD is
+// not a user and an undecided White is just one that hasn't been added yet.
+// Legacy `is_tbd` rows (pre-R14) are filtered out rather than shown as people.
 function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, onRelease }) {
   const allocatedNames = occupants.filter((o) => !o.is_tbd)
-  const tbdCount = occupants.filter((o) => o.is_tbd).length
   const allocatedIds = new Set(allocatedNames.map((o) => o.user))
 
   // R9-6: picking a White allocates it there and then. The old two-step
   // "select, then press Add" lost the selection whenever someone forgot the
   // second click. The Select is a pure action trigger, so it holds no value.
   function pick(value) {
-    if (value === TBD) onAllocate('white', null, true)
-    else onAllocate('white', Number(value))
+    onAllocate('white', Number(value))
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex w-full max-w-sm flex-col gap-1.5">
       <Label className="text-xs">White {required > 0 && <span className="text-muted-foreground">(need {required})</span>}</Label>
       <div className="flex flex-wrap gap-1.5">
-        {occupants.length === 0 && <span className="text-xs text-muted-foreground">None allocated yet.</span>}
+        {allocatedNames.length === 0 && <span className="text-xs text-muted-foreground">None allocated yet.</span>}
         {allocatedNames.map((o) => (
           <span key={o.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
             {o.user_name?.name}
             {!disabled && <X className="size-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onRelease(o.id)} />}
           </span>
         ))}
-        {Array.from({ length: tbdCount }).map((_, i) => {
-          const o = occupants.filter((x) => x.is_tbd)[i]
-          return (
-            <span key={o.id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-              TBD
-              {!disabled && <X className="size-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onRelease(o.id)} />}
-            </span>
-          )
-        })}
       </div>
       {!disabled && (
         <Select value="" onValueChange={pick}>
           <SelectTrigger className="w-full"><SelectValue placeholder="— Add a White —" /></SelectTrigger>
           <SelectContent position="popper">
-            <SelectItem value={TBD}>Leave as TBD</SelectItem>
             {users
               .filter((u) => !allocatedIds.has(u.id))
               .map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
@@ -216,9 +207,9 @@ export function AllocationSlots({ task, disabled }) {
           : plainUsers
   )
 
-  async function handleAllocate(slot, userId, isTbd = false) {
+  async function handleAllocate(slot, userId) {
     try {
-      await allocate.mutateAsync({ taskId: task.id, slot, userId, isTbd })
+      await allocate.mutateAsync({ taskId: task.id, slot, userId })
     } catch (e) {
       toast.error(e.message)
     }
@@ -258,7 +249,7 @@ export function AllocationSlots({ task, disabled }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {coreSlots.filter((s) => singleSlots.includes(s)).map(singleControl)}
         {coreSlots.filter((s) => isPool(s)).map((slot) => (
           <WhiteSlotControl
@@ -292,7 +283,7 @@ export function AllocationSlots({ task, disabled }) {
             </span>
           </button>
           {showExtras && (
-            <div className="grid grid-cols-1 gap-3 border-t p-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 border-t p-3 sm:grid-cols-2 xl:grid-cols-3">
               {extraSlots.map(singleControl)}
             </div>
           )}

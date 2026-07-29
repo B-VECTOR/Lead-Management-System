@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronRight, Link2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
@@ -24,8 +25,11 @@ export default function ResourceHistory() {
   const byUser = useMemo(() => {
     const groups = new Map()
     for (const r of rows) {
-      const key = r.user_name?.id ?? (r.is_tbd ? 'tbd' : 'unknown')
-      const label = r.user_name?.name || (r.is_tbd ? 'TBD (unnamed)' : 'Unknown')
+      // R14-1: legacy "TBD" rows name nobody, so there is no resource to credit
+      // the days to — they used to appear here as a person called "TBD".
+      if (r.is_tbd) continue
+      const key = r.user_name?.id ?? 'unknown'
+      const label = r.user_name?.name || 'Unknown'
       if (!groups.has(key)) groups.set(key, { key, name: label, rows: [], totalDays: 0, leads: new Set() })
       const g = groups.get(key)
       g.rows.push(r)
@@ -118,11 +122,12 @@ function RowGroup({ group, isOpen, onToggle, allRows }) {
           <TableCell />
           <TableCell colSpan={4}>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 py-1 text-sm">
-              {/* R12-1: this screen is Resource-Manager-only and the role no
-                  longer has a lead page, so the project is a plain label — the
-                  Project ID + stage identify the engagement, and staffing is
-                  reached from the Resources queue. */}
-              <span className="font-medium">{r.lead_project_name}</span>
+              {/* R13-1: the role has its lead page back, so the project name
+                  links to it again (DD-R12-4's plain label reverted); the Project
+                  ID + stage still identify the engagement on their own. */}
+              <Link to={`/leads/${r.lead}`} className="font-medium hover:underline">
+                {r.lead_project_name}
+              </Link>
               <span className="text-muted-foreground tabular-nums">{r.project_id || r.lead_project_id}</span>
               <span className="text-muted-foreground">{r.lead_company_name}</span>
               <StageBadge stage={r.stage_code} />

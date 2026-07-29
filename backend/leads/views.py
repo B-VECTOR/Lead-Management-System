@@ -793,7 +793,7 @@ class AllocationTaskActionView(APIView):
 
 
 class AllocationAllocateView(AllocationTaskActionView):
-    """First fill of a slot (§4.7) — ``{"slot", "user_id"?, "is_tbd"?, "remark"?}``."""
+    """First fill of a slot (§4.7) — ``{"slot", "user_id", "remark"?}``."""
 
     def post(self, request, task_id):
         task = self.get_task()
@@ -802,20 +802,19 @@ class AllocationAllocateView(AllocationTaskActionView):
         user = get_object_or_404(User, pk=user_id) if user_id else None
         row = resources.allocate(
             task, tdef, request.data.get("slot"),
-            user=user, is_tbd=bool(request.data.get("is_tbd")),
-            remark=request.data.get("remark", ""), actor=request.user,
+            user=user, remark=request.data.get("remark", ""), actor=request.user,
         )
         events.log_activity(
             task.lead, request.user, "resource",
-            f"{ResourceAllocation.Slot(row.slot).label} allocated"
-            f"{f' to {row.user.name}' if row.user else ' (TBD)'} — {task.task_name}",
+            f"{ResourceAllocation.Slot(row.slot).label} allocated to {row.user.name}"
+            f" — {task.task_name}",
         )
         return self._task_response(task, request)
 
 
 class AllocationReassignView(AllocationTaskActionView):
     """Release + append a replacement (§4.7) —
-    ``{"allocation_id", "user_id"?, "is_tbd"?, "remark"?}``."""
+    ``{"allocation_id", "user_id", "remark"?}``."""
 
     def post(self, request, task_id):
         task = self.get_task()
@@ -825,13 +824,13 @@ class AllocationReassignView(AllocationTaskActionView):
         user_id = request.data.get("user_id")
         user = get_object_or_404(User, pk=user_id) if user_id else None
         new_row = resources.reassign(
-            task, current, user=user, is_tbd=bool(request.data.get("is_tbd")),
+            task, current, user=user,
             actor=request.user, remark=request.data.get("remark", ""),
         )
         events.log_activity(
             task.lead, request.user, "resource",
-            f"{ResourceAllocation.Slot(new_row.slot).label} reassigned"
-            f"{f' to {new_row.user.name}' if new_row.user else ' (TBD)'} — {task.task_name}",
+            f"{ResourceAllocation.Slot(new_row.slot).label} reassigned to "
+            f"{new_row.user.name} — {task.task_name}",
         )
         return self._task_response(task, request)
 

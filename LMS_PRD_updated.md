@@ -169,7 +169,7 @@ The full 28-task table — names, assignees, checklists, extra fields, stage, an
 **Stage entry & conditional allocation**
 
 - **Task 2 (2HR Study Agreement)** asks *"Is manpower support required from the resource allocation team?"* If **Yes**, Task 3 (2HR Team Allocation) opens against the Resource Manager and captures manpower. If **No**, Task 3 is **skipped** and the **Default BD Person** carries the study (Task 5) themselves.
-- **Allocation tasks** (3, 10, 17, 18, 24, 25) are worked by **Shailesh + the Default BD Person** — two people can allocate. They capture Execution Red / Execution Brown / White (TBD is allowed for White), plus the Resource Manager's own named team slots Project Member 1–10 (optional). **Auditor allocation is split into its own tasks** (18 for implementation, 25 for extension) and captures Auditor 1–4 (1–2 required, 3–4 optional); Task 18 is a **hanging task** (non-blocking — it can be completed in parallel and does not hold up the sequence), and it closes itself if the auditors were already allocated in advance. See §5.7.
+- **Allocation tasks** (3, 10, 17, 18, 24, 25) are worked by **Shailesh + the Default BD Person** — two people can allocate. They capture Execution Red / Execution Brown / White (each named to a real person — no "TBD" occupant), plus the Resource Manager's own named team slots Project Member 1–10 (optional). **Auditor allocation is split into its own tasks** (18 for implementation, 25 for extension) and captures Auditor 1–4 (1–2 required, 3–4 optional); Task 18 is a **hanging task** (non-blocking — it can be completed in parallel and does not hold up the sequence), and it closes itself if the auditors were already allocated in advance. See §5.7.
 
 **Branch points**
 
@@ -203,7 +203,7 @@ Each checklist item has two editable fields: status (not_started / inprogress / 
 
 Resource allocation is performed through the workflow allocation tasks (3, 10, 17, 18, 24, 25), worked by **Shailesh (Resource Manager) + the Default BD Person**. Each allocation captures the resources for that stage:
 
-- **Team allocation** (3, 10, 17, 24): Execution Red, Execution Brown, White, **plus the named team slots Project Member 1–10**. **TBD is allowed for White** (a slot may be marked to-be-decided).
+- **Team allocation** (3, 10, 17, 24): Execution Red, Execution Brown, White, **plus the named team slots Project Member 1–10**. **Every slot names a real person** — there is no "TBD" occupant (decision 2026-07-29: TBD is not a user; a slot still to be decided is simply left unfilled, and can be filled later while the resources are allocated).
 - **Auditor allocation** (18, 25): **Auditor 1–4** — 1 and 2 are required to submit, 3 and 4 are optional. Task 18 is a **hanging task** — non-blocking, completable in parallel.
 - **The named extras (Project Member 1–10, Auditor 3–4) are the Resource Manager's own.** Only that role sees or fills them — the Default BD Person, who may also staff an allocation task, works Execution Red / Brown / White only, and a lead's Resources tab shows just those three. They are always optional: leaving one empty is neither under-allocation nor a submit blocker.
 - **Allocation in advance.** An allocation task that is scheduled but not yet due can be staffed early from the Resources screen. For **Task 18** this is final: if both auditors are allocated by the time the task's date arrives, the task **completes itself on opening** and never appears as outstanding work; if they are not, it opens and waits to be staffed as normal.

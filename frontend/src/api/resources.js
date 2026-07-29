@@ -45,10 +45,10 @@ export async function listAllocationTasks({ leadId, status } = {}) {
   }
 }
 
-export async function allocateSlot(taskId, { slot, userId, isTbd, remark } = {}) {
+export async function allocateSlot(taskId, { slot, userId, remark } = {}) {
   try {
     const { data } = await client.post(`/api/allocation-tasks/${taskId}/allocate/`, {
-      slot, user_id: userId ?? null, is_tbd: !!isTbd, remark: remark || '',
+      slot, user_id: userId ?? null, remark: remark || '',
     })
     return data
   } catch (err) {
@@ -56,10 +56,10 @@ export async function allocateSlot(taskId, { slot, userId, isTbd, remark } = {})
   }
 }
 
-export async function reassignSlot(taskId, { allocationId, userId, isTbd, remark } = {}) {
+export async function reassignSlot(taskId, { allocationId, userId, remark } = {}) {
   try {
     const { data } = await client.post(`/api/allocation-tasks/${taskId}/reassign/`, {
-      allocation_id: allocationId, user_id: userId ?? null, is_tbd: !!isTbd, remark: remark || '',
+      allocation_id: allocationId, user_id: userId ?? null, remark: remark || '',
     })
     return data
   } catch (err) {

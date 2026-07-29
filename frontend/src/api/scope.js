@@ -32,24 +32,27 @@ export const canSeeLeadModule = (user) =>
 export const canSeeFollowUps = (user) =>
   canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
 
-// The Leads *list* follows the Lead module exactly.
+// The Leads *list* follows the Lead module, **plus the Resource Manager**
+// (R13-1, per the user: "in resource module i want leads to be visible for
+// resource person too … a resource person can assign resource from both the tab,
+// from lead too and from resource tab too"). This restores R10-1(a), which R12-1
+// had reverted: the two staffing surfaces are deliberately redundant now — the
+// Resources queue (`pages/MyResourceTasks.jsx`) and the lead's own task stepper
+// (`LeadTaskTab.AllocationStep`) both render the shared `AllocationPanel`, so
+// either route can staff and submit an allocation task.
 //
-// R10-1 had opened it to the Resource Manager so they could reach a lead's
-// allocation step in its task stepper; **R12-1 reverts that** (per the user:
-// "Resource module: no need for lead tab") because staffing no longer needs a
-// lead page at all — the Resources queue (`pages/MyResourceTasks.jsx`) now
-// expands into the slot grid in place. The role keeps Resources, Resource
-// History, Project Closure and Follow up. The backend's task-visibility widening
-// from R10-1(b) stays — the Resources module's own endpoints depend on it.
-export const canSeeLeadsList = canSeeLeadModule
+// View-only for the role: create/edit stay on `canSeeLeadModule` + `PERMISSIONS`,
+// and the backend only lists them leads that have reached an allocation task
+// (`views.lead_scope_q`).
+export const canSeeLeadsList = (user) =>
+  canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
 
-// Lead *detail* stays open to anyone the backend will show a lead to — a task
-// assignee (e.g. the Execution Red), a Finance user working a payment gate — but
-// **not** a pure Resource Manager (R12-1): their module is self-contained now, so
-// a lead page is neither needed nor theirs to browse. An RM who also holds a
-// lead-facing role keeps it, via `canSeeLeadModule`.
-export const canSeeLeadDetail = (user) =>
-  canSeeLeadModule(user) || !hasRole(user, 'Resource Manager')
+// Lead *detail* is open to anyone the backend will show a lead to — a task
+// assignee (e.g. the Execution Red), a Finance user working a payment gate, and
+// (R13-1) the Resource Manager, who staffs the allocation step from the lead's
+// task stepper. The queryset decides what's actually visible; others get a
+// not-found state.
+export const canSeeLeadDetail = (user) => !!user
 
 // Held Leads is for the lead-facing management roles only (they own the lead's
 // overall hold state).

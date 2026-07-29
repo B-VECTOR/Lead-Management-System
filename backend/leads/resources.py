@@ -46,16 +46,16 @@ from .models import LeadStage, Notification, ResourceAllocation, Task
 RESOURCE_MANAGER_GROUP = "resource_manager"
 
 # Where a Resource Manager's notifications land (R12-1): their own queue, which
-# now staffs the slots in place — not the lead page, which the role no longer has.
+# staffs the slots in place. R13-1 gave the role its lead page back, so the lead
+# deep-link would work again too — the queue stays the target on purpose, since it
+# is the one screen that lists *every* allocation waiting on them.
 RESOURCE_QUEUE_LINK = "/resources"
 
 
-def occupant_name(user, is_tbd):
+def occupant_name(user):
     """Display name snapshot for the denormalized ``ResourceAllocation.names``
-    column: the user's name, ``"TBD"`` for a to-be-decided White slot, else ""."""
-    if user is not None:
-        return user.name
-    return "TBD" if is_tbd else ""
+    column: the user's name, else "" (R14-1 — every slot names a real person)."""
+    return user.name if user is not None else ""
 
 # "Team" slots (Execution Red/Brown/White) are captured on tasks 3/10/17/24;
 # "auditor" slots (Auditor 1/2) on tasks 18/25 — both groups are now real
@@ -265,11 +265,13 @@ def allocation_context(task, tdef, viewer=None):
 
 
 @transaction.atomic
-def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark="", actor=None):
+def allocate(task, tdef, slot, *, user=None, remark="", actor=None):
     """First fill of a slot on ``task`` (§4.7). Raises ``ValidationError`` if the
     slot doesn't belong to this task, isn't one ``actor`` may fill, is already
-    occupied (single-occupancy slots must go through :func:`reassign`), or the
-    fill is invalid (TBD is White-only; every other slot needs a user).
+    occupied (single-occupancy slots must go through :func:`reassign`), or no
+    user was named — every slot, White included, is filled by a real person
+    (R14-1: "to be decided" is not an occupant, it's an unfilled slot, which is
+    already expressed by there being no row).
     """
     slots = visible_slots(actor, tdef)
     if slot not in slots:
@@ -280,10 +282,8 @@ def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark="", actor=None
                 "Only the Resource Manager can allocate that slot."
             )
         raise serializers.ValidationError("This task does not manage that slot.")
-    if is_tbd and slot != ResourceAllocation.Slot.WHITE:
-        raise serializers.ValidationError("Only White may be left TBD.")
-    if not is_tbd and user is None:
-        raise serializers.ValidationError("Select a user, or mark White as TBD.")
+    if user is None:
+        raise serializers.ValidationError("Select a user.")
     if slot in ResourceAllocation.SINGLE_OCCUPANCY_SLOTS and occupants(task, slot).exists():
         raise serializers.ValidationError(
             "This slot is already filled — reassign it instead of allocating again."
@@ -296,15 +296,14 @@ def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark="", actor=None
         task=task,
         slot=slot,
         user=user,
-        names=occupant_name(user, is_tbd),
-        is_tbd=is_tbd,
+        names=occupant_name(user),
         man_power_required=reqs.get(slot, 0),
         remark=remark,
     )
 
 
 @transaction.atomic
-def reassign(task, current, *, user=None, is_tbd=False, actor=None, remark=""):
+def reassign(task, current, *, user=None, actor=None, remark=""):
     """Move ``current`` (an ``allocated`` row) to a new occupant — release the
     old row and append a new one linked via ``replaces`` (§4.7, never overwrite).
 
@@ -319,10 +318,8 @@ def reassign(task, current, *, user=None, is_tbd=False, actor=None, remark=""):
         raise serializers.ValidationError(
             "Only the Resource Manager can reassign that slot."
         )
-    if is_tbd and current.slot != ResourceAllocation.Slot.WHITE:
-        raise serializers.ValidationError("Only White may be left TBD.")
-    if not is_tbd and user is None:
-        raise serializers.ValidationError("Select a user, or mark White as TBD.")
+    if user is None:
+        raise serializers.ValidationError("Select a user.")
     now = timezone.now()
     current.status = ResourceAllocation.Status.RELEASED
     current.released_on = now
@@ -334,8 +331,7 @@ def reassign(task, current, *, user=None, is_tbd=False, actor=None, remark=""):
         task=current.task,
         slot=current.slot,
         user=user,
-        names=occupant_name(user, is_tbd),
-        is_tbd=is_tbd,
+        names=occupant_name(user),
         replaces=current,
         man_power_required=current.man_power_required,
         remark=remark,
@@ -467,7 +463,7 @@ def carry_forward_red(task, tdef):
         task=task,
         slot=ResourceAllocation.Slot.EXECUTION_RED,
         user=red,
-        names=occupant_name(red, False),
+        names=occupant_name(red),
         man_power_required=reqs.get(ResourceAllocation.Slot.EXECUTION_RED, 1),
         remark="Carried forward from the previous stage",
     )
@@ -501,7 +497,7 @@ def release_open_engagement_allocations(lead):
 # Execution Red, because the successor task is assigned to whoever fills it, and
 # Auditors 1–2, carried over from their pre-R5 required text fields. Everything
 # else — Brown, the White pool, and the R12 named extras — is optional
-# (TBD/under-allocation are surfaced as indicators, not blockers).
+# (under-allocation is surfaced as an indicator, not a blocker).
 MANDATORY_SLOTS = frozenset({
     ResourceAllocation.Slot.EXECUTION_RED,
     ResourceAllocation.Slot.AUDITOR_1,
@@ -561,8 +557,8 @@ def submit(task, tdef, user):
     Mandatory: :data:`MANDATORY_SLOTS` — Execution Red (team tasks: the next task
     depends on it) and Auditors 1–2 (auditor tasks: carried over from their
     pre-R5 required text fields). Everything else, the R12 named extras
-    included, stays optional (TBD/under-allocation are surfaced as indicators,
-    not submit blockers). Raises ``ValidationError`` if the task is already
+    included, stays optional (under-allocation is surfaced as an indicator, not a
+    submit blocker). Raises ``ValidationError`` if the task is already
     submitted/closed or a mandatory slot is empty.
     """
     from . import engine  # lazy: engine imports this module at load time
