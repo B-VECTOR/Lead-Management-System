@@ -8,6 +8,7 @@ does not change existing behaviour or the workflow engine.
 
 from django.contrib.auth import get_user_model
 
+from . import projects
 from .models import ActivityLog, Notification
 
 # The Finance role group name (seeded by authentication.seed_lookups). Kept as a
@@ -17,9 +18,18 @@ FINANCE_GROUP = "finance"
 
 
 def log_activity(lead, actor, type, summary, body=""):
-    """Record one auto-logged event on ``lead`` (NFR §7 — attributable + timestamped)."""
+    """Record one auto-logged event on ``lead`` (NFR §7 — attributable + timestamped).
+
+    R9-1: stamps the lead's Project ID at the time of the event so the log is
+    readable by project straight from the DB (display snapshot only, DD-R9-2).
+    """
     return ActivityLog.objects.create(
-        lead=lead, actor=actor, type=type, summary=summary, body=body or ""
+        lead=lead,
+        project_id=projects.row_project_id(lead),
+        actor=actor,
+        type=type,
+        summary=summary,
+        body=body or "",
     )
 
 

@@ -1,6 +1,6 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from .models import Task
+from .models import ResourceAllocation, Task
 
 # Role group names (seeded by authentication.seed_lookups). Kept here as the
 # lead domain's view of the roles it cares about, rather than importing the
@@ -51,13 +51,30 @@ class CanAssignOwnerPermission(BasePermission):
         return bool(user_role_names(user) & {LEAD_MANAGER, LEAD_ADMIN})
 
 
+def is_execution_red(user, lead):
+    """True if ``user`` has ever been allocated as ``lead``'s Execution Red (R9).
+
+    Any Red row counts, not only a currently-``allocated`` one: the Red is
+    mandatory and continuous across stages (D11 releases the row when a stage
+    closes, which must not revoke their access mid-lead). Per the user: "who can
+    see all the steps once red is assigned — he can also see all the steps."
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return ResourceAllocation.objects.filter(
+        lead=lead, slot=ResourceAllocation.Slot.EXECUTION_RED, user=user,
+    ).exists()
+
+
 def can_view_task(user, task):
     """Task visibility (Tech Req §6 rules 2–3 + §12 view rows).
 
     Lead Admin sees every task; a user always sees a task assigned to them; a
-    Lead Manager sees tasks under leads they created or own; the lead's owner
-    gets view-only access. *(The Phase-13 allocation-people view rule was
-    rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
+    Lead Manager sees tasks under leads they created or own; the lead's owner —
+    and, since R9, the lead's **Execution Red** — get view access to every step.
+    *(The Phase-13 allocation-people view rule was rescinded per PRD v3 / Tech
+    Req v16 — Phase 14a, 2026-07-16; R9 reinstates it for the Execution Red
+    alone, whose engagement-long ownership the docs' §7.5 already assumes.)*
     """
     if not user or not user.is_authenticated:
         return False
@@ -70,10 +87,19 @@ def can_view_task(user, task):
     # tasks 7/15/28, which open unassigned (§5.10 / §12).
     if task.is_finance_gate and FINANCE in roles:
         return True
+    # The Resource Manager sees (and staffs — see can_work_allocation_task) the
+    # allocation tasks 3/10/17/18/24/25, which also open unassigned (§4.7).
+    # Without this the lead they can already open (see views.lead_scope_q) would
+    # render an empty task stepper, leaving the allocation step reachable only
+    # from the Resources queue.
+    if task.is_allocation_task and RESOURCE_MANAGER in roles:
+        return True
     lead = task.lead
     if LEAD_MANAGER in roles and user.id in (lead.created_by_id, lead.assigned_to_id):
         return True
-    return lead.assigned_to_id == user.id
+    if lead.assigned_to_id == user.id:
+        return True
+    return is_execution_red(user, lead)
 
 
 def can_edit_task(user, task):

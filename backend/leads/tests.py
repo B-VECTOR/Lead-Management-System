@@ -20,7 +20,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from reference.models import Area, Industry
+from reference.models import Area, Country, Industry
 
 from . import engine, projects, resources
 from .models import (
@@ -74,6 +74,7 @@ class LeadApiTestBase(APITestCase):
         return user
 
     def setUp(self):
+        self.country = Country.objects.create(name="India", code="IN")
         self.industry = Industry.objects.create(name="Pharma & Chemical", code="PH")
         self.area = Area.objects.create(name="NPD", code="NPD")
         self.area2 = Area.objects.create(name="Operations", code="OPS")
@@ -88,6 +89,7 @@ class LeadApiTestBase(APITestCase):
         data = {
             "company_name": "Acme Corp",
             "project_name": "Digital Transformation",
+            "country": self.country.id,
             "industry": self.industry.id,
             "domain": self.area.id,
             "lead_type": Lead.LeadType.BD,
@@ -127,7 +129,9 @@ class LeadCreateTests(LeadApiTestBase):
         self.assertEqual(res.data["assigned_to"], self.lead_manager.id)
         self.assertEqual(res.data["created_by"], self.lead_manager.id)
         lead = Lead.objects.get(pk=res.data["id"])
-        self.assertTrue(lead.base_code.startswith(f"{self.area.code}"))
+        yy = f"{date.today().year % 100:02d}"
+        # §13 (format finalized 2026-07-28): Country-Industry+Area+Type+YY+Seq.
+        self.assertEqual(lead.base_code, f"IN-PHNPDCFF{yy}001")
         self.assertEqual(lead.stages.get().stage, LeadStage.BD)
         # No workflow is seeded in this test class (it only exercises the
         # create-permission/validation rules), so Task 1 doesn't open here —
@@ -177,7 +181,18 @@ class LeadCreateTests(LeadApiTestBase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
         self.assertEqual(res.data["flow_of_tasks"], "")
 
-    def test_base_code_sequence_is_per_area_and_year(self):
+    def test_country_is_required(self):
+        self.client.force_authenticate(self.lead_manager)
+        payload = self.base_payload(assigned_to=self.lead_manager.id)
+        payload.pop("country")
+        res = self.client.post(LIST_URL, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("country", res.data)
+
+    def test_base_code_sequence_is_global_per_year(self):
+        """The auto-generated number is one counter per year across all
+        countries/industries/areas/types (decision 2026-07-28) — it used to
+        restart per Area."""
         self.client.force_authenticate(self.lead_manager)
         first = self.client.post(
             LIST_URL, self.base_payload(assigned_to=self.lead_manager.id), format="json"
@@ -187,29 +202,77 @@ class LeadCreateTests(LeadApiTestBase):
         ).data
         other_area = self.client.post(
             LIST_URL,
-            self.base_payload(assigned_to=self.lead_manager.id, domain=self.area2.id),
+            self.base_payload(
+                assigned_to=self.lead_manager.id,
+                domain=self.area2.id,
+                type_of_project=Lead.TypeOfProject.AMC,
+            ),
             format="json",
         ).data
         yy = f"{date.today().year % 100:02d}"
-        self.assertEqual(Lead.objects.get(pk=first["id"]).base_code, f"{self.area.code}{yy}001")
-        self.assertEqual(Lead.objects.get(pk=second["id"]).base_code, f"{self.area.code}{yy}002")
-        self.assertEqual(Lead.objects.get(pk=other_area["id"]).base_code, f"{self.area2.code}{yy}001")
+        self.assertEqual(Lead.objects.get(pk=first["id"]).base_code, f"IN-PHNPDCFF{yy}001")
+        self.assertEqual(Lead.objects.get(pk=second["id"]).base_code, f"IN-PHNPDCFF{yy}002")
+        # Different area + type, same global counter — no restart at 001.
+        self.assertEqual(Lead.objects.get(pk=other_area["id"]).base_code, f"IN-PHOPSAMC{yy}003")
+
+    def test_project_id_segments_follow_the_lead_classification(self):
+        """Every segment is read off the lead: country, industry, area (domain),
+        type of project — then the derived stage suffix (§13)."""
+        self.client.force_authenticate(self.lead_manager)
+        indonesia = Country.objects.create(name="Indonesia", code="ID")
+        it = Industry.objects.create(name="Information Technology", code="IT")
+        res = self.client.post(
+            LIST_URL,
+            self.base_payload(
+                assigned_to=self.lead_manager.id,
+                country=indonesia.id,
+                industry=it.id,
+                domain=self.area2.id,
+                type_of_project=Lead.TypeOfProject.CONSULTING_LITE,
+            ),
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        yy = f"{date.today().year % 100:02d}"
+        self.assertEqual(res.data["base_code"], f"ID-ITOPSCLNS{yy}001")
+        # The stage of intervention is the trailing, derived segment.
+        self.assertEqual(res.data["project_id_display"], f"ID-ITOPSCLNS{yy}001-BD")
+        # …while lead.project_id stays the stable, suffix-free ID.
+        self.assertEqual(res.data["project_id"], f"ID-ITOPSCLNS{yy}001")
+
+    def test_project_id_is_frozen_when_the_classification_is_edited(self):
+        """Editing country/industry/domain/type after creation deliberately does
+        not rewrite the ID (decision 2026-07-28) — it is already printed on the
+        lead's stage, task, allocation and activity rows."""
+        self.client.force_authenticate(self.lead_manager)
+        created = self.client.post(
+            LIST_URL, self.base_payload(assigned_to=self.lead_manager.id), format="json"
+        ).data
+        original = created["base_code"]
+        res = self.client.patch(
+            detail_url(created["id"]),
+            {"domain": self.area2.id, "type_of_project": Lead.TypeOfProject.AMC},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data["base_code"], original)
+        self.assertEqual(Lead.objects.get(pk=created["id"]).project_id, original)
 
 
 class LeadVisibilityTests(LeadApiTestBase):
     def setUp(self):
         super().setUp()
         self.mkt_lead = Lead.objects.create(
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             company_name="Mkt Co", project_name="P1", created_by=self.marketing,
         )
         self.own_lead = Lead.objects.create(
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             company_name="Own Co", project_name="P2", created_by=self.lead_manager,
             assigned_to=self.lead_manager,
         )
         self.assigned_lead = Lead.objects.create(
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             company_name="Assigned Co", project_name="P3", created_by=self.other_manager,
             assigned_to=self.lead_manager,
         )
@@ -258,11 +321,11 @@ class LeadUpdateTests(LeadApiTestBase):
     def setUp(self):
         super().setUp()
         self.mkt_lead = Lead.objects.create(
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             company_name="Mkt Co", project_name="P1", created_by=self.marketing,
         )
         self.own_lead = Lead.objects.create(
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             company_name="Own Co", project_name="P2", created_by=self.lead_manager,
             assigned_to=self.lead_manager,
         )
@@ -436,12 +499,30 @@ class WorkflowTestBase(LeadApiTestBase):
         return task_obj
 
     def staff_and_submit(self, actor, task_obj, assignments, expect=status.HTTP_200_OK):
+        """Fill each named slot on an allocation task, then submit it.
+
+        R9: a single-occupancy slot may already be filled when the task opens —
+        the Execution Red **carries forward** from the previous stage pre-filled
+        (DD-R9-4) — so each assignment resolves to allocate (empty slot), a no-op
+        (already the intended person), or reassign (a different person).
+        """
         self.client.force_authenticate(actor)
         for slot, user in assignments.items():
-            res = self.client.post(
-                f"/api/allocation-tasks/{task_obj.id}/allocate/",
-                {"slot": slot, "user_id": user.id}, format="json",
-            )
+            existing = ResourceAllocation.objects.filter(
+                task=task_obj, slot=slot, status=ResourceAllocation.Status.ALLOCATED,
+            ).first()
+            if existing is not None and existing.user_id == user.id:
+                continue
+            if existing is not None:
+                res = self.client.post(
+                    f"/api/allocation-tasks/{task_obj.id}/reassign/",
+                    {"allocation_id": existing.id, "user_id": user.id}, format="json",
+                )
+            else:
+                res = self.client.post(
+                    f"/api/allocation-tasks/{task_obj.id}/allocate/",
+                    {"slot": slot, "user_id": user.id}, format="json",
+                )
             self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
         res = self.client.post(f"/api/allocation-tasks/{task_obj.id}/submit/", format="json")
         self.assertEqual(res.status_code, expect, res.data)
@@ -653,31 +734,63 @@ class FlowVariantTests(WorkflowTestBase):
 
 
 class AutoDropTests(WorkflowTestBase):
-    """Task 8 "go-ahead = No" auto-drops the lead but leaves the parallel
-    Tasks 6 & 7 (2HR reimbursement) open (§5.5)."""
+    """Task 8 "go-ahead = No" auto-drops the lead and opens no successors (§5.5).
 
-    def test_go_ahead_no_drops_lead_leaving_6_and_7_open(self):
+    R9-7 (DD-R9-6) changed the 2HR tail from parallel to sequential
+    (5 → 6 → 7 → 8), so §5.5's "the drop leaves Tasks 6 & 7 open to chase the
+    money" is now unreachable — both are necessarily closed before Task 8 can
+    open. What still matters, and is asserted here, is that the auto-drop does
+    **not** behave like a manual drop: it flips only the lead's status, touching
+    no task rows and opening no successors.
+    """
+
+    def test_go_ahead_no_drops_lead_and_opens_nothing(self):
         lead = self.create_lead()
         owner = self.lead_manager
         self.complete(owner, self.task(lead, 1), self.f1())
         self.complete(owner, self.task(lead, 2), self.f2())
         self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
         self.complete(owner, self.task(lead, 4))
-        self.complete(self.red, self.task(lead, 5), self.f5())  # opens 6 and 8 in parallel
-        self.complete(self.red, self.task(lead, 6), self.f6())  # opens 7 — the money is in flight
-        self.complete(owner, self.task(lead, 8), self.f8("No"))
+        self.complete(self.red, self.task(lead, 5), self.f5())
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))  # gate clears → 8 opens
+        res = self.complete(owner, self.task(lead, 8), self.f8("No"))
 
+        self.assertEqual(res.get("opened_tasks", []), [], "the No branch opens nothing")
         lead.refresh_from_db()
         self.assertEqual(lead.status, Lead.Status.DROPPED)
-        # The auto-drop does not cascade to the lead's other tasks — Task 7 (the
-        # still-open reimbursement gate) is left exactly as it was, unlike a
-        # manual drop which would move every open/held task to `dropped`.
-        self.assertEqual(self.task(lead, 7, expect_status=Task.Status.OPEN).status, "open")
+        # Unlike a manual drop (which sweeps open/held tasks to `dropped`), the
+        # auto-drop leaves every task row exactly as the flow left it.
         self.assertEqual(self.task(lead, 6, expect_status=Task.Status.CLOSED).status, "closed")
+        self.assertEqual(self.task(lead, 7, expect_status=Task.Status.CLOSED).status, "closed")
+        self.assertFalse(
+            lead.tasks.filter(status=Task.Status.DROPPED).exists(),
+            "an auto-drop must not cascade onto task rows",
+        )
         self.assertIn(
             "dropped",
             ActivityLog.objects.filter(lead=lead, type="status").latest("id").summary.lower(),
         )
+
+    def test_task_8_stays_shut_until_the_reimbursement_gate_clears(self):
+        """R9-7: the go-ahead question cannot be reached while the 2HR
+        reimbursement gate is bouncing — Task 7 "No" re-opens Task 6, and Task 8
+        only exists once the gate finally answers "Yes"."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
+        self.complete(owner, self.task(lead, 4))
+        self.complete(self.red, self.task(lead, 5), self.f5())
+        self.assertFalse(lead.tasks.filter(task_no=8).exists(), "8 is not parallel to 6 any more")
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        self.complete(self.finance, self.task(lead, 7), self.f_gate("No"))
+        self.assertFalse(lead.tasks.filter(task_no=8).exists(), "a bounced gate must not open 8")
+        self.task(lead, 6, expect_status=Task.Status.OPEN)  # re-opened to chase the money
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))
+        self.task(lead, 8, expect_status=Task.Status.OPEN)
 
 
 class FinanceGateBounceTests(WorkflowTestBase):
@@ -995,6 +1108,198 @@ class ResourceAllocationApiTests(WorkflowTestBase):
         self.assertEqual(len(_row()["allocation"]["occupants"]["white"]), 1)
 
 
+class ExecutionRedContinuityTests(WorkflowTestBase):
+    """R9-2/R9-5: the Execution Red is mandatory on every stage, carries forward
+    pre-filled into later allocation tasks, can never be emptied, and sees every
+    step of its lead."""
+
+    def _to_first_allocation(self, manpower="Yes"):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2(manpower=manpower))
+        return lead, owner, self.task(lead, 3)
+
+    def test_task_3_opens_for_the_resource_manager_when_manpower_is_required(self):
+        lead, _owner, alloc = self._to_first_allocation(manpower="Yes")
+        self.assertIsNone(alloc.assigned_to_id, "staffed from the resource queue")
+        self.client.force_authenticate(self.resource_manager)
+        listing = self.client.get("/api/allocation-tasks/")
+        self.assertIn(alloc.id, [r["id"] for r in listing.data])
+        # …and the Resource Manager can open the lead itself (§5.4 "he can see
+        # all the lead details too").
+        self.assertEqual(
+            self.client.get(detail_url(lead.id)).status_code, status.HTTP_200_OK
+        )
+
+    def test_task_3_still_opens_for_the_bd_owner_when_no_manpower_is_required(self):
+        """R9-5 (DD-R9-3): "No" no longer skips the allocation — it hands it to
+        the lead's Default BD Person, so a Red is allocated either way."""
+        lead, owner, alloc = self._to_first_allocation(manpower="No")
+        self.assertEqual(alloc.status, Task.Status.OPEN)
+        self.assertEqual(alloc.assigned_to_id, owner.id)
+        self.staff_and_submit(owner, alloc, {"execution_red": self.red})
+        self.assertEqual(resources.latest_execution_red(lead), self.red)
+        self.assertEqual(self.task(lead, 4).status, Task.Status.OPEN)
+
+    def test_red_carries_forward_prefilled_into_the_next_allocation_task(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
+        self.complete(owner, self.task(lead, 4))
+        self.complete(self.red, self.task(lead, 5), self.f5())
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))
+        self.complete(owner, self.task(lead, 8), self.f8("Yes", "Yes"))
+        self.complete(owner, self.task(lead, 9), self.f9())
+
+        alloc10 = self.task(lead, 10)
+        row = ResourceAllocation.objects.filter(
+            task=alloc10, slot="execution_red", status="allocated"
+        ).first()
+        self.assertIsNotNone(row, "the Red must open pre-filled, not empty")
+        self.assertEqual(row.user_id, self.red.id)
+        # Pre-filled means immediately submittable — no re-picking the same person.
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(f"/api/allocation-tasks/{alloc10.id}/submit/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_execution_red_cannot_be_released_to_empty(self):
+        lead, _owner, alloc = self._to_first_allocation()
+        self.client.force_authenticate(self.resource_manager)
+        self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/",
+            {"slot": "execution_red", "user_id": self.red.id}, format="json",
+        )
+        row = ResourceAllocation.objects.get(task=alloc, slot="execution_red")
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/release/",
+            {"allocation_id": row.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resources.latest_execution_red(lead), self.red)
+
+    def test_resource_manager_reaches_the_allocation_step_from_the_leads_list(self):
+        """R10-1: the Resource Manager gets the Leads tab, so the lead they open
+        from it must carry its allocation step in the stepper — not an empty one.
+        Their other steps stay hidden (they are not the lead's owner or Red)."""
+        lead, _owner, alloc = self._to_first_allocation()
+        self.client.force_authenticate(self.resource_manager)
+        listing = self.client.get(LIST_URL)
+        self.assertIn(
+            lead.id, [r["id"] for r in listing.data["results"]], "lead must be listed"
+        )
+
+        res = self.client.get(f"/api/leads/{lead.id}/tasks/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        rows = {r["task_no"]: r for r in res.data}
+        self.assertIn(3, rows, "the allocation step must be visible")
+        self.assertTrue(rows[3]["can_staff"], "and staffable in place (D12)")
+        self.assertNotIn(2, rows, "non-allocation steps stay hidden")
+
+        # And the staffing actually works from there — same endpoints the inline
+        # AllocationStep calls.
+        self.staff_and_submit(self.resource_manager, alloc, {"execution_red": self.red})
+        self.assertEqual(resources.latest_execution_red(lead), self.red)
+
+    def test_resource_manager_cannot_edit_a_lead_from_the_leads_list(self):
+        """The new tab is read-only for them — LeadPermission is unchanged."""
+        lead, _owner, _alloc = self._to_first_allocation()
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.patch(detail_url(lead.id), {"project_name": "Renamed"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_red_sees_every_step_of_the_lead(self):
+        lead, owner, alloc = self._to_first_allocation()
+        # Before allocation the Red is an outsider to this lead.
+        self.client.force_authenticate(self.red)
+        self.assertEqual(
+            self.client.get(detail_url(lead.id)).status_code, status.HTTP_404_NOT_FOUND
+        )
+        self.staff_and_submit(self.resource_manager, alloc, {"execution_red": self.red})
+
+        self.client.force_authenticate(self.red)
+        self.assertEqual(self.client.get(detail_url(lead.id)).status_code, status.HTTP_200_OK)
+        res = self.client.get(f"/api/leads/{lead.id}/tasks/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        seen = {r["task_no"] for r in res.data}
+        # Every step, not just the ones assigned to them (Task 1/2 were the BD
+        # owner's, Task 3 opened unassigned).
+        self.assertTrue({1, 2, 3}.issubset(seen), seen)
+
+    def test_red_keeps_access_after_the_stage_releases_the_allocation(self):
+        """D11 releases the 2HR Red when the stage closes — that must not revoke
+        their visibility, and an ``execution_red`` task must still resolve to
+        them (DD-R9-5)."""
+        lead, owner, alloc = self._to_first_allocation()
+        self.staff_and_submit(self.resource_manager, alloc, {"execution_red": self.red})
+        ResourceAllocation.objects.filter(lead=lead, slot="execution_red").update(
+            status=ResourceAllocation.Status.RELEASED
+        )
+        self.assertEqual(resources.latest_execution_red(lead), self.red)
+        self.client.force_authenticate(self.red)
+        self.assertEqual(self.client.get(detail_url(lead.id)).status_code, status.HTTP_200_OK)
+
+
+class LeadReassignmentCascadeTests(WorkflowTestBase):
+    """R9-4: reassigning a lead moves the work, not just the label."""
+
+    def test_open_task_follows_the_new_owner(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        task1 = self.task(lead, 1)
+        self.assertEqual(task1.assigned_to_id, owner.id)
+
+        # The managing Lead Manager reassigns their own lead (LeadPermission:
+        # Lead Admin may only touch a still-unassigned one).
+        self.client.force_authenticate(owner)
+        res = self.client.patch(
+            detail_url(lead.id),
+            {"assigned_to": self.other_manager.id, "remark": "Owner on leave"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        task1.refresh_from_db()
+        self.assertEqual(
+            task1.assigned_to_id, self.other_manager.id,
+            "the task in flight moves with the lead, completed or not",
+        )
+        # …and the edit right moves with it: the outgoing owner can no longer close it.
+        self.client.force_authenticate(owner)
+        res = self.client.post(f"/api/tasks/{task1.id}/complete/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(
+            Notification.objects.filter(user=self.other_manager, type="task_reassigned").exists()
+        )
+
+    def test_cascade_leaves_the_execution_reds_own_tasks_alone(self):
+        """DD-R9-7: a task the workflow assigns to the Execution Red belongs to
+        them as Red — a lead-owner change must not quietly strip it."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
+        self.complete(owner, self.task(lead, 4))
+        task5 = self.task(lead, 5)
+        self.assertEqual(task5.assigned_to_id, self.red.id)
+
+        # Make the Red the lead owner too, then hand the lead on. Each PATCH is
+        # made by the lead's current Lead-Manager owner (see above).
+        self.client.force_authenticate(owner)
+        res = self.client.patch(detail_url(lead.id), {"assigned_to": self.red.id}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        res = self.client.patch(
+            detail_url(lead.id), {"assigned_to": self.other_manager.id}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task5.refresh_from_db()
+        self.assertEqual(task5.assigned_to_id, self.red.id, "Task 5 is the Red's, as Red")
+
+
 class TriggerSchedulerTests(WorkflowTestBase):
     """Date-offset trigger tasks open ``pending`` until their reference date
     arrives (§4.12) — the scheduler command opens them same-day."""
@@ -1094,7 +1399,7 @@ class FollowupApiTestBase(LeadApiTestBase):
         super().setUp()
         self.lead = Lead.objects.create(
             company_name="Acme Corp", project_name="Digital Transformation",
-            industry=self.industry, domain=self.area, lead_type=Lead.LeadType.BD,
+            country=self.country, industry=self.industry, domain=self.area, lead_type=Lead.LeadType.BD,
             assigned_to=self.lead_manager, created_by=self.lead_manager,
         )
         self.future = (timezone.now().date() + timedelta(days=5)).isoformat()
@@ -1200,7 +1505,7 @@ class SimpleLeadTestBase(LeadApiTestBase):
         )
         self.lead = Lead.objects.create(
             company_name="WF Co", project_name="WF Project",
-            industry=self.industry, domain=self.area,
+            country=self.country, industry=self.industry, domain=self.area,
             flow_of_tasks=Lead.FlowOfTasks.DEFAULT, type_of_project=Lead.TypeOfProject.AMC,
             created_by=self.lead_manager, assigned_to=self.lead_manager,
         )
@@ -1280,7 +1585,7 @@ class DashboardTests(SimpleLeadTestBase):
 
     def test_lead_admin_sees_all_leads(self):
         Lead.objects.create(
-            industry=self.industry, domain=self.area, company_name="Other", project_name="P2",
+            country=self.country, industry=self.industry, domain=self.area, company_name="Other", project_name="P2",
             created_by=self.other_manager, assigned_to=self.other_manager,
         )
         self.client.force_authenticate(self.lead_admin)

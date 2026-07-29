@@ -83,9 +83,12 @@ def lead_scope_q(user):
     working:
 
     - **Lead Admin** — all leads (``None``).
-    - **Anyone** — leads they own (``assigned_to``) or are actively working a
-      task on (``tasks__assigned_to``). *(The Phase-13 any-allocation-slot rule
-      was rescinded per PRD v3 / Tech Req v16 — Phase 14a, 2026-07-16.)*
+    - **Anyone** — leads they own (``assigned_to``), are actively working a task
+      on (``tasks__assigned_to``), or are/were the lead's **Execution Red**
+      (R9 — the Red sees the whole lead, mirroring
+      :func:`permissions.is_execution_red`). *(The Phase-13 rule that gave every
+      allocation slot-holder this access was rescinded per PRD v3 / Tech Req v16
+      — Phase 14a; R9 reinstates it for the Execution Red only.)*
     - **Lead Manager / Marketing** — additionally the leads they created.
     - **Resource Manager** — additionally any lead that has reached an
       allocation task (3/10/17/18/24/25, R5) — checked by task, not by a
@@ -97,7 +100,14 @@ def lead_scope_q(user):
     roles = user_role_names(user)
     if LEAD_ADMIN in roles:
         return None
-    scope = Q(assigned_to=user) | Q(tasks__assigned_to=user)
+    scope = (
+        Q(assigned_to=user)
+        | Q(tasks__assigned_to=user)
+        | Q(
+            resource_allocations__slot=ResourceAllocation.Slot.EXECUTION_RED,
+            resource_allocations__user=user,
+        )
+    )
     if roles & {LEAD_MANAGER, MARKETING}:
         scope |= Q(created_by=user)
     if RESOURCE_MANAGER in roles:
@@ -126,7 +136,7 @@ class LeadQuerysetMixin:
 
     def get_queryset(self):
         qs = Lead.objects.select_related(
-            "industry", "domain", "assigned_to", "created_by"
+            "country", "industry", "domain", "assigned_to", "created_by"
         ).prefetch_related("tasks", "stages")
         q = lead_scope_q(self.request.user)
         return qs if q is None else qs.filter(q).distinct()
@@ -179,7 +189,7 @@ class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
         # created_by records whether the lead originated from Marketing or a
         # Lead Manager (Tech Req §4.3); the client can never set it.
         lead = serializer.save(created_by=self.request.user)
-        # R2: allocate the stable base_code ({AreaCode}{YY}{Seq}, §13) and open
+        # R2: allocate the stable base_code ({Country}-{Industry}{Area}{Type}{YY}{Seq}, §13) and open
         # the lead's initial stage so the derived Project ID resolves from
         # creation onward. Per-task stage transitions land in R3.
         projects.initialize_new_lead(lead)
@@ -244,6 +254,12 @@ class LeadDetailView(LeadQuerysetMixin, generics.RetrieveUpdateAPIView):
                 "lead",
                 f"Lead reassigned from {prev_name} to {new_name}",
                 remark,
+            )
+            # R9-4: hand the work over too, not just the label — the task in
+            # flight moves to the new owner immediately (see
+            # engine.reassign_owner_tasks for the Execution-Red carve-out).
+            engine.reassign_owner_tasks(
+                lead, prev_assigned, lead.assigned_to, self.request.user
             )
             if lead.assigned_to_id and lead.assigned_to_id != self.request.user.id:
                 events.notify(
@@ -358,13 +374,27 @@ class TaskScopeMixin:
         )
         if LEAD_ADMIN in roles:
             return qs
-        conds = Q(assigned_to=user) | Q(lead__assigned_to=user)
+        # R9: the lead's Execution Red sees every step of it, like the owner —
+        # matches permissions.is_execution_red (any Red row, released or not).
+        conds = (
+            Q(assigned_to=user)
+            | Q(lead__assigned_to=user)
+            | Q(
+                lead__resource_allocations__slot=ResourceAllocation.Slot.EXECUTION_RED,
+                lead__resource_allocations__user=user,
+            )
+        )
         if LEAD_MANAGER in roles:
             conds |= Q(lead__created_by=user)
         # Finance works the payment-approval gates from the Accounts queue — they
         # open unassigned, so scope them in by their flag (§5.10 / §12).
         if FINANCE in roles:
             conds |= Q(is_finance_gate=True)
+        # Same for the Resource Manager and the allocation tasks (3/10/17/18/24/25)
+        # — matches permissions.can_view_task, so the allocation step shows up in
+        # the stepper of any lead they open from the Leads tab (R10-1).
+        if RESOURCE_MANAGER in roles:
+            conds |= Q(is_allocation_task=True)
         return qs.filter(conds).distinct()
 
 
@@ -1021,7 +1051,10 @@ class FollowupListCreateView(FollowupScopeMixin, generics.ListCreateAPIView):
         lead = serializer.validated_data["lead"]
         if not user_can_view_lead(self.request.user, lead):
             raise PermissionDenied("You cannot raise a follow-up on this lead.")
-        followup = serializer.save(created_by=self.request.user)
+        followup = serializer.save(
+            created_by=self.request.user,
+            project_id=projects.row_project_id(lead),  # R9-1 display snapshot
+        )
         events.log_activity(
             followup.lead,
             self.request.user,
@@ -1189,7 +1222,10 @@ class LeadAttachmentListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView
         lead = self.get_lead()
         upload = serializer.validated_data["file"]
         serializer.save(
-            lead=lead, uploaded_by=self.request.user, filename=upload.name
+            lead=lead,
+            uploaded_by=self.request.user,
+            filename=upload.name,
+            project_id=projects.row_project_id(lead),  # R9-1 display snapshot
         )
 
 
@@ -1270,8 +1306,16 @@ class DashboardView(LeadQuerysetMixin, APIView):
     def get(self, request):
         leads = super().get_queryset()
 
+        # ``Count("id", distinct=True)``: ``lead_scope_q`` joins tasks (and, since
+        # R9, allocation rows), so a plain Count would tally one row per joined
+        # child and inflate every funnel bucket. The mixin's ``.distinct()`` can't
+        # help here — it de-duplicates the grouped ``(status, n)`` rows, not the
+        # count inside them. (Pre-existing for any task-joined scope; R9 added a
+        # second join, so it is fixed here rather than left to compound.)
         counts = dict(
-            leads.values_list("status").annotate(n=Count("id")).values_list("status", "n")
+            leads.values_list("status")
+            .annotate(n=Count("id", distinct=True))
+            .values_list("status", "n")
         )
         count_by_status = [
             {"status": value, "count": counts.get(value, 0)}

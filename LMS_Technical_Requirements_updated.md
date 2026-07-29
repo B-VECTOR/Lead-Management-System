@@ -14,8 +14,8 @@ This is a structural rework, not an increment. The major changes:
 - **28-task workflow** (was 17). A single **BD → Extension → Mining** flow. **Mining and Extension are in scope.**
 - **Stage is now a first-class, tracked entity** (`lead_stage`). Every task belongs to a stage (BD / 2HR / SnT / Implementation / Extension / Mining / Closure). **A lead can have two stages open at once** — Mining and Extension run in **parallel**.
 - **New lead fields:** `flow_of_tasks` (which stages run) and `type_of_project` (label only). `lead_type` is now **BD / Extension / Mining**.
-- **`country` is removed** from the lead and from Project ID generation. **`domain` is now multi-select** (M2M into `areas`).
-- **Project ID redesigned:** stable base `{AreaCode}{YY}{Seq}` (e.g. `NPD26001`), generated at **lead creation**, with the **current stage as a derived display suffix** (`-BD`, `-2HR`, `-SnT`, `-IM`, `-E0/-E1…`, `-M`). No country/industry code.
+- ~~**`country` is removed** from the lead and from Project ID generation.~~ **Superseded 2026-07-28:** `country` is **back on the lead** and is the Project ID's leading segment (§13). **`domain` is now multi-select** (M2M into `areas`) — *note: built single-select per decision D2.*
+- **Project ID redesigned:** generated at **lead creation** as a stable base, with the **current stage as a derived display suffix** (`-BD`, `-2HR`, `-SnT`, `-IM`, `-E0/-E1…`, `-M`). ~~Base `{AreaCode}{YY}{Seq}`, no country/industry code.~~ **Composition finalized by the user 2026-07-28:** `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}` — e.g. `IN-PHNPDCFF26001` — i.e. Country Code, Industry, Area, Type of Project, Year, auto-generated number, stage of intervention (§13).
 - **Finance (Abhay) is a live role** with three payment-approval gate tasks (7, 15, 28). A "No" at a gate **re-opens the preceding task** — a closed task can be re-opened, and task history retains every close→re-open→close cycle.
 - **Resource allocation redesigned as append-only history** — one row per resource per slot, with allocate/release dates and reassignment linkage, to power the resource dashboard (who worked which slot, for how long, including reassignments). Auditor allocation is **split into its own tasks** (18, 25); Task 18 is a **hanging (non-blocking) task**.
 - **Conditional 2HR allocation:** Task 3 opens only if Task 2's "manpower support required?" = Yes; otherwise the Default BD Person carries the study.
@@ -103,7 +103,7 @@ Roles via Django Groups (§2); multi-role supported. CRUD owned by **User Manage
 
 ### 4.2 Reference Tables — `industries`, `areas`, `belts`
 
-> **`countries` is removed** — Country is no longer captured on the lead and no longer feeds the Project ID.
+> ~~**`countries` is removed** — Country is no longer captured on the lead and no longer feeds the Project ID.~~ **Superseded 2026-07-28:** `countries` is live again — Country is captured on the lead and its `code` leads the Project ID (§13). Same shape as Industry/Area below.
 
 **Industry and Area** share the same shape (`code` feeds the Project ID base, §13):
 
@@ -137,19 +137,20 @@ One row per **project cycle**: the original lead, plus a **new row for each Mini
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | id | auto (PK) | Auto | numeric key used by all FKs |
-| base_code | text, unique | Auto | stable project base, `{AreaCode}{YY}{Seq}` e.g. `NPD26001` — generated at creation, never changes (§13). Shared across a project's parent + Mining child rows. |
-| project_id | text | Auto | **stable** lead-level ID stored at creation = `base_code` (+ `-M` for a Mining lead), **no stage suffix** so it stays constant for the lead's life (`NPD26001`, `NPD26002-M`) — decision 2026-07-27. The stage-suffixed variants live per-row on `lead_stage`/`task_details`. |
+| base_code | text | Auto | stable project base, `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}` e.g. `IN-PHNPDCFF26001` — generated at creation, never changes (§13), even if the lead's country/industry/domain/type is later edited. Shared across a project's parent + Mining child rows (so **not** DB-unique). |
+| project_id | text | Auto | **stable** lead-level ID stored at creation = `base_code` (+ `-M` for a Mining lead), **no stage suffix** so it stays constant for the lead's life (`IN-PHNPDCFF26001`, `IN-PHNPDCFF26002-M`) — decision 2026-07-27. The stage-suffixed variants live per-row on `lead_stage`/`task_details`. |
 | parent_lead_id | FK → `lead`, nullable | Auto | set on a Mining-spawned lead, pointing at the parent it originated from (Task 21) |
 | company_name | text | Yes | |
 | project_name | text | Yes | |
-| industry | FK → `industries` | Yes | §4.2 |
-| domain | **M2M → `areas`** | Yes | **multi-select.** The **primary (first-selected)** area supplies the Project ID's Area code (§13). *(Assumption flagged: primary-domain rule for the code.)* |
+| country | FK → `countries` | Yes | §4.2. Re-added 2026-07-28 (reverses the v17.0 removal): its `code` is the Project ID's leading segment (§13). |
+| industry | FK → `industries` | Yes | §4.2. Its `code` is a Project ID segment (§13). |
+| domain | **M2M → `areas`** | Yes | **multi-select.** The **primary (first-selected)** area supplies the Project ID's Area code (§13). *(Assumption flagged: primary-domain rule for the code.)* *(Built single-select per decision D2, so the single domain supplies the code.)* |
 | division | text | No | |
 | scope | text | No | |
 | assigned_to | FK → users, nullable | Yes for Lead-Manager-created; NULL for Marketing-created | "Default BD Person" throughout the workflow = this field. No "Not Assigned" value is stored; NULL means unassigned. |
 | lead_type | dropdown (`BD`/`Extension`/`Mining`) | Yes | macro entry point (§4.3.4) |
 | flow_of_tasks | dropdown (4 options) | Yes | which stages run (§4.3.4). Applies to BD/Mining; ignored for Extension. |
-| type_of_project | dropdown (6 options) | Yes | **label only** — reporting/filter; does not affect the task path. Options: Consulting Full Fledged, AMC, Upgrade, Vectorflow Lite, Audit only, Consulting Lite + No software. |
+| type_of_project | dropdown (6 options) | Yes | reporting/filter label — does not affect the task path — **and** a Project ID segment via its code (§13.4). Options: Consulting Full Fledged, AMC, Upgrade, Vectorflow Lite, Audit only, Consulting Lite + No software. |
 | status | dropdown | Auto | `In Progress` / `Hold` / `Dropped` / `Completed` (§4.3.2) |
 | lead_start_dt | date/timestamp | Auto | when the lead/cycle was created (lifecycle start) |
 | lead_end_dt | date/timestamp, nullable | Auto | set when the lead first reaches a terminal status (`Completed` or `Dropped`); NULL while active |
@@ -463,45 +464,67 @@ View access to all screens except User Management. Can assign owners to Not-Assi
 
 ## 13. Project ID Generation
 
-The Project ID is now **stage-legible**: reading it tells you where the project stands. It is a stable base plus a derived stage suffix.
+**Composition finalized by the user 2026-07-28.** The Project ID is **stage-legible**: reading it tells you what the engagement is and where it stands. It is a stable base plus a derived stage suffix.
 
-**Base:** `{AreaCode}{YY}{Seq}` — the primary Domain/Area code (via the lead's primary `domain`), a 2-digit year, and a 3-digit incrementing sequence. Example: `NPD26001`. **No country or industry code.**
+**Base:** `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}`
 
-- Generated automatically at **lead creation**; the base never changes for that project.
-- Because `domain` is multi-select, the **primary (first-selected)** area supplies the code. *(Assumption flagged for confirmation.)*
+```
+IN  -  PH        NPD    CFF     26     001        -IM
+│      │         │      │       │      │          └─ stage of intervention (derived suffix)
+│      │         │      │       │      └─ auto-generated number, 3 digits
+│      │         │      │       └─ 2-digit year
+│      │         │      └─ type of project (§13.4)
+│      │         └─ area code, from the lead's domain (§13.3)
+│      └─ industry code (§13.2)
+└─ country code (§13.5)
+```
+
+- Generated automatically at **lead creation**; the base **never changes** for that project — including when the lead's country, industry, domain or type of project is edited afterwards (decision 2026-07-28). The ID is already printed on every stage, task, allocation and activity row, so it is an identifier, not a live projection of the lead's current classification.
+- The single `domain` supplies the Area code (decision D2 built `domain` single-select; the spec's multi-select rule was "primary/first-selected area").
 - Stored as `lead.base_code` (the stable key). The **suffixed display string is derived** for the lead's live view; per decision 2026-07-27 a per-stage snapshot is also stored on `lead_stage.project_id` / `task_details.project_id`. Neither is ever used as a join key.
 
 **Display:** `base_code [+ "-M"] + "-" + {current_stage_code}`
 
 | Stage | Suffix | Example |
 |---|---|---|
-| BD | `-BD` | `NPD26001-BD` |
-| 2HR | `-2HR` | `NPD26001-2HR` |
-| SnT | `-SnT` | `NPD26001-SnT` |
-| Implementation | `-IM` | `NPD26001-IM` |
-| Extension loop n (first = 0) | `-E{n}` | `NPD26001-E0`, `NPD26001-E1` |
-| Mining cycle | `-M` | `NPD26001-M` |
-| Mining cycle that extends | `-M-E{n}` | `NPD26001-M-E1` |
+| BD | `-BD` | `IN-PHNPDCFF26001-BD` |
+| 2HR | `-2HR` | `IN-PHNPDCFF26001-2HR` |
+| SnT | `-SnT` | `IN-PHNPDCFF26001-SnT` |
+| Implementation | `-IM` | `IN-PHNPDCFF26001-IM` |
+| Extension loop n (first = 0) | `-E{n}` | `IN-PHNPDCFF26001-E0`, `…-E1` |
+| Mining cycle | `-M` | `IN-PHNPDCFF26001-M` |
+| Mining cycle that extends | `-M-E{n}` | `IN-PHNPDCFF26001-M-E1` |
 
-- **Mining:** on Task 21 = Yes, a **new `lead` row** is created for the same `base_code` with `parent_lead_id` set and a `-M` marker; its Mining/`M` stage can run in parallel with the parent's Extension.
+- **Mining:** on Task 21 = Yes, a **new `lead` row** is created for the same `base_code` with `parent_lead_id` set and a `-M` marker; its Mining/`M` stage can run in parallel with the parent's Extension. A shared base does **not** consume a second sequence number.
 - **Extension loops:** the `-E{n}` counter increments each loop; the first extension is `-E0`.
 - Because Mining and Extension can be open at once, the "current stage" for display is resolved from the lead's open `lead_stage` rows (the cycle being viewed); a single stored suffix cannot represent parallel stages, which is why the suffix is derived.
 
-> **Open item (flagged):** the exact final composition of the Project ID is subject to your confirmation (you said you'll finalize it). The working model is base = `Area+YY+Seq`, mutable stage suffix, `-M` for mining, `-E{n}` for extension loops, with the primary Domain supplying the Area code.
-
 ### 13.1 Generation triggers
-- **Lead creation:** allocate `base_code` (`{AreaCode}{YY}{Seq}`); the Sequence increments per Area+Year.
+- **Lead creation:** allocate `base_code`. The auto-generated number is **one counter per year, globally** (decision 2026-07-28) — not per Area, not per Country: `…26001`, `…26002`, `…26003` regardless of how the other segments differ. So the number alone identifies the project within its year.
 - **Stage transitions:** the display suffix updates automatically as `lead_stage` rows open/close — no re-generation of the base.
 - **Mining (Task 21 = Yes):** new `lead` row, same `base_code`, `parent_lead_id` set, Mining cycle.
 - **Extension loop (Task 26 close):** extension counter increments; a new `project_details` cycle row (stage `E{n}`) is created.
 
-### 13.2 Industry Codes — seed for `industries`
+### 13.2 Industry Codes — seed for `industries` (feeds the Project ID base)
 Auto Comp (COMP), Auto OEM (OEM), Banking (BNK), Building & Construction Goods (BCG), CapEx (CEX), Consumer Goods (CG), EPC (EPC), ETO (ETO), FMCG (FMCG), FMEG (FMEG), Industrial Goods (IG), Information Technology (IT), Machinery & Equipment (ME), Organised Retail (RE), Pharma & Chemical (PH), Textile & Fashion (TX).
-
-> Industry is retained on the lead for reporting/filtering, but its code is **no longer used in the Project ID**.
 
 ### 13.3 Area Codes — seed for `areas` (feeds the Project ID base)
 B2B Sales (B2B), B2C Sales (B2C), Distribution (DIST), NPD (NPD), Operations (OPS), Projects (PROJ), Supply Chain (SC), VectorFLOW AMC (VFAMC), VectorFLOW Upgrade (VFUPG), VectorPRO AMC (VPAMC), VectorPRO Upgrade (VPUPG).
+
+### 13.4 Type-of-Project Codes (feeds the Project ID base)
+Unlike the other three segments these are **not** a reference table — `type_of_project` is a fixed 6-option dropdown (§4.3), so the codes live in code (`Lead.TYPE_OF_PROJECT_CODES`):
+
+| Type of Project | Code |
+|---|---|
+| Consulting Full Fledged | `CFF` |
+| AMC | `AMC` |
+| Upgrade | `UPG` |
+| Vectorflow Lite | `VFL` |
+| Audit only | `AO` |
+| Consulting Lite + No software | `CLNS` |
+
+### 13.5 Country Codes — seed for `countries` (feeds the Project ID base)
+India (IN), Indonesia (ID). Maintained in the Django admin like the other reference tables (§4.2).
 
 ---
 

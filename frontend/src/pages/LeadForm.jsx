@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCreateLead, useLead, useUpdateLead } from '@/hooks/useLeads'
-import { useIndustries, useAreas, useAssignableUsers } from '@/hooks/useLookups'
+import { useCountries, useIndustries, useAreas, useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
 import { toast } from 'sonner'
@@ -25,7 +25,8 @@ const FLOW_OPTIONS = [
   { value: 'SNT_PROPOSAL', label: 'SnT → Project Proposal' },
 ]
 
-// Type of Project — reporting/filter label only (§5.2.2). Matches the backend
+// Type of Project — a reporting/filter label (§5.2.2) that also supplies a
+// Project-ID segment (§13.4: CFF/AMC/UPG/VFL/AO/CLNS). Matches the backend
 // Lead.TypeOfProject choices (stored as the display string).
 const TYPE_OF_PROJECT_OPTIONS = [
   'Consulting Full Fledged', 'AMC', 'Upgrade',
@@ -33,7 +34,7 @@ const TYPE_OF_PROJECT_OPTIONS = [
 ]
 
 const emptyForm = {
-  company_name: '', project_name: '', industry: '', domain: '',
+  company_name: '', project_name: '', country: '', industry: '', domain: '',
   division: '', scope: '', assigned_to: '', lead_type: 'BD',
   flow_of_tasks: 'DEFAULT', type_of_project: '',
 }
@@ -44,6 +45,7 @@ export default function LeadForm() {
   const navigate = useNavigate()
   const { user } = useAuth()
 
+  const { data: countries = [] } = useCountries()
   const { data: industries = [] } = useIndustries()
   const { data: areas = [] } = useAreas()
   const { data: existingLead } = useLead(isEdit ? id : undefined)
@@ -77,6 +79,7 @@ export default function LeadForm() {
       setForm({
         company_name: existingLead.company_name || '',
         project_name: existingLead.project_name || '',
+        country: existingLead.country || '',
         industry: existingLead.industry || '',
         domain: existingLead.domain || '',
         division: existingLead.division || '',
@@ -109,6 +112,7 @@ export default function LeadForm() {
     const payload = {
       company_name: form.company_name.trim(),
       project_name: form.project_name.trim(),
+      country: form.country,
       industry: form.industry,
       domain: form.domain,
       division: form.division.trim(),
@@ -138,7 +142,7 @@ export default function LeadForm() {
   const saving = createLead.isPending || updateLead.isPending
   const canSubmit =
     form.company_name.trim() && form.project_name.trim() &&
-    form.industry && form.domain && form.lead_type && form.type_of_project &&
+    form.country && form.industry && form.domain && form.lead_type && form.type_of_project &&
     (isExtension || form.flow_of_tasks) &&
     (!ownerRequired || form.assigned_to)
 
@@ -155,6 +159,14 @@ export default function LeadForm() {
           {marketingNote
             ? 'Marketing leads are created as "Not Assigned" — a Lead Admin assigns it to someone to start the workflow.'
             : 'Fill in the lead details below. The BD workflow starts once the lead is assigned to someone.'}
+        </p>
+        {/* §13: the Project ID is built from Country + Industry + Domain + Type
+            of Project at creation and then frozen, so editors need to know an
+            edit here will not renumber an ID already in circulation. */}
+        <p className="text-sm text-muted-foreground">
+          {isEdit
+            ? 'Country, Industry, Domain and Type of Project set the Project ID when the lead is created — editing them now does not change an existing Project ID.'
+            : 'Country, Industry, Domain and Type of Project make up the Project ID (e.g. IN-PHNPDCFF26001), so they cannot be changed afterwards without leaving the ID as-is.'}
         </p>
       </div>
 
@@ -202,6 +214,16 @@ export default function LeadForm() {
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label>Project name *</Label>
             <Input value={form.project_name} onChange={(e) => set('project_name', e.target.value)} placeholder="e.g. Store Analytics Rollout" />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Country *</Label>
+            <Select value={form.country ? String(form.country) : ''} onValueChange={(v) => setIfPresent('country', Number(v))}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Select country" /></SelectTrigger>
+              <SelectContent>
+                {countries.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="flex flex-col gap-1.5">

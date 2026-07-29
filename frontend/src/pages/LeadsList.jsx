@@ -52,6 +52,18 @@ function TrackerBar({ lead }) {
   )
 }
 
+// What the listing means for the signed-in role — it is the same screen but a
+// server-scoped set of rows (see `lead_scope_q`). Checked most-global first; the
+// Resource Manager (R10-1) sees every lead that has reached an allocation task,
+// read-only, so they can open its stepper and staff the slots.
+function leadsSubtitle(user) {
+  if (hasRole(user, 'Lead Admin')) return 'All leads across the company.'
+  if (hasRole(user, 'Lead Manager')) return 'Leads you own or are assigned to.'
+  if (hasRole(user, 'Marketing')) return 'Leads you created.'
+  if (hasRole(user, 'Resource Manager')) return 'Leads that have reached a resource-allocation step.'
+  return 'Leads you are working on.'
+}
+
 // A dropdown filter cell whose options come from the data on screen (§5.18).
 function FilterSelect({ value, onChange, options, placeholder }) {
   return (
@@ -135,9 +147,7 @@ export default function LeadsList() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Leads</h1>
-          <p className="text-sm text-muted-foreground">
-            {hasRole(user, 'Lead Admin') ? 'All leads across the company.' : hasRole(user, 'Lead Manager') ? 'Leads you own or are assigned to.' : 'Leads you created.'}
-          </p>
+          <p className="text-sm text-muted-foreground">{leadsSubtitle(user)}</p>
         </div>
         <div className="flex items-center gap-2">
           {filtersActive && (
@@ -158,9 +168,11 @@ export default function LeadsList() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Lead ID</TableHead>
-                <TableHead>Company / Project</TableHead>
+                {/* R9-1: the Project ID is the lead's identifier — it leads the
+                    table; the numeric row id is secondary (shown as `#`). */}
                 <TableHead>Project ID</TableHead>
+                <TableHead>Company / Project</TableHead>
+                <TableHead>#</TableHead>
                 <TableHead>Industry</TableHead>
                 <TableHead>Domain</TableHead>
                 <TableHead>Owner</TableHead>
@@ -173,13 +185,13 @@ export default function LeadsList() {
                   Project ID, dropdowns (built from the loaded data) for the
                   rest. All filters combine with AND. */}
               <TableRow className="hover:bg-transparent">
-                <TableHead />
-                <TableHead className="py-1.5">
-                  <Input value={filters.text} onChange={(e) => setFilter('text')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
-                </TableHead>
                 <TableHead className="py-1.5">
                   <Input value={filters.projectId} onChange={(e) => setFilter('projectId')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
                 </TableHead>
+                <TableHead className="py-1.5">
+                  <Input value={filters.text} onChange={(e) => setFilter('text')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
+                </TableHead>
+                <TableHead />
                 <TableHead className="py-1.5"><FilterSelect value={filters.industry} onChange={setFilter('industry')} options={options.industries} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.domain} onChange={setFilter('domain')} options={options.domains} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.owner} onChange={setFilter('owner')} options={options.owners} placeholder="All" /></TableHead>
@@ -196,7 +208,9 @@ export default function LeadsList() {
               )}
               {rows.map((lead) => (
                 <TableRow key={lead.id} className="cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
-                  <TableCell className="font-medium tabular-nums text-muted-foreground">{lead.lead_display_id}</TableCell>
+                  <TableCell className="font-medium tabular-nums">
+                    {lead.project_id_display || <span className="font-normal text-muted-foreground">Pending</span>}
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Link to={`/leads/${lead.id}`} className="font-medium hover:underline" onClick={(e) => e.stopPropagation()}>
@@ -206,7 +220,7 @@ export default function LeadsList() {
                     </div>
                     <div className="text-xs text-muted-foreground">{lead.company_name || '—'}</div>
                   </TableCell>
-                  <TableCell className="text-sm tabular-nums">{lead.project_id_display || <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell className="tabular-nums text-muted-foreground">{lead.id}</TableCell>
                   <TableCell>{lead.industry_name || '—'}</TableCell>
                   <TableCell>{lead.domain_name || '—'}</TableCell>
                   <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not Assigned</span>}</TableCell>

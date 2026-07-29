@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
-import { canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
+import { canSeeLeadModule, canSeeLeadsList, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
 import Login from '@/pages/Login'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
@@ -14,7 +14,7 @@ import LeadForm from '@/pages/LeadForm'
 import Notifications from '@/pages/Notifications'
 import HeldLeads from '@/pages/HeldLeads'
 import HeldTasks from '@/pages/HeldTasks'
-import Resources from '@/pages/Resources'
+import MyResourceTasks from '@/pages/MyResourceTasks'
 import ResourceHistory from '@/pages/ResourceHistory'
 import ProjectClosure from '@/pages/ProjectClosure'
 import Finance from '@/pages/Finance'
@@ -34,7 +34,9 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/account" element={<Account />} />
 
-        <Route path="/leads" element={<RequireAuth check={canSeeLeadModule}><LeadsList /></RequireAuth>} />
+        {/* The list is open to the Resource Manager too (R10-1) — read-only; the
+            API scopes their rows to leads that have reached an allocation task. */}
+        <Route path="/leads" element={<RequireAuth check={canSeeLeadsList}><LeadsList /></RequireAuth>} />
         <Route path="/leads/new" element={<RequireAuth check={canSeeLeadModule}><LeadForm /></RequireAuth>} />
         {/* Detail is open to any authenticated user — the backend scopes lead
             visibility, so a task worker (e.g. the assigned Red) or the Resource
@@ -48,10 +50,11 @@ export default function App() {
         <Route path="/held-leads" element={<RequireAuth check={canSeeHeldLeads}><HeldLeads /></RequireAuth>} />
         <Route path="/held-tasks" element={<RequireAuth check={canSeeHeldTasks}><HeldTasks /></RequireAuth>} />
 
-        {/* D12 (R5): a lead's Default BD Person also works its allocation
-            tasks, not just the Resource Manager — the backend scopes what
-            each caller actually sees/can act on (mirrors the /leads/:id gate). */}
-        <Route path="/resources" element={<RequireAuth check={canSeeResources}><Resources /></RequireAuth>} />
+        {/* R9-3: the resource module is the Resource Manager's own — the
+            cross-lead queue is gated to them (`canSeeResources`). A lead's
+            Default BD Person still staffs that lead's allocation task (D12),
+            inline in the lead's task stepper rather than from here. */}
+        <Route path="/resources" element={<RequireAuth check={canSeeResources}><MyResourceTasks /></RequireAuth>} />
         <Route path="/resource-history" element={<RequireAuth roles={['Resource Manager']}><ResourceHistory /></RequireAuth>} />
         <Route path="/project-closure" element={<RequireAuth roles={['Resource Manager']}><ProjectClosure /></RequireAuth>} />
         <Route path="/finance" element={<RequireAuth roles={['Finance']}><Finance /></RequireAuth>} />

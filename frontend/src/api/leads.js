@@ -28,8 +28,10 @@ function throwApiError(err) {
 // alias of `project_name` so existing list/detail code reads naturally.
 function fromApiLead(l) {
   return {
+    // R9-1: the Project ID is the identifier the business works with; `id` is
+    // just the row number (1, 2, 3). The old synthetic `lead_display_id`
+    // ("LD-2026-00001") is retired on both sides.
     id: l.id,
-    lead_display_id: l.lead_display_id,
     progress: l.progress ?? 0,
     task_progress: l.task_progress || { total: 0, closed: 0, percent: 0 },
     current_task: l.current_task || null,
@@ -53,9 +55,9 @@ function fromApiLead(l) {
     flow_of_tasks: l.flow_of_tasks || '',
     type_of_project: l.type_of_project || '',
     status: l.status,
-    // R2 (§13): the derived, stage-legible Project ID + current stage. The old
-    // stored `project_id` is retained for back-compat but is empty for leads
-    // created under the v4.0 model — displays use `project_id_display`.
+    // R2 (§13): the derived, stage-legible Project ID + current stage. Screens
+    // display `project_id_display` (base + current-stage suffix); `project_id`
+    // is the lead's stable base snapshot, used where a suffix would be noise.
     project_id_display: l.project_id_display || '',
     current_stage: l.current_stage || null,
     project_id: l.project_id || '',

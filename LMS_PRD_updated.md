@@ -16,9 +16,9 @@ A companion engineering document, `LMS_Technical_Requirements_updated.md`, provi
 - Every task now belongs to a **Stage** (BD, 2HR, SnT, Implementation, Extension, Mining). Stage is a first-class, tracked concept — a lead can have **more than one stage open at once** (Mining and Extension run in **parallel**).
 - The lead now carries a **Flow of tasks** selector (which stages run) and a **Type of Project** label, alongside **Type** (BD / Extension / Mining).
 - **Resource Manager** (Shailesh) and **Finance** (Abhay) are both **live roles**. Finance now owns three **payment-approval gate tasks** (7, 15, 28). Resource allocation is done through workflow tasks, and the full allocation history (who worked which slot, for how long, including reassignments) is retained for the dashboard.
-- **Project ID** is now `Area + YY + Sequence` (e.g. `NPD26001`), auto-generated at lead creation, with the **current stage shown as a suffix** (e.g. `NPD26001-2HR`, `NPD26001-IM`, `NPD26001-E0`, `NPD26001-M`). Country and Industry codes are no longer part of the ID.
+- **Project ID** is auto-generated at lead creation with the **current stage shown as a suffix** (e.g. `IN-PHNPDCFF26001-2HR`, `…-IM`, `…-E0`, `…-M`). ~~Now `Area + YY + Sequence`; Country and Industry codes are no longer part of the ID.~~ **Composition finalized by the user 2026-07-28:** Country Code + Industry + Area + Type of Project + Year + auto-generated number + stage of intervention — see §5.15.
 - Lead **Status** is simplified to **In Progress / Hold / Dropped / Completed**. "Hybernation" and "Short Closed" statuses are removed; short-close remains as an **action** that routes to closure.
-- **Country** is dropped from the lead. **Domain** is now **multi-select**.
+- ~~**Country** is dropped from the lead.~~ **Superseded 2026-07-28:** Country is captured on the lead again and leads the Project ID (§5.15). **Domain** is now **multi-select** *(built single-select per decision D2)*.
 
 # 2. Goals
 
@@ -96,7 +96,7 @@ User form fields:
 | Type of Project | Dropdown (6 options — §5.2.2) | Yes |
 | Status | System-managed | Auto |
 
-> **Country is removed.** It is no longer captured on the lead and no longer feeds the Project ID (§5.15).
+> **Country is captured on the lead** (decision 2026-07-28, reversing v4.0's removal) — it is a **required** dropdown and its code leads the Project ID (§5.15).
 > **Domain is multi-select.** A lead can carry more than one Area/Domain. See §5.15 for how the primary Domain feeds the Project ID.
 
 ### 5.2.2 Type of Project (label)
@@ -265,31 +265,42 @@ Lead Admin has view access to all screens except User Management, and can assign
 
 ## 5.15 Project ID Generation
 
-The Project ID is now readable at a glance to show **where the project stands**. It is built from a **stable base code** plus the **current stage** as a suffix (and a `-M` marker for mining-originated cycles).
+**Composition finalized 2026-07-28.** The Project ID is readable at a glance: it tells you what the engagement is and **where the project stands**. It is a **stable base code** plus the **current stage** as a suffix (and a `-M` marker for mining-originated cycles).
 
-**Base code:** `{AreaCode}{YY}{Seq}` — the primary Domain/Area code, a 2-digit year, and a 3-digit incrementing sequence. Example: `NPD26001`. **Country and Industry codes are no longer part of the ID.**
+**Base code:** Country Code + Industry + Area + Type of Project + Year + auto-generated number:
 
-- The base code is generated automatically at **lead creation** and never changes for that project.
-- Because Domain is multi-select, the **primary (first-selected) Domain** supplies the Area code. *(Assumption — flagged for confirmation: which Domain drives the code when several are selected.)*
+```
+IN-PHNPDCFF26001
+│  │  │  │  │ └── 001  auto-generated number (one counter per year)
+│  │  │  │  └──── 26   year
+│  │  │  └─────── CFF  type of project
+│  │  └────────── NPD  area (the lead's Domain)
+│  └───────────── PH   industry
+└──────────────── IN   country
+```
+
+Type-of-Project codes: Consulting Full Fledged `CFF`, AMC `AMC`, Upgrade `UPG`, Vectorflow Lite `VFL`, Audit only `AO`, Consulting Lite + No software `CLNS`. The Country, Industry and Area codes come from their reference tables (§5.17).
+
+- The base code is generated automatically at **lead creation** and **never changes** for that project — editing the lead's Country, Industry, Domain or Type of Project afterwards does **not** renumber an ID that is already in circulation on tasks, allocations and reports.
+- The **auto-generated number is one counter per year**, shared across all countries, industries, areas and project types — so `…26001`, `…26002`, `…26003` never repeat within a year.
+- The lead's Domain supplies the Area code. *(The spec's multi-select Domain would use the primary/first-selected one; Domain is built single-select per decision D2.)*
 
 **Displayed ID = base code [+ `-M`] + `-` + current stage code**, e.g.:
 
 | Situation | Displayed ID |
 |---|---|
-| BD stage | `NPD26001-BD` |
-| 2HR stage | `NPD26001-2HR` |
-| SnT stage | `NPD26001-SnT` |
-| Implementation | `NPD26001-IM` |
-| First extension loop | `NPD26001-E0` |
-| Second extension loop | `NPD26001-E1` |
-| Mining cycle | `NPD26001-M` |
-| Mining cycle that itself extends | `NPD26001-M-E1` |
+| BD stage | `IN-PHNPDCFF26001-BD` |
+| 2HR stage | `IN-PHNPDCFF26001-2HR` |
+| SnT stage | `IN-PHNPDCFF26001-SnT` |
+| Implementation | `IN-PHNPDCFF26001-IM` |
+| First extension loop | `IN-PHNPDCFF26001-E0` |
+| Second extension loop | `IN-PHNPDCFF26001-E1` |
+| Mining cycle | `IN-PHNPDCFF26001-M` |
+| Mining cycle that itself extends | `IN-PHNPDCFF26001-M-E1` |
 
 - **Extension marker `-E0 / -E1 / -E2 …`** — the number is the extension **loop counter**; the **first** extension shows `-E0`. It increments each time the extension cycle repeats.
-- **Mining (`-M`)** — when Task 21 = Yes, a **new lead record is created for the same project** (same base code), carrying the `-M` marker and a link back to the parent lead, and a fresh BD cycle begins from Task 1. Because it is a separate lead record, its Mining stage can run **in parallel** with the parent's Extension stage; the data for each is tracked independently.
+- **Mining (`-M`)** — when Task 21 = Yes, a **new lead record is created for the same project** (same base code, so no new number is consumed), carrying the `-M` marker and a link back to the parent lead, and a fresh BD cycle begins from Task 1. Because it is a separate lead record, its Mining stage can run **in parallel** with the parent's Extension stage; the data for each is tracked independently.
 - The stage suffix is **derived** from the lead's current stage — it is display logic, not a stored key. Internally the system joins on stable identifiers, never on the suffixed string.
-
-> **Open item (flagged):** the exact final format string is subject to your confirmation (you noted you'll finalize how the Project ID is composed). The base = `Area + YY + Seq`, mutable stage suffix, `-M` for mining, `-E{n}` for extension loops is the working model.
 
 ## 5.16 Workflow Configuration
 
@@ -297,15 +308,17 @@ Workflows are stored as JSON in a workflow table rather than hardcoded, so the t
 
 ## 5.17 Reference Data — Industry, Area, Belt
 
-Industry, Area (Domain), and Belt are each maintained as their own reference table (not hardcoded lists), so the business can add, rename, or recode entries without a deployment. Each carries a status column (active/inactive, default active); only active rows appear in dropdowns.
+Country, Industry, Area (Domain), and Belt are each maintained as their own reference table (not hardcoded lists), so the business can add, rename, or recode entries without a deployment. Each carries a status column (active/inactive, default active); only active rows appear in dropdowns.
 
-- **Industry** and **Area** follow the id / name / code / status shape.
+- **Country**, **Industry** and **Area** follow the id / name / code / status shape.
 - **Belt** carries id / name / order / status (order drives dropdown sort). Belt has no code.
-- The **Area code** feeds the Project ID base (§5.15).
+- The **Country, Industry and Area codes** all feed the Project ID base (§5.15), alongside the Type of Project's code.
 
-> **Country reference table is removed** from the lead flow — Country is no longer captured and no longer used in the Project ID.
+> **Country reference table is live** (decision 2026-07-28, reversing v4.0's removal) — Country is captured on the lead and its code is the Project ID's leading segment. Same id / name / code / status shape as Industry and Area.
 
 Seed data:
+
+**Country:** India (IN), Indonesia (ID).
 
 **Industry:** Auto Comp (COMP), Auto OEM (OEM), Banking (BNK), Building & Construction Goods (BCG), CapEx (CEX), Consumer Goods (CG), EPC (EPC), ETO (ETO), FMCG (FMCG), FMEG (FMEG), Industrial Goods (IG), Information Technology (IT), Machinery & Equipment (ME), Organised Retail (RE), Pharma & Chemical (PH), Textile & Fashion (TX).
 

@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -12,13 +11,15 @@ import {
   useReleaseSlot,
 } from '@/hooks/useResources'
 
-// Shared resource-allocation slot controls (R9). Extracted verbatim from the
-// old Resources.jsx popup so a single source of truth backs BOTH the cross-lead
-// Resources screen AND the inline allocation step in the lead's task stepper —
-// staffing a task is a set of per-slot actions (allocate / reassign / release),
+// The resource-allocation slot controls (R9) — the single staffing UI, used by
+// the allocation step inside a lead's task stepper (`LeadTaskTab.AllocationStep`).
+// Staffing a task is a set of per-slot actions (allocate / reassign / release),
 // each an append-only history row (§4.7). The parent owns the final "Submit
-// allocation" action (it differs per host: close the dialog vs advance the
-// stepper); this component only handles per-slot staffing.
+// allocation" action; this component only handles per-slot staffing.
+//
+// It was extracted from the old cross-lead `pages/Resources.jsx` popup, which
+// R9-3 retired in favour of staffing in place — `/resources` is now the Resource
+// Manager's queue (`pages/MyResourceTasks.jsx`), which links into the stepper.
 
 const NONE = '__none__'
 const TBD = '__tbd__'
@@ -88,7 +89,10 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
             {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        {occupant && !disabled && (
+        {/* R9 (DD-R9-9): the Execution Red is mandatory and can never be left
+            empty — it changes by picking a different person (a reassign), not by
+            releasing. The backend rejects a Red release too. */}
+        {occupant && !disabled && slot !== 'execution_red' && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button type="button" size="icon-sm" variant="ghost" onClick={() => onRelease(occupant.id)}>
@@ -99,8 +103,12 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
           </Tooltip>
         )}
       </div>
-      {slot === 'execution_red' && !occupant && (
-        <p className="text-xs text-muted-foreground">Required to submit — the next task is assigned to them.</p>
+      {slot === 'execution_red' && (
+        <p className="text-xs text-muted-foreground">
+          {occupant
+            ? 'Mandatory — pick a different person to hand the engagement over; their open tasks move with it.'
+            : 'Required to submit — the next task is assigned to them.'}
+        </p>
       )}
     </div>
   )
@@ -109,15 +117,16 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
 // White is a pool: several people may be allocated at once, and a slot may be
 // left "TBD" (to-be-decided) instead of naming someone (PRD §5.7).
 function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, onRelease }) {
-  const [pick, setPick] = useState(NONE)
   const allocatedNames = occupants.filter((o) => !o.is_tbd)
   const tbdCount = occupants.filter((o) => o.is_tbd).length
+  const allocatedIds = new Set(allocatedNames.map((o) => o.user))
 
-  function add() {
-    if (pick === NONE) return
-    if (pick === TBD) onAllocate('white', null, true)
-    else onAllocate('white', Number(pick))
-    setPick(NONE)
+  // R9-6: picking a White allocates it there and then. The old two-step
+  // "select, then press Add" lost the selection whenever someone forgot the
+  // second click. The Select is a pure action trigger, so it holds no value.
+  function pick(value) {
+    if (value === TBD) onAllocate('white', null, true)
+    else onAllocate('white', Number(value))
   }
 
   return (
@@ -142,16 +151,15 @@ function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, on
         })}
       </div>
       {!disabled && (
-        <div className="flex items-center gap-1.5">
-          <Select value={pick} onValueChange={setPick}>
-            <SelectTrigger className="w-full"><SelectValue placeholder="— Add a White —" /></SelectTrigger>
-            <SelectContent position="popper">
-              <SelectItem value={TBD}>Leave as TBD</SelectItem>
-              {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Button type="button" size="sm" variant="outline" disabled={pick === NONE} onClick={add}>Add</Button>
-        </div>
+        <Select value="" onValueChange={pick}>
+          <SelectTrigger className="w-full"><SelectValue placeholder="— Add a White —" /></SelectTrigger>
+          <SelectContent position="popper">
+            <SelectItem value={TBD}>Leave as TBD</SelectItem>
+            {users
+              .filter((u) => !allocatedIds.has(u.id))
+              .map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
       )}
     </div>
   )

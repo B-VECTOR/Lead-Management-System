@@ -58,6 +58,7 @@ class LeadSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
+    country_name = serializers.CharField(source="country.name", read_only=True)
     industry_name = serializers.CharField(source="industry.name", read_only=True)
     domain_name = serializers.CharField(source="domain.name", read_only=True)
     assigned_to_name = serializers.CharField(source="assigned_to.name", read_only=True, default=None)
@@ -74,11 +75,9 @@ class LeadSerializer(serializers.ModelSerializer):
     # hold" flag in the leads list even while the lead itself is In Progress
     # (Phase 13; a single held task doesn't change lead.status).
     has_held_task = serializers.SerializerMethodField()
-    # A human-readable Lead ID (Phase 9 — no such concept exists in the docs;
-    # confirmed with the user). Deliberately shaped unlike a Project ID
-    # ("IN-PHNPD26001-I00") so the two are never confused before a lead has
-    # actually generated one.
-    lead_display_id = serializers.SerializerMethodField()
+    # R9-1: the old synthetic ``lead_display_id`` ("LD-2026-00001", Phase 9) is
+    # **retired** — the Project ID is the business's identifier now, and the Lead
+    # ID is just the numeric ``id`` (1, 2, 3). Clients read ``id`` directly.
     # The still-open hold interval while the lead is On Hold (Tech Req §5.8/§4.9
     # v16) — drives the amber "on hold" banner (reason + who/when) on detail.
     active_hold = serializers.SerializerMethodField()
@@ -108,6 +107,8 @@ class LeadSerializer(serializers.ModelSerializer):
             "parent_lead",
             "company_name",
             "project_name",
+            "country",
+            "country_name",
             "industry",
             "industry_name",
             "domain",
@@ -124,7 +125,6 @@ class LeadSerializer(serializers.ModelSerializer):
             "task_progress",
             "current_task",
             "has_held_task",
-            "lead_display_id",
             "drop_remark",
             "active_hold",
             "short_close_info",
@@ -151,7 +151,6 @@ class LeadSerializer(serializers.ModelSerializer):
             "task_progress",
             "current_task",
             "has_held_task",
-            "lead_display_id",
             "drop_remark",
             "active_hold",
             "short_close_info",
@@ -205,9 +204,6 @@ class LeadSerializer(serializers.ModelSerializer):
 
     def get_has_held_task(self, obj):
         return any(t.status == Task.Status.HOLD for t in obj.tasks.all())
-
-    def get_lead_display_id(self, obj):
-        return f"LD-{obj.created_at.year}-{obj.id:05d}"
 
     def get_active_hold(self, obj):
         if obj.status != Lead.Status.ON_HOLD:
@@ -569,6 +565,9 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
 
     lead_company_name = serializers.CharField(source="lead.company_name", read_only=True)
     lead_project_name = serializers.CharField(source="lead.project_name", read_only=True)
+    # ``project_id`` (a Meta field below) is this row's own stored snapshot —
+    # the stage it was allocated for (R9-1). ``lead_project_id`` stays the lead's
+    # *live* derived ID, so history rows read correctly against a moved-on lead.
     lead_project_id = serializers.SerializerMethodField()
     lead_manager = serializers.SerializerMethodField()
     stage_code = serializers.CharField(source="stage.stage", read_only=True, default=None)
@@ -589,6 +588,7 @@ class ResourceAllocationSerializer(serializers.ModelSerializer):
             "lead_company_name",
             "lead_project_name",
             "lead_project_id",
+            "project_id",
             "lead_manager",
             "stage",
             "stage_code",
@@ -758,6 +758,9 @@ class FollowupSerializer(serializers.ModelSerializer):
             "lead",
             "lead_company_name",
             "lead_project_name",
+            # R9-1: the Project ID snapshot stamped when the follow-up was raised
+            # — the identifier the follow-up lists key off now.
+            "project_id",
             "title",
             "assigned_to",
             "assigned_to_name",
@@ -773,6 +776,7 @@ class FollowupSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "created_by",
+            "project_id",
             "created_at",
             "updated_at",
         ]

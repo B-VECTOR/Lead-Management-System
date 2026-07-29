@@ -4,6 +4,29 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
+def project_id_snapshot():
+    """The shared **display-only** ``project_id`` snapshot column (R9-1, DD-R9-2).
+
+    Stamped once, when the row is created, from the lead's Project ID at that
+    moment (``projects.row_project_id``) so every lead-scoped table reads its
+    project straight from the DB — the Project ID is the business's primary
+    identifier, the numeric ``lead_id`` is just a PK. Continues the 2026-07-27
+    meeting pattern already applied to ``lead_stage``/``task_details``.
+
+    **Never a join key** (D1 / §13): joins always key on numeric PKs.
+    """
+    return models.CharField(
+        _("project ID"),
+        max_length=50,
+        blank=True,
+        default="",
+        help_text=_(
+            "Display snapshot of the lead's Project ID when this row was created; "
+            "not a join key (§13)."
+        ),
+    )
+
+
 class Lead(models.Model):
     """A lead/project cycle — the unit the workflow runs against.
 
@@ -14,10 +37,12 @@ class Lead(models.Model):
     **single** FK (a deliberate deviation from the spec's multi-select), and the
     domain's ``code`` feeds Project-ID generation (§13; base_code built in R2).
 
-    R1 rebuild: ``country`` is dropped (§5.17), ``lead_type`` gains
-    ``Extension``, ``status`` collapses to four values (Hybernation / Short
-    Closed retired), and the ``base_code`` / ``parent_lead_id`` /
-    ``flow_of_tasks`` / ``type_of_project`` fields are introduced.
+    R1 rebuild: ``lead_type`` gains ``Extension``, ``status`` collapses to four
+    values (Hybernation / Short Closed retired), and the ``base_code`` /
+    ``parent_lead_id`` / ``flow_of_tasks`` / ``type_of_project`` fields are
+    introduced. R1 also dropped ``country`` (§5.17) — **re-added 2026-07-28**
+    when the user finalized the Project ID composition (§13): Country, Industry,
+    Area, Type of Project, Year, Sequence, Stage.
     """
 
     class LeadType(models.TextChoices):
@@ -51,8 +76,9 @@ class Lead(models.Model):
         SNT_PROPOSAL = "SNT_PROPOSAL", _("SnT → Project Proposal")
 
     class TypeOfProject(models.TextChoices):
-        """Reporting/filter label only — does not change the task path (D3 /
-        §5.2.2). Stored as the display string."""
+        """Reporting/filter label **and** a Project-ID segment (§13.4, decision
+        2026-07-28). Does not change the task path (D3 / §5.2.2). Stored as the
+        display string; :attr:`TYPE_OF_PROJECT_CODES` maps it to its short code."""
 
         CONSULTING_FULL = "Consulting Full Fledged", _("Consulting Full Fledged")
         AMC = "AMC", _("AMC")
@@ -61,20 +87,37 @@ class Lead(models.Model):
         AUDIT_ONLY = "Audit only", _("Audit only")
         CONSULTING_LITE = "Consulting Lite + No software", _("Consulting Lite + No software")
 
-    # Stable project base `{AreaCode}{YY}{Seq}` (§13, D1) — generated at lead
-    # creation in R2; the column lands here in R1. **Not** DB-unique (R6 fix):
-    # a Mining child (Task 21) deliberately shares its parent's base_code (§13)
-    # — `projects.next_base_sequence`'s own `distinct()` was already written
-    # anticipating this share, but the column itself was left `unique=True`
-    # until R6 actually exercised the shared-base path and hit the constraint.
-    # Uniqueness *within an Area+Year* is enforced logically by
-    # `next_base_sequence`, not by the DB.
+    # Short codes for the Project ID's Type-of-Project segment (§13.4). Unlike
+    # Country/Industry/Area — reference *tables* whose codes the business edits
+    # in the admin — the six project types are a fixed choice list, so their
+    # codes live here beside the choices they belong to.
+    TYPE_OF_PROJECT_CODES = {
+        TypeOfProject.CONSULTING_FULL: "CFF",
+        TypeOfProject.AMC: "AMC",
+        TypeOfProject.UPGRADE: "UPG",
+        TypeOfProject.VECTORFLOW_LITE: "VFL",
+        TypeOfProject.AUDIT_ONLY: "AO",
+        TypeOfProject.CONSULTING_LITE: "CLNS",
+    }
+
+    # Stable project base `{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}`
+    # (§13, D1 as amended 2026-07-28 — e.g. `IN-PHNPDCFF26001`) — generated at
+    # lead creation in R2; the column lands here in R1. **Not** DB-unique (R6
+    # fix): a Mining child (Task 21) deliberately shares its parent's base_code
+    # (§13) — `projects.next_base_sequence`'s own `distinct()` was already
+    # written anticipating this share, but the column itself was left
+    # `unique=True` until R6 actually exercised the shared-base path and hit the
+    # constraint. Uniqueness is enforced logically by `next_base_sequence` (one
+    # sequence per year, globally), not by the DB.
     base_code = models.CharField(
         _("project base code"),
         max_length=50,
         null=True,
         blank=True,
-        help_text=_("Stable {AreaCode}{YY}{Seq}; generated at creation (R2); shared with Mining children (R6)."),
+        help_text=_(
+            "Stable {Country}-{Industry}{Area}{Type}{YY}{Seq}; generated at "
+            "creation (R2); shared with Mining children (R6)."
+        ),
     )
     # Mining-only linkage (D10): set on a Task-21-spawned lead, pointing at the
     # parent it originated from. Left NULL for BD and Extension-type leads. The
@@ -91,6 +134,16 @@ class Lead(models.Model):
     )
     company_name = models.CharField(_("company name"), max_length=255)
     project_name = models.CharField(_("project name"), max_length=255)
+    # Re-added 2026-07-28 (reverses R1's §5.17 drop): Country is captured on the
+    # lead again because its code is the Project ID's leading segment (§13).
+    # PROTECT for the same reason the other two reference FKs are protected —
+    # the lead must keep the row whose code is baked into its Project ID.
+    country = models.ForeignKey(
+        "reference.Country",
+        on_delete=models.PROTECT,
+        related_name="leads",
+        verbose_name=_("country"),
+    )
     industry = models.ForeignKey(
         "reference.Industry",
         on_delete=models.PROTECT,
@@ -266,7 +319,7 @@ class LeadStage(models.Model):
         help_text=_("BD, 2HR, SnT, IM, E0/E1/…, M, or Closure (§4.4)."),
     )
     # Stored display Project ID **snapshot** for this specific stage
-    # (``base_code`` + this stage's own suffix, e.g. ``NPD26001-IM``). Persisted
+    # (``base_code`` + this stage's own suffix, e.g. ``IN-PHNPDCFF26001-IM``). Persisted
     # per meeting decision (2026-07-27) so the value is visible directly in the
     # table; it remains a **display snapshot only** — joins still key on numeric
     # PKs, never on this string (§13). Populated when the stage row is created
@@ -591,6 +644,7 @@ class LeadHold(HoldRecord):
         related_name="holds",
         verbose_name=_("lead"),
     )
+    project_id = project_id_snapshot()
 
     class Meta(HoldRecord.Meta):
         abstract = False
@@ -664,6 +718,7 @@ class ResourceAllocation(models.Model):
         verbose_name=_("lead"),
         help_text=_("Denormalized for reporting (§4.7)."),
     )
+    project_id = project_id_snapshot()
     stage = models.ForeignKey(
         LeadStage,
         on_delete=models.SET_NULL,
@@ -842,6 +897,7 @@ class Followup(models.Model):
         related_name="followups",
         verbose_name=_("lead"),
     )
+    project_id = project_id_snapshot()
     # Kept beyond the docs' field list per the confirmed Phase-7 decision.
     title = models.CharField(_("title"), max_length=255)
     assigned_to = models.ForeignKey(
@@ -933,6 +989,7 @@ class Attachment(models.Model):
         related_name="attachments",
         verbose_name=_("lead"),
     )
+    project_id = project_id_snapshot()
     file = models.FileField(_("file"), upload_to=attachment_upload_path)
     filename = models.CharField(_("filename"), max_length=255)
     title = models.CharField(_("title"), max_length=255, blank=True)
@@ -973,6 +1030,7 @@ class ActivityLog(models.Model):
         related_name="activities",
         verbose_name=_("lead"),
     )
+    project_id = project_id_snapshot()
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

@@ -58,6 +58,8 @@ function GateCard({ gate }) {
         </div>
         <p className="text-sm text-muted-foreground">
           <Link to={`/leads/${gate.lead}`} className="inline-flex items-center gap-1 hover:text-foreground hover:underline">
+            {/* R9-1: Accounts reconciles against the Project ID, so it leads. */}
+            {gate.project_id && <span className="font-medium tabular-nums text-foreground">{gate.project_id}</span>}
             {lead} <ExternalLink className="size-3" />
           </Link>
         </p>

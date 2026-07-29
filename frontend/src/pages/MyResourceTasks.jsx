@@ -28,6 +28,10 @@ function TaskRow({ task }) {
   const workable = ['open', 'pending'].includes(task.status)
   return (
     <TableRow>
+      {/* R9-1: the Project ID identifies the engagement; the names are context. */}
+      <TableCell className="font-medium tabular-nums">
+        {task.project_id || <span className="font-normal text-muted-foreground">Pending</span>}
+      </TableCell>
       <TableCell>
         <div className="font-medium">{task.lead_project_name}</div>
         <div className="text-xs text-muted-foreground">{task.lead_company_name}</div>
@@ -100,6 +104,7 @@ export default function MyResourceTasks() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Project ID</TableHead>
                 <TableHead>Project</TableHead>
                 <TableHead>Allocation task</TableHead>
                 <TableHead>Stage</TableHead>
@@ -110,10 +115,10 @@ export default function MyResourceTasks() {
             </TableHeader>
             <TableBody>
               {isLoading && (
-                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>
               )}
               {!isLoading && sorted.length === 0 && (
-                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Nothing here right now.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Nothing here right now.</TableCell></TableRow>
               )}
               {sorted.map((task) => <TaskRow key={task.id} task={task} />)}
             </TableBody>

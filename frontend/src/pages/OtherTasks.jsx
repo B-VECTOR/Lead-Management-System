@@ -25,7 +25,7 @@ export default function OtherTasks() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [activeFollowup, setActiveFollowup] = useState(null)
-  const columnCount = 5
+  const columnCount = 6
 
   return (
     <div className="flex flex-col gap-4">
@@ -43,6 +43,7 @@ export default function OtherTasks() {
             <TableHeader>
               <TableRow>
                 <TableHead>Follow-up</TableHead>
+                <TableHead>Project ID</TableHead>
                 <TableHead>Lead</TableHead>
                 <TableHead>Due</TableHead>
                 <TableHead>Status</TableHead>
@@ -59,6 +60,10 @@ export default function OtherTasks() {
                 return (
                   <TableRow key={f.id} className="cursor-pointer" onClick={() => setActiveFollowup(f)}>
                     <TableCell className="text-sm">{f.title}</TableCell>
+                    {/* R9-1: the Project ID snapshot taken when the follow-up was raised. */}
+                    <TableCell className="text-sm font-medium tabular-nums">
+                      {f.project_id || <span className="font-normal text-muted-foreground">—</span>}
+                    </TableCell>
                     <TableCell className="text-sm">
                       <span className="font-medium">{f.lead_project_name}</span>
                       <span className="text-muted-foreground"> · {f.lead_company_name}</span>

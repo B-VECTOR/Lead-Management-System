@@ -99,19 +99,37 @@ def task_defs_for(lead_type):
     return _task_defs(wf.workflow) if wf else {}
 
 
+def _assignee_code(lead, tdef):
+    """The ``assignee`` code to use for ``tdef``, applying its ``assignee_rules``.
+
+    R9 (DD-R9-3): a task may carry ordered overrides matched against an earlier
+    task's stored answer — ``{"when": {"task_no", "field", "equals"}, "assignee"}``
+    — so a branch like "Task 3 opens to the Default BD Person when Task 2 said no
+    manpower support is needed" stays workflow **data**. First match wins; no
+    match falls through to the plain ``assignee``.
+    """
+    for rule in tdef.get("assignee_rules", []):
+        cond = rule.get("when") or {}
+        answer = _reference_answer(lead, cond.get("task_no"), cond.get("field"))
+        if answer is not None and answer == cond.get("equals"):
+            return rule.get("assignee")
+    return tdef.get("assignee")
+
+
 def _resolve_assignee(lead, tdef):
     """Who the step opens assigned to.
 
     ``default_bd_person`` → the lead's owner. ``execution_red`` → the Execution
-    Red the Resource Manager allocated for the current block (§7.5); None until
-    an allocation is filled. ``resource_manager`` / ``finance`` tasks stay
-    unassigned — reached via the role-scoped allocation screen / Accounts queue.
+    Red currently allocated on the lead (§7.5, and since R9 the last Red it ever
+    had — see :func:`resources.latest_execution_red`). ``resource_manager`` /
+    ``finance`` tasks stay unassigned — reached via the role-scoped allocation
+    screen / Accounts queue.
 
-    ``fallback_assignee`` (R3): used when the primary resolves to None — Task 5
-    falls back to the Default BD Person when Task 3 (allocation) was skipped
-    because Task 2 said no manpower was needed (PRD §5.4).
+    The code itself may be overridden per-lead by ``assignee_rules``
+    (:func:`_assignee_code`). ``fallback_assignee`` (R3) is used when the primary
+    resolves to None.
     """
-    assignee = tdef.get("assignee")
+    assignee = _assignee_code(lead, tdef)
     resolved = None
     if assignee == "default_bd_person":
         resolved = lead.assigned_to
@@ -177,6 +195,10 @@ def open_task(lead, tdef, *, status=Task.Status.OPEN):
     # instance — open_pending_task re-notifies when it actually opens).
     if status == Task.Status.OPEN:
         if tdef.get("is_allocation_task"):
+            # R9: the Execution Red carries forward pre-filled (DD-R9-4) before
+            # anyone is notified, so the task is never presented with an empty
+            # mandatory Red slot.
+            resources.carry_forward_red(task, tdef)
             resources.notify_allocation_task_open(task)
         _apply_on_open(task, tdef)
     return task
@@ -200,6 +222,7 @@ def open_pending_task(task):
     task.assigned_to = _resolve_assignee(task.lead, tdef)
     task.save(update_fields=["status", "task_start_dt", "stage", "project_id", "assigned_to", "updated_at"])
     if tdef.get("is_allocation_task"):
+        resources.carry_forward_red(task, tdef)  # R9 (DD-R9-4)
         resources.notify_allocation_task_open(task)
     _apply_on_open(task, tdef)
     if wf is not None:
@@ -219,9 +242,10 @@ def _configs_for(workflow, task_no):
     )
 
 
-def _reference_value(lead, reference_task_no, field_key):
-    """Numeric value of ``field_key`` on the most-recent closed reference task,
-    or None — used to evaluate a trigger's condition (Task 21 duration rule)."""
+def _reference_answer(lead, reference_task_no, field_key):
+    """Raw stored value of ``field_key`` on the most-recent **closed** instance of
+    ``reference_task_no``, or None — the shared lookup behind both a trigger's
+    numeric condition and an ``assignee_rules`` answer match (R9)."""
     ref = (
         lead.tasks.filter(task_no=reference_task_no, status=Task.Status.CLOSED)
         .order_by("-task_end_dt", "-id")
@@ -229,9 +253,14 @@ def _reference_value(lead, reference_task_no, field_key):
     )
     if ref is None:
         return None
-    raw = (ref.extra_fields or {}).get(field_key)
+    return (ref.extra_fields or {}).get(field_key)
+
+
+def _reference_value(lead, reference_task_no, field_key):
+    """Numeric value of ``field_key`` on the most-recent closed reference task,
+    or None — used to evaluate a trigger's condition (Task 21 duration rule)."""
     try:
-        return float(raw)
+        return float(_reference_answer(lead, reference_task_no, field_key))
     except (TypeError, ValueError):
         return None
 
@@ -279,6 +308,68 @@ def _trigger_already_due(lead, config, *, today=None):
         return False
     today = today or timezone.now().date()
     return today >= ref - timezone.timedelta(days=config.offset_days)
+
+
+@transaction.atomic
+def reassign_owner_tasks(lead, old_owner, new_owner, actor):
+    """Move the outgoing lead owner's live tasks to the incoming owner (R9-4).
+
+    Reassigning a lead used to change only ``lead.assigned_to`` — the tasks
+    already in flight stayed with the previous owner, so the new owner's name
+    showed on the lead while the old owner kept the edit rights, and work only
+    genuinely handed over at the *next* task. Per the user: "the current working
+    task [is] also reassigned to the person regardless [of whether the] task
+    [is] completed or not completed."
+
+    Moves every task still in play (``open``/``hold``/``pending``) assigned to
+    ``old_owner``, **except** a task the workflow assigns to the Execution Red
+    while ``old_owner`` is still this lead's Red (DD-R9-7) — those are theirs as
+    Red, and change hands through the Resources slot-reassign instead. Closed and
+    skipped tasks keep their historical assignee. Returns the moved tasks.
+    """
+    if old_owner is None or new_owner is None or old_owner.id == new_owner.id:
+        return []
+    defs = task_defs_for(lead.lead_type)
+    current_red = resources.latest_execution_red(lead)
+    red_is_outgoing_owner = current_red is not None and current_red.id == old_owner.id
+    moved = [
+        task
+        for task in lead.tasks.filter(
+            assigned_to=old_owner,
+            status__in=[Task.Status.OPEN, Task.Status.HOLD, Task.Status.PENDING],
+        )
+        if not (
+            red_is_outgoing_owner
+            and defs.get(task.task_no, {}).get("assignee") == "execution_red"
+        )
+    ]
+    if not moved:
+        return []
+    lead.tasks.filter(pk__in=[t.pk for t in moved]).update(assigned_to=new_owner)
+    lead_label = f"{lead.company_name} — {lead.project_name}"
+    events.log_activity(
+        lead,
+        actor,
+        "task",
+        f"{len(moved)} task(s) reassigned from {old_owner.name} to {new_owner.name} "
+        f"with the lead",
+    )
+    if old_owner.id != actor.id:
+        events.notify(
+            old_owner,
+            Notification.Type.TASK_REASSIGNED,
+            f"“{lead_label}” was reassigned to {new_owner.name} — "
+            f"{len(moved)} task(s) you held moved to them.",
+            events.lead_link(lead),
+        )
+    if new_owner.id != actor.id:
+        events.notify(
+            new_owner,
+            Notification.Type.TASK_REASSIGNED,
+            f"{len(moved)} task(s) on “{lead_label}” were reassigned to you.",
+            events.lead_link(lead),
+        )
+    return moved
 
 
 @transaction.atomic

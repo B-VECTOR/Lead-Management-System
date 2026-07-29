@@ -23,6 +23,7 @@ one that isn't held, is a no-op.
 from django.db import transaction
 from django.utils import timezone
 
+from . import projects
 from .models import Lead, LeadHold, Task, TaskHold
 
 
@@ -82,7 +83,11 @@ def hold_lead(lead, user, *, when=None, reason=""):
         return None
     when = when or timezone.now()
     lead_hold = LeadHold.objects.create(
-        lead=lead, hold_by=user, hold_at=when, reason=reason or ""
+        lead=lead,
+        project_id=projects.row_project_id(lead),  # R9-1 display snapshot
+        hold_by=user,
+        hold_at=when,
+        reason=reason or "",
     )
     lead.status = Lead.Status.ON_HOLD
     lead.save(update_fields=["status", "updated_at"])

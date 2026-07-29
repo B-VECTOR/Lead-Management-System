@@ -156,7 +156,7 @@ export default function LeadDetail() {
             <LeadTypeBadge type={lead.lead_type} />
           </div>
           <p className="text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">{lead.lead_display_id}</span> · {lead.company_name} · {lead.industry_name}
+            <span className="font-medium text-foreground">{lead.project_id_display || `Lead #${lead.id}`}</span> · {lead.company_name} · {lead.industry_name}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -228,7 +228,7 @@ export default function LeadDetail() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="py-0"><CardContent className="flex items-center justify-between gap-3 p-4">
           <div>
             <p className="text-xs text-muted-foreground">Overall progress</p>
@@ -236,9 +236,15 @@ export default function LeadDetail() {
           </div>
           <ProgressRing value={lead.progress ?? 0} />
         </CardContent></Card>
+        {/* R9-1: the Project ID is the lead's identifier and is always shown
+            (with a "pending" placeholder until its base code is generated). The
+            numeric Lead ID sits under it as a secondary row reference. */}
         <Card className="py-0"><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Lead ID</p>
-          <p className="mt-1 text-sm font-medium">{lead.lead_display_id}</p>
+          <p className="text-xs text-muted-foreground">Project ID</p>
+          <p className="mt-1 text-sm font-medium">
+            {lead.project_id_display || <span className="font-normal text-muted-foreground">Pending</span>}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Lead #{lead.id}</p>
         </CardContent></Card>
         <Card className="py-0"><CardContent className="p-4">
           <p className="text-xs text-muted-foreground">Owner</p>
@@ -248,12 +254,6 @@ export default function LeadDetail() {
           <p className="text-xs text-muted-foreground">Assigned to</p>
           <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
         </CardContent></Card>
-        {lead.project_id_display && (
-          <Card className="py-0"><CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Project ID</p>
-            <p className="mt-1 text-sm font-medium">{lead.project_id_display}</p>
-          </CardContent></Card>
-        )}
       </div>
 
       <Tabs defaultValue="task">
@@ -349,6 +349,7 @@ export default function LeadDetail() {
           <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Classification</CardTitle></CardHeader>
             <CardContent>
+              <InfoRow label="Country" value={lead.country_name} />
               <InfoRow label="Industry" value={lead.industry_name} />
               <InfoRow label="Domain" value={lead.domain_name} />
               <InfoRow label="Division" value={lead.division || '—'} />

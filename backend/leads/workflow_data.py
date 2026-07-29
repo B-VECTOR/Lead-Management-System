@@ -35,7 +35,14 @@ Per-task keys
   Resource Manager picked on the current allocation), ``resource_manager`` /
   ``finance`` (open **unassigned** — reached via the role screen / Accounts queue).
   ``fallback_assignee`` (optional): used when the primary resolves to None
-  (Task 5 falls back to Default BD when Task 3 was skipped — PRD §5.4).
+  (Task 5 falls back to Default BD when no Execution Red is allocated yet).
+- ``assignee_rules`` (optional, R9): ordered overrides for ``assignee``, matched
+  against an **earlier task's** stored answer — each
+  ``{"when": {"task_no", "field", "equals"}, "assignee": …}``. First match wins;
+  no match falls through to the plain ``assignee``. Task 3 uses it to open to the
+  Default BD Person instead of the Resource Manager when Task 2 answered "no
+  manpower support required" (DD-R9-3) — keeping that branch as data rather than
+  a task-number check in the engine.
 - ``is_allocation_task`` / ``allocation_slots`` / ``manpower_source`` (R5): the
   append-only ``resource_allocation`` slot model. ``allocation_slots`` lists
   which ``ResourceAllocation.Slot`` codes this task manages — team tasks
@@ -201,12 +208,11 @@ BD_WORKFLOW = {
                 {"key": "manpower_brown", "label": "Manpower — Brown", "type": "number", "max": 1, "required_when": {"field": "manpower_required", "equals": "Yes"}},
                 {"key": "manpower_white", "label": "Manpower — White", "type": "number", "required_when": {"field": "manpower_required", "equals": "Yes"}},
             ],
-            # Conditional allocation (PRD §5.4): manpower Yes → Task 3 (allocation);
-            # No → skip Task 3, Default BD carries the study (Task 5 falls back).
-            "routing": [
-                {"when": {"field": "manpower_required", "equals": "Yes"}, "open": [3]},
-                {"open": [4], "skip": [3]},
-            ],
+            # R9-5: Task 3 (allocation) now opens on **both** answers — an
+            # Execution Red is mandatory on every stage, so the allocation step
+            # can never be skipped. The manpower answer decides *who works it*,
+            # not whether it happens (see Task 3's ``assignee_rules``).
+            "routing": [{"open": [3]}],
         },
         # ---- 2HR stage (3–8) -----------------------------------------------
         {
@@ -214,6 +220,15 @@ BD_WORKFLOW = {
             "name": "2Hr Study & Presentation Team Allocation",
             "stage": "2HR",
             "assignee": "resource_manager",
+            # R9-5 (DD-R9-3): manpower support "No" means no resource team is
+            # involved — the lead's own Default BD Person picks the Execution Red
+            # instead of the Resource Manager. Data, not a Python branch.
+            "assignee_rules": [
+                {
+                    "when": {"task_no": 2, "field": "manpower_required", "equals": "No"},
+                    "assignee": "default_bd_person",
+                },
+            ],
             "is_allocation_task": True,
             "allocation_slots": ["execution_red", "execution_brown", "white"],
             "manpower_source": {"task_no": 2, "fields": ["manpower_brown", "manpower_white"]},
@@ -236,7 +251,9 @@ BD_WORKFLOW = {
             "name": "2Hr Study & Presentation",
             "stage": "2HR",
             "assignee": "execution_red",
-            # Default BD carries the study when Task 3 was skipped (PRD §5.4).
+            # Safety net only since R9-5 (Task 3 can no longer be skipped, so a
+            # Red is always allocated by the time this opens): if no Red resolves
+            # at all, the lead's Default BD Person carries the study.
             "fallback_assignee": "default_bd_person",
             "checklist": _cl(
                 ("5.1", "Study Plan"),
@@ -250,9 +267,12 @@ BD_WORKFLOW = {
                 {"key": "presentation_date", "label": "Date of 2Hr presentation", "type": "date", "required": True},
                 {"key": "key_stakeholders_mapped", "label": "Key stakeholders mapped", "type": "rowgroup", "min_rows": 3, "required": False, "columns": _NAME_ROLE_COLS},
             ],
-            # After 5.6, the reimbursement money branch (6→7) and the go-ahead
-            # branch (8) both open in parallel (both "Opens after 5.6", DD5).
-            "routing": [{"open": [6, 8]}],
+            # R9-7 (DD-R9-6): the 2HR tail now runs strictly 5 → 6 → 7 → 8 —
+            # reimbursement, its Accounts approval, then the go-ahead. This
+            # replaces DD5's parallel {6, 8} fan-out and knowingly deviates from
+            # PRD §5.5 (whose auto-drop path assumed 6/7 were still open when 8
+            # closed) — requested by the user 2026-07-28.
+            "routing": [{"open": [6]}],
         },
         {
             "task_no": 6,
@@ -284,10 +304,11 @@ BD_WORKFLOW = {
                 # the bounce that re-opens Task 6 so the money is chased.
                 {"key": "remark", "label": "Remark (why payment is outstanding)", "type": "text", "required_when": {"field": "payment_received", "equals": "No"}},
             ],
-            # R4: Yes → close; No → close with remark + re-open Task 6
-            # (engine, §5.10). The gate carries no forward successors; the flow
-            # continues via the parallel Task 8.
-            "routing": [{"open": []}],
+            # R4: Yes → close; No → close with remark + re-open Task 6 (engine,
+            # §5.10 — a "No" returns before routing, so Task 8 stays shut until
+            # the money is actually approved). R9-7: on a "Yes" the gate now
+            # carries the flow forward to Task 8 instead of terminating.
+            "routing": [{"open": [8]}],
         },
         {
             "task_no": 8,

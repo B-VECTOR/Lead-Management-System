@@ -164,6 +164,8 @@ function ResourceDashboard() {
             return (
               <Link key={t.id} to="/resources" className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent">
                 <span className="truncate pr-2">
+                  {/* R9-1: identify the engagement by its Project ID first. */}
+                  {t.project_id && <span className="font-medium tabular-nums">{t.project_id} · </span>}
                   <span className="font-medium">{t.lead_project_name}</span>
                   <span className="text-muted-foreground"> · Task {t.task_no}. {t.task_name}</span>
                 </span>
@@ -213,6 +215,7 @@ function FinanceDashboard() {
           {gates.map((g) => (
             <Link key={g.id} to="/finance" className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent">
               <span className="truncate pr-2">
+                {g.project_id && <span className="font-medium tabular-nums">{g.project_id} · </span>}
                 <span className="font-medium">{g.lead_project_name}</span>
                 <span className="text-muted-foreground"> · Task {g.task_no}. {g.task_name}</span>
               </span>

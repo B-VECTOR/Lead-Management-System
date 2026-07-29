@@ -1,19 +1,37 @@
 """Project ID generation, stage lifecycle helpers, and the project_details
 commercial history (Tech Req §4.4, §4.8, §13 / PRD §5.3, §5.15, §9.2).
 
-The v4.0/v17.0 Project ID is a stable ``base_code`` generated once at lead
-creation (``{AreaCode}{YY}{Seq}`` — the single domain, per decision D2, supplies
-the Area code; the sequence increments per Area+Year) plus a **derived** stage
-suffix — never a stored join key (§13). The displayed string appends the
-current open stage's code (``-BD``/``-2HR``/``-SnT``/``-IM``/``-E{n}``/``-M``),
-resolved live from the lead's ``lead_stage`` rows so parallel Mining ∥
-Extension stages are represented correctly.
+The Project ID is a stable ``base_code`` generated once at lead creation plus a
+**derived** stage suffix — never a stored join key (§13). The displayed string
+appends the current open stage's code
+(``-BD``/``-2HR``/``-SnT``/``-IM``/``-E{n}``/``-M``), resolved live from the
+lead's ``lead_stage`` rows so parallel Mining ∥ Extension stages are
+represented correctly.
+
+Base composition — **finalized by the user 2026-07-28** (§13, D1 amended),
+superseding the interim ``{AreaCode}{YY}{Seq}``::
+
+    IN  -  PH        NPD    CFF     26     001        -IM
+    │      │         │      │       │      │          └─ stage of intervention
+    │      │         │      │       │      └─ sequence, one counter per year
+    │      │         │      │       └─ 2-digit year
+    │      │         │      └─ type of project (Lead.TYPE_OF_PROJECT_CODES)
+    │      │         └─ area code (the lead's single domain, per D2)
+    │      └─ industry code
+    └─ country code
+
+The four classification codes are read from the lead's own FKs/choice value at
+creation and then **frozen** — editing the lead's country/industry/domain/type
+afterwards deliberately does *not* rewrite the ID, which is already printed on
+every stage, task, allocation and activity row (decision 2026-07-28).
 
 R6 adds: the dynamic extension-loop stage (``ensure_extension_stage``, ``E0 →
 E1 → …``), spawning a Mining child lead off Task 21 (``spawn_mining_lead``),
 and recording a ``project_details`` commercial snapshot per closed IM/E{n}
 cycle (``record_project_cycle`` — TR §4.8).
 """
+
+import re
 
 from django.db import transaction
 from django.utils import timezone
@@ -34,40 +52,63 @@ def _initial_stage_code(lead):
     return LeadStage.BD
 
 
-def next_base_sequence(area, *, year):
-    """Next 3-digit sequence for an Area + 2-digit year (§13.1).
+def type_of_project_code(lead):
+    """The lead's Type-of-Project segment for the Project ID (§13.4).
 
-    The sequence scope is **per Area + Year** (§13.1). Counts existing
-    ``base_code`` values sharing this Area code and year prefix and returns
-    ``max + 1``. ``distinct()`` matters because a Mining child reuses its
-    parent's ``base_code`` (§13) — a shared base must not consume a new number.
+    ``""`` for a lead with no type recorded — the serializer requires one on
+    create, so this only degrades gracefully for legacy/fixture rows rather
+    than blocking ID generation.
+    """
+    return Lead.TYPE_OF_PROJECT_CODES.get(lead.type_of_project, "")
+
+
+# The Year+Sequence tail of a base_code. Everything before it is letters (the
+# four classification codes), so the trailing digit run is always exactly
+# ``YY`` + the sequence.
+_TAIL_DIGITS = re.compile(r"(\d+)$")
+
+
+def next_base_sequence(*, year):
+    """Next 3-digit sequence for a 2-digit year (§13.1).
+
+    The sequence scope is **one counter per year, globally** (decision
+    2026-07-28) — not per Area as it was before the Project ID gained the
+    country/industry/type segments. So the digits alone identify the project
+    within its year. ``distinct()`` matters because a Mining child reuses its
+    parent's ``base_code`` (§13) — a shared base must not consume a number twice.
     """
     yy = f"{year % 100:02d}"
-    prefix = f"{area.code}{yy}"
     codes = (
-        Lead.objects.filter(domain=area, base_code__startswith=prefix)
-        .exclude(base_code__isnull=True)
+        Lead.objects.exclude(base_code__isnull=True)
+        .exclude(base_code="")
         .values_list("base_code", flat=True)
         .distinct()
     )
     max_seq = 0
     for code in codes:
-        tail = code[len(prefix):]
-        if len(tail) == 3 and tail.isdigit():
-            max_seq = max(max_seq, int(tail))
+        match = _TAIL_DIGITS.search(code)
+        if match is None:
+            continue
+        digits = match.group(1)
+        # Skip other years (and anything too short to carry YY + a sequence).
+        if len(digits) <= 2 or not digits.startswith(yy):
+            continue
+        max_seq = max(max_seq, int(digits[2:]))
     return max_seq + 1
 
 
 def build_base_code(lead, *, when=None):
-    """Compose the stable ``{AreaCode}{YY}{Seq}`` base for ``lead`` (§13).
+    """Compose the stable base for ``lead`` (§13, format finalized 2026-07-28).
 
-    The single domain (D2) supplies the Area code; the sequence is per
-    Area+Year. Example: ``NPD26001``.
+    ``{CountryCode}-{IndustryCode}{AreaCode}{TypeCode}{YY}{Seq}`` — e.g.
+    ``IN-PHNPDCFF26001``. The single domain (D2) supplies the Area code; the
+    sequence is global per year.
     """
     when = when or timezone.now()
     yy = f"{when.year % 100:02d}"
-    seq = f"{next_base_sequence(lead.domain, year=when.year):03d}"
-    return f"{lead.domain.code}{yy}{seq}"
+    seq = f"{next_base_sequence(year=when.year):03d}"
+    core = f"{lead.industry.code}{lead.domain.code}{type_of_project_code(lead)}{yy}{seq}"
+    return f"{lead.country.code}-{core}"
 
 
 @transaction.atomic
@@ -90,8 +131,8 @@ def project_id_for_stage(lead, stage_code):
 
     Unlike :func:`derived_project_id` — which picks the lead's *current* open
     stage — this composes the ID for the stage code passed in, so each
-    ``lead_stage`` row can store its own stable value (``NPD26001-IM``,
-    ``NPD26001-E0``, a Mining lead's ``NPD26001-M`` / ``NPD26001-M-E0``).
+    ``lead_stage`` row can store its own stable value (``IN-PHNPDCFF26001-IM``,
+    ``…-E0``, a Mining lead's ``…-M`` / ``…-M-E0``).
     Returns ``""`` until ``base_code`` exists. Display only, never a join key.
     """
     if not lead.base_code:
@@ -133,9 +174,9 @@ def stable_project_id(lead):
     """The lead-level **stable** Project ID stored on ``lead.project_id`` (meeting
     decision 2026-07-27): the ``base_code`` plus a ``-M`` marker for a Mining
     lead — and **no** stage suffix, so it stays constant for the lead's life
-    (``NPD26001``, ``NPD26002-M``). The stage-suffixed variants live per-row on
-    ``lead_stage``/``task_details`` (:func:`project_id_for_stage`). ``""`` until
-    ``base_code`` exists."""
+    (``IN-PHNPDCFF26001``, ``IN-PHNPDCFF26002-M``). The stage-suffixed variants
+    live per-row on ``lead_stage``/``task_details``
+    (:func:`project_id_for_stage`). ``""`` until ``base_code`` exists."""
     if not lead.base_code:
         return ""
     if lead.lead_type == Lead.LeadType.MINING:
@@ -222,6 +263,7 @@ def spawn_mining_lead(parent, user, *, when=None):
         parent_lead=parent,
         company_name=parent.company_name,
         project_name=parent.project_name,
+        country=parent.country,
         industry=parent.industry,
         domain=parent.domain,
         division=parent.division,
@@ -299,5 +341,19 @@ def derived_project_id(lead):
     stage = current_stage(lead)
     code = stage.stage if stage is not None else _initial_stage_code(lead)
     return project_id_for_stage(lead, code)
+
+
+def row_project_id(lead, stage=None):
+    """The ``project_id`` snapshot to stamp on a new lead-scoped row (R9-1).
+
+    One home for the choice (DD-R9-2): a row that belongs to a specific stage
+    reuses **that stage's** stored snapshot; a purely lead-scoped row (a hold, a
+    follow-up, an attachment, an activity entry) takes the lead's *live* derived
+    ID at insert time, so the suffix records which stage the row happened during.
+    Display only — never a join key (§13).
+    """
+    if stage is not None:
+        return stage.project_id or project_id_for_stage(lead, stage.stage)
+    return derived_project_id(lead)
 
 

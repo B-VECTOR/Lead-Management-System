@@ -28,8 +28,17 @@ export const canSeeLeadModule = (user) =>
   !BACK_OFFICE_ROLES.some((r) => hasRole(user, r))
 
 // Follow-up is also opened up to Resource Manager specifically (Phase 9, per
-// the user) — unlike Leads/Held Leads/Held Tasks, which stay back-office-hidden.
+// the user) — unlike Held Leads/Held Tasks, which stay back-office-hidden.
 export const canSeeFollowUps = (user) =>
+  canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
+
+// The Leads *list* (nav item + `/leads` route) is likewise open to the Resource
+// Manager (R10-1, per the user: "add lead tab too for resource person to see the
+// lead and assign resource"). They need it to reach a lead's allocation step in
+// its task stepper rather than only via the Resources queue. It is view-only for
+// them — creating/editing a lead stays on `canSeeLeadModule` + `PERMISSIONS`,
+// and the backend only shows them leads that have reached an allocation task.
+export const canSeeLeadsList = (user) =>
   canSeeLeadModule(user) || hasRole(user, 'Resource Manager')
 
 // Held Leads is for the lead-facing management roles only (they own the lead's
@@ -37,12 +46,13 @@ export const canSeeFollowUps = (user) =>
 export const canSeeHeldLeads = (user) =>
   LEAD_MODULE_ROLES.some((r) => hasRole(user, r))
 
-// Resources is the Resource Manager's screen, but D12 (R5) lets the lead's own
-// Default BD Person work its allocation tasks too — so the whole lead-facing
-// set (which is exactly who can be a lead's `assigned_to`, plus Lead Admin/
-// Marketing who share the module) also gets the nav item. The backend scopes
-// what each caller actually sees/can act on; this only gates the link/route.
-export const canSeeResources = (user) => hasRole(user, 'Resource Manager') || canSeeLeadModule(user)
+// Resources is the Resource Manager's own module — nav item and route both
+// (R9-3, per the user: "hidden … only visible to the resource roles only").
+// R5 had opened this up to the whole lead-facing set for D12, but a lead's
+// Default BD Person no longer needs the cross-lead screen: they staff their own
+// lead's allocation task inline in its task stepper (`AllocationStep`). The D12
+// *backend* permission is unchanged — this only gates the link/route.
+export const canSeeResources = (user) => hasRole(user, 'Resource Manager')
 
 // Held Tasks is open to every user except User Management (Phase 13, per the
 // user, later narrowed): an assignee/Employee needs to see the tasks of theirs

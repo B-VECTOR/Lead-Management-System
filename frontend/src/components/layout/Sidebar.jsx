@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Users2, Bell, Boxes, History, Wallet, UserCog, PauseCircle, ListChecks, ListTodo, FileCheck2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
-import { hasRole, canSeeLeadModule, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
+import { hasRole, canSeeLeadsList, canSeeFollowUps, canSeeHeldLeads, canSeeHeldTasks, canSeeResources } from '@/api/scope'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Logo } from './Logo'
@@ -11,10 +11,11 @@ import { Logo } from './Logo'
 // every signed-in user (Dashboard, Notifications). `roles` gates an item to
 // specific roles; `show(user)` is a predicate for finer module gating. The
 // Lead-module items are hidden from pure back-office users (Resource Manager /
-// Finance / User Management) via `canSeeLeadModule`.
+// Finance / User Management) via `canSeeLeadModule` — except Leads itself and
+// Follow up, which the Resource Manager also gets (`canSeeLeadsList`).
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/leads', label: 'Leads', icon: Users2, show: canSeeLeadModule },
+  { to: '/leads', label: 'Leads', icon: Users2, show: canSeeLeadsList },
   { to: '/other-tasks', label: 'Follow up', icon: ListTodo, show: canSeeFollowUps },
   { to: '/held-leads', label: 'Hold Leads', icon: PauseCircle, show: canSeeHeldLeads },
   { to: '/held-tasks', label: 'Hold Tasks', icon: ListChecks, show: canSeeHeldTasks },

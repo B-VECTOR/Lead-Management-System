@@ -34,9 +34,12 @@ class LeadAdmin(admin.ModelAdmin):
         "created_by",
         "created_at",
     )
-    list_filter = ("lead_type", "flow_of_tasks", "type_of_project", "status", "industry", "domain")
-    search_fields = ("base_code", "company_name", "project_name", "division")
-    autocomplete_fields = ("industry", "domain")
+    list_filter = (
+        "lead_type", "flow_of_tasks", "type_of_project", "status",
+        "country", "industry", "domain",
+    )
+    search_fields = ("base_code", "project_id", "company_name", "project_name", "division")
+    autocomplete_fields = ("country", "industry", "domain")
     raw_id_fields = ("assigned_to", "created_by", "parent_lead", "short_closed_by")
     readonly_fields = (
         "base_code", "project_id", "project_id_base", "extension",

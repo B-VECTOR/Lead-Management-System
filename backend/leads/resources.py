@@ -12,8 +12,13 @@ Encapsulates everything the workflow does with the append-only
   replacement) — never an overwrite (§4.7).
 - **execution_red resolution:** the successor of an allocation task — and every
   ``execution_red``-assigned task in that block — is worked by the Execution
-  Red currently allocated. ``latest_execution_red`` reads the most recent
-  ``allocated`` Red row off the lead so the engine needs no task numbers.
+  Red currently allocated. ``latest_execution_red`` reads the most recent Red
+  row off the lead (preferring an ``allocated`` one, else the last it ever had —
+  R9/DD-R9-5) so the engine needs no task numbers.
+- **The Red is mandatory and continuous (R9):** ``carry_forward_red`` pre-fills
+  an opening allocation task's Red slot with the lead's current Red, and
+  ``release`` refuses to empty a Red slot — it changes only via ``reassign``,
+  which cascades the handover onto the tasks it was driving.
 - **Submit** (§7.5): validate the task's mandatory slots are filled, then close
   the allocation task, which opens the next task assigned to that Execution Red.
   ``submit``.
@@ -35,7 +40,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from . import events
+from . import events, projects
 from .models import LeadStage, Notification, ResourceAllocation, Task
 
 RESOURCE_MANAGER_GROUP = "resource_manager"
@@ -70,9 +75,12 @@ def _is_engagement_stage(stage_code):
 def _notify_resource_managers(task):
     """Tell every Resource Manager an allocation task is waiting (PRD §5.7).
 
-    Allocation tasks open unassigned — they are staffed from the role-scoped
-    ``/resources`` screen, so the normal "notify the new assignee" path never
-    fires for them. Best-effort/additive: notify every active Resource Manager.
+    A team-allocation task opens unassigned when the Resource Manager owns it
+    (R9-5: it opens assigned to the lead's Default BD Person instead when Task 2
+    answered "no manpower support required"), so the normal "notify the new
+    assignee" path may never fire. Best-effort/additive: notify every active
+    Resource Manager — they work the queue at ``/resources``, which links into
+    the lead's task stepper where the slots are staffed.
     """
     User = get_user_model()
     lead = task.lead
@@ -235,6 +243,7 @@ def allocate(task, tdef, slot, *, user=None, is_tbd=False, remark=""):
     return ResourceAllocation.objects.create(
         lead=task.lead,
         stage=task.stage,
+        project_id=projects.row_project_id(task.lead, task.stage),
         task=task,
         slot=slot,
         user=user,
@@ -266,6 +275,7 @@ def reassign(task, current, *, user=None, is_tbd=False, actor=None, remark=""):
     new_row = ResourceAllocation.objects.create(
         lead=current.lead,
         stage=current.stage,
+        project_id=current.project_id,
         task=current.task,
         slot=current.slot,
         user=user,
@@ -326,32 +336,81 @@ def _reassign_execution_red_tasks(lead, old_red, new_red, actor):
 @transaction.atomic
 def release(row):
     """Free a slot with no replacement (e.g. one White too many). Raises if the
-    row is already released."""
+    row is already released, or if it is the Execution Red.
+
+    R9 (DD-R9-9): the Execution Red is mandatory on every stage and drives the
+    assignment of every ``execution_red`` task, so it can never be emptied — a
+    Red change goes through :func:`reassign` (which appends the replacement and
+    cascades the task handover) instead.
+    """
     if row.status != ResourceAllocation.Status.ALLOCATED:
         raise serializers.ValidationError("This allocation has already been released.")
+    if row.slot == ResourceAllocation.Slot.EXECUTION_RED:
+        raise serializers.ValidationError(
+            "The Execution Red cannot be left empty — reassign it to a different "
+            "Red instead of releasing it."
+        )
     row.status = ResourceAllocation.Status.RELEASED
     row.released_on = timezone.now()
     row.save(update_fields=["status", "released_on", "updated_at"])
     return row
 
 
+def _red_rows(lead):
+    """Every Execution-Red row on ``lead``, newest first."""
+    return ResourceAllocation.objects.filter(
+        lead=lead, slot=ResourceAllocation.Slot.EXECUTION_RED,
+    ).order_by("-id")
+
+
 def latest_execution_red(lead):
     """The Execution Red to assign ``execution_red`` tasks to (§7.5).
 
-    The most recently allocated, still-``allocated`` Execution Red row on the
-    lead — i.e. the current active engagement block's Red. None until the
-    Resource Manager has filled one in.
+    Prefers the most recent still-``allocated`` Red — the current engagement
+    block's Red — and otherwise falls back to the **last Red the lead ever had**
+    (R9, DD-R9-5). The fallback matters because D11 releases the 2HR/SnT Red when
+    its stage closes: without it, an ``execution_red`` task opening between that
+    close and the next allocation task would open unassigned, contradicting "the
+    Red is seen throughout, in every step." None only for a lead that has never
+    had a Red allocated.
     """
-    row = (
-        ResourceAllocation.objects.filter(
-            lead=lead,
-            slot=ResourceAllocation.Slot.EXECUTION_RED,
-            status=ResourceAllocation.Status.ALLOCATED,
-        )
-        .order_by("-id")
-        .first()
-    )
+    rows = _red_rows(lead).select_related("user")
+    row = rows.filter(status=ResourceAllocation.Status.ALLOCATED).first() or rows.first()
     return row.user if row else None
+
+
+@transaction.atomic
+def carry_forward_red(task, tdef):
+    """Pre-fill an opening allocation task's Execution Red slot with the lead's
+    current Red (R9, DD-R9-4) — returns the new row, or None.
+
+    The Red is mandatory on every stage and continuous across them, so a later
+    allocation task must open with it **already allocated** rather than empty
+    (which used to block its own Submit until someone re-picked the same person).
+    A carry-forward is a genuine allocation, so it appends its own append-only
+    row (§4.7) rather than copying or re-pointing the previous one. No-op when the
+    task doesn't manage the Red slot, the slot is already filled, or the lead has
+    never had a Red.
+    """
+    if ResourceAllocation.Slot.EXECUTION_RED not in tdef.get("allocation_slots", []):
+        return None
+    if occupants(task, ResourceAllocation.Slot.EXECUTION_RED).exists():
+        return None
+    red = latest_execution_red(task.lead)
+    if red is None:
+        return None
+    reqs = slot_requirements(task.lead, tdef)
+    return ResourceAllocation.objects.create(
+        lead=task.lead,
+        stage=task.stage,
+        project_id=projects.row_project_id(task.lead, task.stage),
+        task=task,
+        slot=ResourceAllocation.Slot.EXECUTION_RED,
+        user=red,
+        names=occupant_name(red, False),
+        man_power_required=reqs.get(ResourceAllocation.Slot.EXECUTION_RED, 1),
+        remark="Carried forward from the previous stage",
+    )
 
 
 @transaction.atomic
