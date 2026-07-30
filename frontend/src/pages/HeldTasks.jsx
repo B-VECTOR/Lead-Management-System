@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useHeldTasks, useUnholdTask } from '@/hooks/useHolds'
+import { useAuth } from '@/context/AuthContext'
+import { personName } from '@/lib/format'
 
 // "Held Tasks" menu (Tech Req §6 / PRD §5.8; Phase 13) — every task currently on
 // hold that the signed-in user can see. The assignee (or Lead Admin) resumes it
@@ -40,6 +42,7 @@ function HoldTrail({ holds }) {
 }
 
 export default function HeldTasks() {
+  const { user } = useAuth()
   const navigate = useNavigate()
   const { data: tasks = [], isLoading } = useHeldTasks()
   const unhold = useUnholdTask()
@@ -99,7 +102,10 @@ export default function HeldTasks() {
                         <span className="font-medium">{task.lead_project_name}</span>
                         <span className="text-muted-foreground"> · {task.lead_company_name}</span>
                       </TableCell>
-                      <TableCell className="text-sm">{task.assigned_to_name || <span className="text-muted-foreground">Not assigned</span>}</TableCell>
+                      <TableCell className="text-sm">
+                        {personName(task.assigned_to_name, user, { id: task.assigned_to, capitalize: true })
+                          || <span className="text-muted-foreground">Not assigned</span>}
+                      </TableCell>
                       <TableCell className="max-w-xs text-sm">
                         {hold?.reason ? <span className="line-clamp-2">{hold.reason}</span> : <span className="text-muted-foreground">—</span>}
                       </TableCell>

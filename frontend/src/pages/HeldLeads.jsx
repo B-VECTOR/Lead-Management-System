@@ -6,11 +6,14 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { LeadStatusBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
 import { useHeldLeads, useUnholdLead } from '@/hooks/useHolds'
+import { useAuth } from '@/context/AuthContext'
+import { personName } from '@/lib/format'
 
 // "Held Leads" menu (Tech Req §6 / PRD §5.8) — every lead currently On Hold
 // that the signed-in user can see, with a one-click Unhold that also restores
 // the lead's held tasks.
 export default function HeldLeads() {
+  const { user } = useAuth()
   const navigate = useNavigate()
   const { data: leads = [], isLoading } = useHeldLeads()
   const unhold = useUnholdLead()
@@ -62,7 +65,10 @@ export default function HeldLeads() {
                   <TableCell>{lead.company_name || '—'}</TableCell>
                   <TableCell><LeadTypeBadge type={lead.lead_type} /></TableCell>
                   <TableCell><LeadStatusBadge status={lead.status} /></TableCell>
-                  <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not assigned</span>}</TableCell>
+                  <TableCell className="text-sm">
+                    {personName(lead.assigned_to_name, user, { id: lead.assigned_to, capitalize: true })
+                      || <span className="text-muted-foreground">Not assigned</span>}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button size="sm" variant="outline" disabled={unhold.isPending} onClick={(e) => handleUnhold(e, lead.id)}>
                       <PlayCircle className="size-4" /> Unhold

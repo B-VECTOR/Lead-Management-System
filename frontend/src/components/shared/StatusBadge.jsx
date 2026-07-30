@@ -140,6 +140,62 @@ const BELT_POTENTIAL_STYLES = {
 const BELT_POTENTIAL_FALLBACK = 'border border-dashed border-border bg-transparent text-muted-foreground'
 const BELT_NA_STYLES = 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
 
+// Resource-allocation slot (§4.7). The two Execution slots are belt-named, so
+// they borrow their belt's colour — a Red then reads *red* in every stage it
+// appears in, which is the whole point of the lead Resources tab's per-stage
+// view (a constant Red vs. Browns/Whites that change with the stage's needs).
+// White keeps the belt's outlined look; audit and team slots get their own
+// identity colours. A **released** holder is drawn as a dashed outline in the
+// same hue (the same "not solidly held" treatment as a Potential belt).
+const SLOT_STYLES = {
+  execution_red: BELT_SOLID_STYLES.Red,
+  execution_brown: BELT_SOLID_STYLES.Brown,
+  white: BELT_SOLID_STYLES.White,
+  auditor: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300',
+  project_member: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
+}
+const SLOT_RELEASED_STYLES = {
+  execution_red: BELT_POTENTIAL_STYLES.Red,
+  execution_brown: BELT_POTENTIAL_STYLES.Brown,
+  white: BELT_POTENTIAL_STYLES.White,
+  auditor: 'border border-dashed border-indigo-400 bg-transparent text-indigo-600 dark:border-indigo-500 dark:text-indigo-300',
+  project_member: BELT_POTENTIAL_FALLBACK,
+}
+
+// Slots come in families — Auditors 1–4 and Project Members 1–10 share a colour
+// and differ only by number, so both maps above key on the family, not the slot.
+function slotFamily(slot) {
+  if (!slot) return ''
+  if (slot.startsWith('auditor')) return 'auditor'
+  if (slot.startsWith('project_member')) return 'project_member'
+  return slot
+}
+
+// Compact slot label for dense layouts (the stage × person matrix): "Red",
+// "Brown", "White", "A1"–"A4", "PM1"–"PM10". The backend's `slot_label` is the
+// long form ("Project Member 7") — use that wherever there's room.
+export function slotShortLabel(slot) {
+  if (!slot) return ''
+  if (slot === 'execution_red') return 'Red'
+  if (slot === 'execution_brown') return 'Brown'
+  if (slot === 'white') return 'White'
+  if (slot.startsWith('auditor_')) return `A${slot.slice('auditor_'.length)}`
+  if (slot.startsWith('project_member_')) return `PM${slot.slice('project_member_'.length)}`
+  return slot
+}
+
+// Sort key putting slots in form order: Red, Brown, White, Auditors, Project
+// Members — shared by every surface that lists a stage's slots.
+export function slotOrder(slot) {
+  const family = slotFamily(slot)
+  const n = Number(slot?.split('_').pop()) || 0
+  if (family === 'execution_red') return 0
+  if (family === 'execution_brown') return 1
+  if (family === 'white') return 2
+  if (family === 'auditor') return 10 + n
+  return 100 + n
+}
+
 function Pill({ className, children, title }) {
   return (
     <span title={title} className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap', className)}>
@@ -197,6 +253,20 @@ export function LeadTypeBadge({ type }) {
 
 export function RoleBadge({ role }) {
   return <Pill className={ROLE_STYLES[role] || 'bg-neutral-100 text-neutral-700'}>{role}</Pill>
+}
+
+// One allocation slot, coloured by its family. `label` overrides the text (pass
+// the backend's `slot_label` for the long form, `slotShortLabel(slot)` for the
+// compact one); `released` switches to the dashed "no longer holds it" variant.
+export function SlotBadge({ slot, label, released, title, className }) {
+  if (!slot) return null
+  const family = slotFamily(slot)
+  const styles = released ? SLOT_RELEASED_STYLES : SLOT_STYLES
+  return (
+    <Pill title={title} className={cn(styles[family] || 'bg-neutral-100 text-neutral-700', className)}>
+      {label || slotShortLabel(slot)}
+    </Pill>
+  )
 }
 
 export function BeltBadge({ belt }) {

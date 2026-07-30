@@ -10,6 +10,7 @@ import { LeadStatusBadge, LeadTypeBadge, StageBadge, stageLabel } from '@/compon
 import { useLeads } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
+import { personName } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 // Tracker bar colour follows lead status (§5.18 / Tech Req §4.3.3 v16):
@@ -111,12 +112,14 @@ export default function LeadsList() {
     return {
       industries: asOpts(uniq(leads.map((l) => l.industry_name))),
       domains: asOpts(uniq(leads.map((l) => l.domain_name))),
-      owners: asOpts(owners),
+      // The signed-in user reads as "Me" here too, matching the Owner column;
+      // the option's *value* stays the real name, which is what rows filter on.
+      owners: owners.map((v) => ({ value: v, label: personName(v, user, { capitalize: true }) })),
       stages: stages.map((code) => ({ value: code, label: stageLabel(code) })),
       currentTasks,
       statuses: asOpts(uniq(leads.map((l) => l.status))),
     }
-  }, [leads])
+  }, [leads, user])
 
   // All filters combine with AND semantics (§5.18).
   const rows = useMemo(() => {
@@ -168,11 +171,12 @@ export default function LeadsList() {
           <Table>
             <TableHeader>
               <TableRow>
-                {/* R9-1: the Project ID is the lead's identifier — it leads the
-                    table; the numeric row id is secondary (shown as `#`). */}
+                {/* `#` is the row's serial number, so it sits in the first
+                    column (user, 2026-07-30); the Project ID — the lead's real
+                    identifier (R9-1) — follows it. */}
+                <TableHead>#</TableHead>
                 <TableHead>Project ID</TableHead>
                 <TableHead>Company / Project</TableHead>
-                <TableHead>#</TableHead>
                 <TableHead>Industry</TableHead>
                 <TableHead>Domain</TableHead>
                 <TableHead>Owner</TableHead>
@@ -185,13 +189,13 @@ export default function LeadsList() {
                   Project ID, dropdowns (built from the loaded data) for the
                   rest. All filters combine with AND. */}
               <TableRow className="hover:bg-transparent">
+                <TableHead />
                 <TableHead className="py-1.5">
                   <Input value={filters.projectId} onChange={(e) => setFilter('projectId')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
                 </TableHead>
                 <TableHead className="py-1.5">
                   <Input value={filters.text} onChange={(e) => setFilter('text')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
                 </TableHead>
-                <TableHead />
                 <TableHead className="py-1.5"><FilterSelect value={filters.industry} onChange={setFilter('industry')} options={options.industries} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.domain} onChange={setFilter('domain')} options={options.domains} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.owner} onChange={setFilter('owner')} options={options.owners} placeholder="All" /></TableHead>
@@ -208,6 +212,7 @@ export default function LeadsList() {
               )}
               {rows.map((lead) => (
                 <TableRow key={lead.id} className="cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
+                  <TableCell className="tabular-nums text-muted-foreground">{lead.id}</TableCell>
                   <TableCell className="font-medium tabular-nums">
                     {lead.project_id_display || <span className="font-normal text-muted-foreground">Pending</span>}
                   </TableCell>
@@ -220,10 +225,12 @@ export default function LeadsList() {
                     </div>
                     <div className="text-xs text-muted-foreground">{lead.company_name || '—'}</div>
                   </TableCell>
-                  <TableCell className="tabular-nums text-muted-foreground">{lead.id}</TableCell>
                   <TableCell>{lead.industry_name || '—'}</TableCell>
                   <TableCell>{lead.domain_name || '—'}</TableCell>
-                  <TableCell className="text-sm">{lead.assigned_to_name || <span className="text-muted-foreground">Not Assigned</span>}</TableCell>
+                  <TableCell className="text-sm">
+                    {personName(lead.assigned_to_name, user, { id: lead.assigned_to, capitalize: true })
+                      || <span className="text-muted-foreground">Not Assigned</span>}
+                  </TableCell>
                   <TableCell>
                     {lead.current_stage?.stage ? <StageBadge stage={lead.current_stage.stage} /> : <span className="text-sm text-muted-foreground">—</span>}
                   </TableCell>

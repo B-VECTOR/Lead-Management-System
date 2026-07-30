@@ -131,6 +131,7 @@ Keep this mapping stable — blue never means "done", emerald never means "error
 | `<LeadTypeBadge type>` | BD→violet, Mining→cyan, Extension→orange |
 | `<RoleBadge role>` | User Management→rose, Lead Admin→violet, Lead Manager→blue, Marketing→pink, Resource Manager→cyan, Finance→emerald, Employee→neutral |
 | `<BeltBadge belt>` | Solid: Black→neutral-900, Brown→amber-800, Red→red-600, White→outlined. `Potential X`→dashed outline in X's color. NA→neutral |
+| `<SlotBadge slot label released title>` | Resource-allocation slot: execution_red→Red belt color, execution_brown→Brown belt color, white→outlined White, auditor_1–4→indigo, project_member_1–10→neutral. `released` → dashed outline in the same hue (the Potential-belt treatment, read as "no longer held"). Helpers `slotShortLabel(slot)` ("Red"/"A2"/"PM7") and `slotOrder(slot)` (form order: Red, Brown, White, Auditors, Project Members) ship alongside it |
 
 > **Tracker/progress bars follow lead status** (see `STATUS_BAR_COLORS` in [LeadsList.jsx](frontend/src/pages/LeadsList.jsx)): emerald while moving/done, amber when paused, red when dropped. The generic `<ProgressBar>`/`<ProgressRing>` use emerald (100%) / blue (in progress) / neutral (0%).
 

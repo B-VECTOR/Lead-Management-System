@@ -290,12 +290,13 @@ BD_WORKFLOW = {
                 {"key": "presentation_date", "label": "Date of 2Hr presentation", "type": "date", "required": True},
                 {"key": "key_stakeholders_mapped", "label": "Key stakeholders mapped", "type": "rowgroup", "min_rows": 3, "required": False, "columns": _NAME_ROLE_COLS},
             ],
-            # R9-7 (DD-R9-6): the 2HR tail now runs strictly 5 → 6 → 7 → 8 —
-            # reimbursement, its Accounts approval, then the go-ahead. This
-            # replaces DD5's parallel {6, 8} fan-out and knowingly deviates from
-            # PRD §5.5 (whose auto-drop path assumed 6/7 were still open when 8
-            # closed) — requested by the user 2026-07-28.
-            "routing": [{"open": [6]}],
+            # R15-1 (2026-07-29): 5.6 fans out to **6 and 8 in parallel** again —
+            # the money branch (6 → its Accounts gate 7) runs alongside the client
+            # go-ahead (8), exactly as TR §5 rows 6/8 specify ("Opens after 5.6"
+            # on both). This reverts R9-7/DD-R9-6's sequential 5 → 6 → 7 → 8 and
+            # restores PRD §5.5's auto-drop path, where a "no go-ahead" on 8 can
+            # leave 6 & 7 open so the reimbursement is still chased.
+            "routing": [{"open": [6, 8]}],
         },
         {
             "task_no": 6,
@@ -327,11 +328,11 @@ BD_WORKFLOW = {
                 # the bounce that re-opens Task 6 so the money is chased.
                 {"key": "remark", "label": "Remark (why payment is outstanding)", "type": "text", "required_when": {"field": "payment_received", "equals": "No"}},
             ],
-            # R4: Yes → close; No → close with remark + re-open Task 6 (engine,
-            # §5.10 — a "No" returns before routing, so Task 8 stays shut until
-            # the money is actually approved). R9-7: on a "Yes" the gate now
-            # carries the flow forward to Task 8 instead of terminating.
-            "routing": [{"open": [8]}],
+            # R4: Yes → close (terminal — TR §5 row 7); No → close with remark +
+            # re-open Task 6 (engine, §5.10). R15-1 removes R9-7's forward edge to
+            # Task 8: 8 is now opened in parallel by Task 5, so routing to it here
+            # too would be a duplicate open of a task that is already in flight.
+            "routing": [{"open": []}],
         },
         {
             "task_no": 8,
@@ -582,6 +583,13 @@ BD_WORKFLOW = {
             "name": "Exploit Mining Opportunities",
             "stage": "M",
             "assignee": "default_bd_person",
+            # The mining window opening is announced louder than an ordinary task
+            # open (``engine._announce_mining_window`` — owner *and* the lead's
+            # managers, in place of the generic "a task is ready" note): it fires
+            # off a trigger months after go-live, so nobody is watching for it.
+            # A task-level marker rather than an ``on_open`` hook because the
+            # frontend reads it too, to flag the stage change in-session.
+            "is_mining_opportunity": True,
             "checklist": _cl(
                 ("21.1", "Visit to client location"),
                 ("21.2", "Discussion with key stakeholders"),
@@ -728,7 +736,19 @@ BD_WORKFLOW = {
                 ("27.3", "All reimbursements received"),
             ),
             "extra_fields": [
-                {"key": "final_closed", "label": "Final closed", "type": "boolean", "required": True},
+                # Not a Yes/No branch like the other booleans — nothing routes on
+                # it, it is the closer's confirmation that the project really is
+                # done. ``widget: checkbox`` renders it as a single tick box
+                # instead of a dropdown (user, 2026-07-30); unticked leaves the
+                # field empty, so ``required`` still blocks completion.
+                {
+                    "key": "final_closed",
+                    "label": "Final closed",
+                    "type": "boolean",
+                    "required": True,
+                    "widget": "checkbox",
+                    "checkbox_label": "Confirm this project is finally closed",
+                },
             ],
             # R5: releases the Implementation/Extension-loop resource allocations
             # the moment this task opens (D11) — see the ``on_open`` doc above.

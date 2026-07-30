@@ -146,12 +146,12 @@ function ResourceDashboard() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Resource dashboard</h1>
-        <p className="text-sm text-muted-foreground">Allocation tasks waiting on you, and who's currently staffed.</p>
+        <p className="text-sm text-muted-foreground">Allocation tasks waiting on you, and who's currently assigned.</p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label="Awaiting allocation" value={tasksLoading ? '—' : awaiting.length} icon={Clock} hint="Allocation tasks still open" />
-        <StatCard label="Currently staffed" value={rowsLoading ? '—' : staffed.length} icon={Boxes} hint="Active resource assignments" />
+        <StatCard label="Currently assigned" value={rowsLoading ? '—' : staffed.length} icon={Boxes} hint="Active resource assignments" />
         <StatCard label="Total history rows" value={rowsLoading ? '—' : rows.length} icon={ListTodo} hint="All allocation records, incl. released" />
       </div>
 

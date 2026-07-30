@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { CheckCircle2, UserCog } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -18,12 +19,48 @@ import { useLeadTasks, useCompleteTask, useReassignTask } from '@/hooks/useTasks
 import { useHoldTask, useUnholdTask } from '@/hooks/useHolds'
 import { useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
+import { personName } from '@/lib/format'
 
 // A trigger task's scheduled open date is a date-only string ("2026-08-12");
 // pin it to local midnight so it never shifts a day when formatted.
 function formatOpenDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+  })
+}
+
+// Task 21 ("Exploit Mining Opportunities") answered "Yes" spawns a standalone
+// Mining lead sharing this lead's Project ID base (PRD §5.3.1/§13). It's a new
+// piece of work for someone — usually the lead's own owner — so it gets its own
+// sticky alert with a jump link rather than being folded into the "task
+// completed" toast. The matching bell notification is raised server-side.
+// The other half of the story: the lead reaching its Mining stage at all. Task
+// 21 (flagged `is_mining_opportunity` by the workflow, so no task number lives
+// here) opens off a trigger months after go-live, so its arrival is called out
+// rather than left as one more name in the "opened:" list. It can arrive
+// `pending` — the trigger date hasn't come round yet — which is a heads-up, not
+// work waiting, so the wording differs.
+function notifyMiningWindow(task) {
+  if (task.status === 'pending') {
+    const date = task.scheduled_open?.open_date
+    toast.info('Mining opportunity scheduled', {
+      description: `“${task.task_name}” opens${date ? ` on ${formatOpenDate(date)}` : ' once its trigger date arrives'} — the project moves into its Mining stage then.`,
+      duration: 12_000,
+    })
+    return
+  }
+  toast.info('Project has entered its Mining stage', {
+    description: `“${task.task_name}” is now open${task.assigned_to_name ? ` for ${task.assigned_to_name}` : ''} — visit the client and look for a new project opportunity.`,
+    duration: 15_000,
+  })
+}
+
+function notifyMiningSpawned(lead, navigate) {
+  const owner = lead.assigned_to_name
+  toast.success('Project has gone into Mining', {
+    description: `${lead.project_id} — a new Mining lead for “${lead.company_name} — ${lead.project_name}” is open at Task 1${owner ? `, with ${owner}` : ''}.`,
+    duration: 20_000,
+    action: { label: 'Open lead', onClick: () => navigate(`/leads/${lead.id}`) },
   })
 }
 
@@ -134,6 +171,8 @@ function AllocationStep({ task, onSubmitted }) {
 }
 
 export function LeadTaskTab({ leadId }) {
+  const { user } = useAuth()
+  const navigate = useNavigate()
   const { data: tasks = [], isLoading } = useLeadTasks(leadId)
   const { data: owners = [] } = useAssignableUsers(true)
   const completeTask = useCompleteTask(leadId)
@@ -144,12 +183,19 @@ export function LeadTaskTab({ leadId }) {
   // auto-advance before the new task loads (#12d).
   const awaitingId = useRef(null)
 
-  // Default to the first still-open task (the one that needs work), else the
-  // last task in the list.
+  // Land on the *latest* still-open task, not the first (user, 2026-07-30):
+  // tasks are listed in the order they opened, and earlier steps can stay open
+  // long after the workflow has moved on — a hanging parallel task (18), a
+  // Finance gate bounced back, a re-presentation loop. Opening on Task 7 while
+  // the project is really at 19 hid the step that needs work. Among the open
+  // ones, prefer the newest assigned to the signed-in user (their own work),
+  // else the newest open task, else the last row in the list.
   const defaultActive = useMemo(() => {
-    const firstOpen = tasks.find((t) => t.status === 'open')
-    return (firstOpen || tasks[tasks.length - 1])?.id ?? null
-  }, [tasks])
+    const open = tasks.filter((t) => t.status === 'open')
+    const mine = open.filter((t) => t.assigned_to && t.assigned_to === user?.id)
+    const pick = mine[mine.length - 1] || open[open.length - 1] || tasks[tasks.length - 1]
+    return pick?.id ?? null
+  }, [tasks, user?.id])
 
   useEffect(() => {
     if (activeId && tasks.some((t) => t.id === activeId)) {
@@ -179,7 +225,7 @@ export function LeadTaskTab({ leadId }) {
     )
   }
 
-  const activeTask = tasks.find((t) => t.id === activeId) || tasks[tasks.length - 1]
+  const activeTask = tasks.find((t) => t.id === activeId) || tasks.find((t) => t.id === defaultActive) || tasks[tasks.length - 1]
   const canEdit = !!activeTask.can_edit
   const items = activeTask.checklist_items || []
   const allComplete = items.length > 0 && items.every((i) => i.status === 'complete')
@@ -193,6 +239,13 @@ export function LeadTaskTab({ leadId }) {
       const res = await completeTask.mutateAsync({ taskId: activeTask.id })
       const opened = res?.opened_tasks || []
       toast.success(opened.length ? `Task completed — opened: ${opened.map((t) => t.task_name).join(', ')}` : 'Task completed')
+      // The two Mining events, both bigger news than the task close itself: the
+      // mining window opening (Task 20 → 21) and, later, Task 21's go-ahead
+      // spawning a whole new Mining lead.
+      for (const t of opened) {
+        if (t.is_mining_opportunity) notifyMiningWindow(t)
+      }
+      if (res?.spawned_lead) notifyMiningSpawned(res.spawned_lead, navigate)
       // Auto-advance to the next step (open or trigger-pending). awaitingId keeps
       // the selection until the refetch delivers the new task.
       if (opened.length) {
@@ -256,10 +309,10 @@ export function LeadTaskTab({ leadId }) {
             </div>
             <p className="text-xs text-muted-foreground">
               {activeTask.assigned_to_name
-                ? `Assigned to ${activeTask.assigned_to_name}`
+                ? `Assigned to ${personName(activeTask.assigned_to_name, user, { id: activeTask.assigned_to })}`
                 : activeTask.is_finance_gate
                   ? 'Not assigned — worked by Finance from the Accounts queue.'
-                  : 'Not assigned — staff its slots below (Resource Manager or the lead owner).'}
+                  : 'Not assigned — assign its slots below (Resource Manager or the lead owner).'}
               {activeTask.is_hanging_task && ' · Parallel task — it can be completed alongside the rest of the stage.'}
               {!canEdit && activeTask.status === 'open' && " · View only (you don't have edit access to this task)."}
             </p>

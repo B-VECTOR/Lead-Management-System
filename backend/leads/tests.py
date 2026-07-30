@@ -744,33 +744,48 @@ class FlowVariantTests(WorkflowTestBase):
 class AutoDropTests(WorkflowTestBase):
     """Task 8 "go-ahead = No" auto-drops the lead and opens no successors (§5.5).
 
-    R9-7 (DD-R9-6) changed the 2HR tail from parallel to sequential
-    (5 → 6 → 7 → 8), so §5.5's "the drop leaves Tasks 6 & 7 open to chase the
-    money" is now unreachable — both are necessarily closed before Task 8 can
-    open. What still matters, and is asserted here, is that the auto-drop does
-    **not** behave like a manual drop: it flips only the lead's status, touching
-    no task rows and opening no successors.
+    R15-1 restored the parallel 2HR tail (5.6 fans out to **6 and 8**), which
+    makes §5.5's real shape reachable again: the drop leaves the money branch
+    (6 and its Accounts gate 7) open so the reimbursement is still chased after
+    the lead dies. The auto-drop must still not behave like a manual drop — it
+    flips only the lead's status, touching no task rows and opening nothing.
     """
 
-    def test_go_ahead_no_drops_lead_and_opens_nothing(self):
-        lead = self.create_lead()
-        owner = self.lead_manager
+    def walk_to_the_fan_out(self, lead, owner):
+        """Drive the lead to the 5.6 fan-out, leaving 6 and 8 both open. Returns
+        Task 5's completion response so callers can assert on what it opened."""
         self.complete(owner, self.task(lead, 1), self.f1())
         self.complete(owner, self.task(lead, 2), self.f2())
         self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
         self.complete(owner, self.task(lead, 4))
-        self.complete(self.red, self.task(lead, 5), self.f5())
-        self.complete(self.red, self.task(lead, 6), self.f6())
-        self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))  # gate clears → 8 opens
+        return self.complete(self.red, self.task(lead, 5), self.f5())
+
+    def test_task_5_opens_6_and_8_together(self):
+        """R15-1 / TR §5 rows 6 & 8 — both say "Opens after 5.6", so closing
+        Task 5 fans out to the money branch and the go-ahead simultaneously."""
+        lead = self.create_lead()
+        res = self.walk_to_the_fan_out(lead, self.lead_manager)
+
+        opened = sorted(t["task_no"] for t in res.get("opened_tasks", []))
+        self.assertEqual(opened, [6, 8], "5.6 must fan out to both 6 and 8")
+        self.task(lead, 6, expect_status=Task.Status.OPEN)
+        self.task(lead, 8, expect_status=Task.Status.OPEN)
+
+    def test_go_ahead_no_drops_lead_leaving_the_money_branch_open(self):
+        """§5.5 proper: the drop does not touch the parallel money branch, so
+        Task 6 (and after it, gate 7) can still collect the reimbursement."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.walk_to_the_fan_out(lead, owner)
         res = self.complete(owner, self.task(lead, 8), self.f8("No"))
 
         self.assertEqual(res.get("opened_tasks", []), [], "the No branch opens nothing")
         lead.refresh_from_db()
         self.assertEqual(lead.status, Lead.Status.DROPPED)
         # Unlike a manual drop (which sweeps open/held tasks to `dropped`), the
-        # auto-drop leaves every task row exactly as the flow left it.
-        self.assertEqual(self.task(lead, 6, expect_status=Task.Status.CLOSED).status, "closed")
-        self.assertEqual(self.task(lead, 7, expect_status=Task.Status.CLOSED).status, "closed")
+        # auto-drop leaves every task row exactly as the flow left it — Task 6 is
+        # still open on a dropped lead, which is the whole point of §5.5.
+        self.task(lead, 6, expect_status=Task.Status.OPEN)
         self.assertFalse(
             lead.tasks.filter(status=Task.Status.DROPPED).exists(),
             "an auto-drop must not cascade onto task rows",
@@ -779,26 +794,36 @@ class AutoDropTests(WorkflowTestBase):
             "dropped",
             ActivityLog.objects.filter(lead=lead, type="status").latest("id").summary.lower(),
         )
+        # The money is still chaseable after the drop: 6 closes and still opens
+        # its Accounts gate, exactly as it would on a live lead.
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        self.task(lead, 7, expect_status=Task.Status.OPEN)
 
-    def test_task_8_stays_shut_until_the_reimbursement_gate_clears(self):
-        """R9-7: the go-ahead question cannot be reached while the 2HR
-        reimbursement gate is bouncing — Task 7 "No" re-opens Task 6, and Task 8
-        only exists once the gate finally answers "Yes"."""
+    def test_the_money_branch_gate_does_not_re_open_task_8(self):
+        """R15-1 removed Task 7's forward edge to 8 (TR §5 row 7: "Yes → close").
+        Task 8 is already in flight from the 5.6 fan-out, so the gate clearing
+        must not open a second instance of it — nor must a gate bounce disturb it.
+        """
         lead = self.create_lead()
         owner = self.lead_manager
-        self.complete(owner, self.task(lead, 1), self.f1())
-        self.complete(owner, self.task(lead, 2), self.f2())
-        self.staff_and_submit(self.resource_manager, self.task(lead, 3), {"execution_red": self.red})
-        self.complete(owner, self.task(lead, 4))
-        self.complete(self.red, self.task(lead, 5), self.f5())
-        self.assertFalse(lead.tasks.filter(task_no=8).exists(), "8 is not parallel to 6 any more")
+        self.walk_to_the_fan_out(lead, owner)
+        original_8 = self.task(lead, 8)
+
         self.complete(self.red, self.task(lead, 6), self.f6())
         self.complete(self.finance, self.task(lead, 7), self.f_gate("No"))
-        self.assertFalse(lead.tasks.filter(task_no=8).exists(), "a bounced gate must not open 8")
-        self.task(lead, 6, expect_status=Task.Status.OPEN)  # re-opened to chase the money
+        self.task(lead, 6, expect_status=Task.Status.OPEN)  # bounced to chase the money
+        self.assertEqual(
+            lead.tasks.filter(task_no=8).count(), 1, "a bounce must not duplicate Task 8"
+        )
+        self.task(lead, 8, expect_status=Task.Status.OPEN)  # untouched by the bounce
+
         self.complete(self.red, self.task(lead, 6), self.f6())
-        self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))
-        self.task(lead, 8, expect_status=Task.Status.OPEN)
+        res = self.complete(self.finance, self.task(lead, 7), self.f_gate("Yes"))
+        self.assertEqual(
+            res.get("opened_tasks", []), [], "the cleared gate is terminal — 8 already exists"
+        )
+        self.assertEqual(lead.tasks.filter(task_no=8).count(), 1)
+        self.assertEqual(self.task(lead, 8).id, original_8.id, "the same Task 8 row all along")
 
 
 class FinanceGateBounceTests(WorkflowTestBase):
@@ -885,6 +910,64 @@ class MiningSpawnTests(WorkflowTestBase):
         self.complete(owner, self.task(lead, 22), self.f22("No"))
         self.complete(owner, self.task(child, 1), self.f1())
         self.assertEqual(self.task(child, 2, expect_status=Task.Status.OPEN).lead_id, child.id)
+
+    def test_mining_spawn_alerts_the_actor_and_the_lead_managers(self):
+        """Going into Mining is announced, not silent: the Task-21 response
+        carries the new lead so the UI can alert the user mid-flow, and a bell
+        notification reaches the new lead's owner + the parent's managers."""
+        owner = self.other_manager  # created_by stays self.lead_manager
+        lead = self.create_lead(owner=owner)
+        self.walk_to_task20(lead, owner)
+        res = self.complete(owner, self.task(lead, 21), self.f21("Yes"))
+
+        child = Lead.objects.get(parent_lead=lead)
+        spawned = res["spawned_lead"]
+        self.assertEqual(spawned["id"], child.id)
+        self.assertEqual(spawned["lead_type"], Lead.LeadType.MINING)
+        self.assertEqual(spawned["project_id"], projects.derived_project_id(child))
+        self.assertEqual(spawned["assigned_to_name"], owner.name)
+        self.assertEqual(spawned["link"], f"/leads/{child.id}")
+
+        notes = Notification.objects.filter(type=Notification.Type.LEAD_ASSIGNED, link=spawned["link"])
+        # The child's owner is told even though they are the actor (it's new work
+        # for them); the parent's creator is told as a manager; nobody twice.
+        self.assertEqual(
+            set(notes.values_list("user", flat=True)),
+            {owner.id, self.lead_manager.id},
+        )
+        self.assertEqual(notes.count(), 2)
+        self.assertIn("gone into Mining", notes.first().message)
+
+    def test_mining_window_open_is_announced_to_owner_and_managers(self):
+        """Task 21 opening (the lead entering its Mining stage) replaces the
+        generic "a task is ready" note with a mining-specific one, sent to the
+        assignee *and* the lead's owner/creator — it fires off a trigger months
+        after go-live, so nobody is watching for it."""
+        owner = self.other_manager  # created_by stays self.lead_manager
+        lead = self.create_lead(owner=owner)
+        self.walk_to_task20(lead, owner)  # Task 20 is closed by the Execution Red
+        task21 = self.task(lead, 21)
+
+        notes = Notification.objects.filter(message__startswith="Mining window open")
+        expected = {task21.assigned_to_id, owner.id, self.lead_manager.id} - {None}
+        self.assertEqual(set(notes.values_list("user", flat=True)), expected)
+        self.assertEqual(notes.count(), len(expected))
+        self.assertFalse(
+            Notification.objects.filter(message__contains="“Exploit Mining Opportunities” is ready for you").exists(),
+            "the mining announcement replaces the generic task-open note",
+        )
+        # The frontend flags the stage change off the workflow marker, not task 21.
+        self.client.force_authenticate(owner)
+        res = self.client.get(f"/api/tasks/{task21.id}/")
+        self.assertTrue(res.data["is_mining_opportunity"])
+        self.assertFalse(self.client.get(f"/api/tasks/{self.task(lead, 22).id}/").data["is_mining_opportunity"])
+
+    def test_declined_mining_spawns_nothing_and_alerts_nobody(self):
+        lead = self.create_lead(owner=self.other_manager)
+        self.walk_to_task20(lead, self.other_manager)
+        res = self.complete(self.other_manager, self.task(lead, 21), self.f21("No"))
+        self.assertNotIn("spawned_lead", res)
+        self.assertFalse(Lead.objects.filter(parent_lead=lead).exists())
 
 
 class ExtensionLoopTests(WorkflowTestBase):

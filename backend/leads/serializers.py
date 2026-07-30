@@ -412,6 +412,11 @@ class TaskSerializer(serializers.ModelSerializer):
     # already staffed (Task 18's ``auto_close_when_staffed``) — the UI says so on
     # a still-pending task, since that's what makes allocating in advance final.
     auto_closes_when_staffed = serializers.SerializerMethodField()
+    # Whether this is the mining-opportunity task (21) — the workflow JSON's
+    # ``is_mining_opportunity`` marker, so the UI can flag the lead entering its
+    # Mining stage without hardcoding a task number. Readable while the task is
+    # still trigger-``pending``, when ``stage_code`` ("M") isn't set yet.
+    is_mining_opportunity = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -441,6 +446,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "scheduled_open",
             "allocation",
             "auto_closes_when_staffed",
+            "is_mining_opportunity",
             "short_closed",
             "project_id",
             "task_start_dt",
@@ -522,6 +528,10 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_auto_closes_when_staffed(self, obj):
         tdef = self._task_def(obj)
         return bool(tdef and tdef.get("auto_close_when_staffed"))
+
+    def get_is_mining_opportunity(self, obj):
+        tdef = self._task_def(obj)
+        return bool(tdef and tdef.get("is_mining_opportunity"))
 
     def get_allocation(self, obj):
         tdef = self._task_def(obj)

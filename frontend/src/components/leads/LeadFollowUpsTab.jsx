@@ -8,7 +8,7 @@ import { FollowupCreateDialog } from './FollowupCreateDialog'
 import { useFollowups } from '@/hooks/useFollowups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { formatDate, formatRelativeDue, isOverdue } from '@/lib/format'
+import { formatDate, formatRelativeDue, isOverdue, personName } from '@/lib/format'
 
 // A single lead's follow-ups — wired to the real backend (Phase 7). Lists the
 // follow-ups the caller may see on this lead (assignee / creator, or all for a
@@ -44,7 +44,9 @@ export function LeadFollowUpsTab({ leadId }) {
                   <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span>{formatDate(f.followup_date)}</span>
                     {overdue && <Badge variant="destructive">{formatRelativeDue(f.followup_date)}</Badge>}
-                    {f.assigned_to_name && <span>· {f.assigned_to_name}</span>}
+                    {f.assigned_to_name && (
+                      <span>· {personName(f.assigned_to_name, user, { id: f.assigned_to, capitalize: true })}</span>
+                    )}
                   </div>
                 </div>
                 <Button size="sm" variant="outline" onClick={() => setActiveFollowup(f)}>Open</Button>

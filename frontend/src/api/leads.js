@@ -43,6 +43,8 @@ function fromApiLead(l) {
     company_name: l.company_name,
     base_code: l.base_code || '',
     parent_lead: l.parent_lead ?? null,
+    country: l.country,
+    country_name: l.country_name,
     industry: l.industry,
     industry_name: l.industry_name,
     domain: l.domain,
@@ -76,7 +78,10 @@ function fromApiLead(l) {
 function toApiPayload(data) {
   const payload = {}
   const passthrough = [
-    'company_name', 'project_name', 'industry', 'domain',
+    // `country` is a required lead field again (§13.4: it supplies the Project
+    // ID's country segment) — it must be in this list or a create 400s with
+    // "This field is required." while the form looks complete.
+    'company_name', 'project_name', 'country', 'industry', 'domain',
     'division', 'scope', 'lead_type', 'flow_of_tasks', 'type_of_project',
   ]
   for (const key of passthrough) {

@@ -21,6 +21,10 @@ function useTaskMutation(leadId, mutationFn) {
       qc.invalidateQueries({ queryKey: ['lead', leadId] })
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['activities', 'lead', leadId] })
+      // A completion can notify the actor themselves (e.g. they own the Mining
+      // lead Task 21 just spawned) — refresh the bell instead of waiting out
+      // its 15s poll.
+      qc.invalidateQueries({ queryKey: ['notifications'] })
     },
   })
 }

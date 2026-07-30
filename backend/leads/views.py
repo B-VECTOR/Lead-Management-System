@@ -165,20 +165,29 @@ def _notify_owner_assigned(lead, actor):
     )
 
 
-def _notify_lead_managers(lead, actor, type, message):
-    """Notify the lead's managing people (owner ``assigned_to`` + ``created_by``)
-    of a task event, skipping the actor and any duplicate/empty recipient.
+def _notify_task_opened(task, actor):
+    """Tell a freshly-opened task's assignee it's waiting for them.
 
-    Phase 13 (per the user): the Lead Manager should hear about every task change
-    on their lead — a task being held/unheld or completed — even when they are
-    not the task's assignee.
+    Skipped when the actor is the assignee (they just watched it open) or when
+    the engine has already announced the open in its own words —
+    ``open_announced``, set by :func:`engine._announce_mining_window`.
     """
-    seen = set()
-    for manager in (lead.assigned_to, lead.created_by):
-        if manager is None or manager.id in seen or manager.id == actor.id:
-            continue
-        seen.add(manager.id)
-        events.notify(manager, type, message, events.lead_link(lead))
+    if not task.assigned_to_id or task.assigned_to_id == actor.id:
+        return
+    if getattr(task, "open_announced", False):
+        return
+    events.notify(
+        task.assigned_to,
+        Notification.Type.TASK_OPENED,
+        f"Task {task.task_no} “{task.task_name}” is ready for you.",
+        events.lead_link(task.lead),
+    )
+
+
+def _notify_lead_managers(lead, actor, type, message):
+    """Notify the lead's managing people of a task event — thin wrapper kept for
+    the call sites in this module; see :func:`events.notify_lead_managers`."""
+    events.notify_lead_managers(lead, type, message, actor=actor)
 
 
 class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
@@ -491,21 +500,30 @@ class TaskCompleteView(TaskScopeMixin, APIView):
                 "task",
                 f"Task {nxt.task_no} “{nxt.task_name}” opened",
             )
-            if nxt.assigned_to_id and nxt.assigned_to_id != request.user.id:
-                events.notify(
-                    nxt.assigned_to,
-                    Notification.Type.TASK_OPENED,
-                    f"Task {nxt.task_no} “{nxt.task_name}” is ready for you.",
-                    events.lead_link(task.lead),
-                )
+            _notify_task_opened(nxt, request.user)
         defs = engine.task_defs_for(task.lead.lead_type)
         ctx = {"request": request, "task_defs": defs}
-        return Response(
-            {
-                "task": TaskSerializer(task, context=ctx).data,
-                "opened_tasks": TaskSerializer(opened, many=True, context=ctx).data,
+        payload = {
+            "task": TaskSerializer(task, context=ctx).data,
+            "opened_tasks": TaskSerializer(opened, many=True, context=ctx).data,
+        }
+        # Task 21 "go-ahead = Yes" spawned a Mining lead (R6, §5.3.1) — hand the
+        # new lead back so the UI can alert the user in the same interaction
+        # instead of leaving them to notice it in the leads list later.
+        spawned = getattr(task, "spawned_mining_lead", None)
+        if spawned is not None:
+            payload["spawned_lead"] = {
+                "id": spawned.id,
+                "lead_type": spawned.lead_type,
+                "company_name": spawned.company_name,
+                "project_name": spawned.project_name,
+                "project_id": projects.derived_project_id(spawned),
+                "assigned_to_name": (
+                    spawned.assigned_to.name if spawned.assigned_to_id else None
+                ),
+                "link": events.lead_link(spawned),
             }
-        )
+        return Response(payload)
 
 
 class TaskReassignView(TaskScopeMixin, APIView):
@@ -866,13 +884,7 @@ class AllocationSubmitView(AllocationTaskActionView):
             task.lead, request.user, "resource", f"{task.task_name} — resources allocated",
         )
         for nxt in opened:
-            if nxt.assigned_to_id and nxt.assigned_to_id != request.user.id:
-                events.notify(
-                    nxt.assigned_to,
-                    Notification.Type.TASK_OPENED,
-                    f"Task {nxt.task_no} “{nxt.task_name}” is ready for you.",
-                    events.lead_link(task.lead),
-                )
+            _notify_task_opened(nxt, request.user)
         defs = engine.task_defs_for(task.lead.lead_type)
         return Response(
             {

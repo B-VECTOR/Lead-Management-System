@@ -47,6 +47,29 @@ def lead_link(lead):
     return f"/leads/{lead.id}"
 
 
+def notify_lead_managers(lead, type, message, *, actor=None, link=None, exclude=()):
+    """Notify the lead's managing people (owner ``assigned_to`` + ``created_by``),
+    skipping ``actor``, anyone in ``exclude`` and any duplicate/empty recipient.
+
+    Phase 13 (per the user): the Lead Manager should hear about every change on
+    their lead — a task held/unheld/completed, or the lead going into Mining —
+    even when they are not the task's assignee. ``exclude`` lets a caller that
+    has already sent a more specific message to someone (e.g. the new Mining
+    lead's owner) avoid double-notifying them.
+    """
+    seen = {uid for uid in exclude if uid}
+    if actor is not None:
+        seen.add(actor.id)
+    link = link if link is not None else lead_link(lead)
+    sent = []
+    for manager in (lead.assigned_to, lead.created_by):
+        if manager is None or manager.id in seen:
+            continue
+        seen.add(manager.id)
+        sent.append(notify(manager, type, message, link))
+    return sent
+
+
 def notify_finance(lead, type, message, link=None):
     """Notify every active Finance user of a payment-approval event (R4, §5.10).
 

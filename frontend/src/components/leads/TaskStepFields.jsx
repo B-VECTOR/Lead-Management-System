@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -25,6 +26,26 @@ function inputTypeFor(type) {
 }
 
 function ScalarInput({ field, value, disabled, onChange }) {
+  // A boolean the workflow marks `widget: "checkbox"` is a confirmation, not a
+  // branch (Task 27's "Final closed") — one tick box instead of a Yes/No
+  // dropdown. Ticked stores "Yes"; unticked clears the value entirely, so a
+  // required field still blocks Save & Complete until it is confirmed.
+  if (field.type === 'boolean' && field.widget === 'checkbox') {
+    const id = `field-${field.key}`
+    return (
+      <div className="flex min-h-9 items-center gap-2">
+        <Checkbox
+          id={id}
+          checked={value === 'Yes'}
+          disabled={disabled}
+          onCheckedChange={(checked) => onChange(checked ? 'Yes' : '')}
+        />
+        <Label htmlFor={id} className="text-sm font-normal text-muted-foreground">
+          {field.checkbox_label || 'Yes'}
+        </Label>
+      </div>
+    )
+  }
   if (field.type === 'boolean') {
     return (
       <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>

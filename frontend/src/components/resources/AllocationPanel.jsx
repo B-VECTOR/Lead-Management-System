@@ -42,9 +42,9 @@ export function AllocationPanel({ task, onSubmitted, showIntro = false }) {
     <div className="flex flex-col gap-3">
       {showIntro && (
         <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
-          Resource-allocation step — staff each slot below. It carries no checklist;
+          Resource-allocation step — assign each slot below. It carries no checklist;
           submitting it opens the next task{!task.is_hanging_task ? ' for the chosen Execution Red' : ''}.
-          {!task.can_staff && ' You can view the allocation but only the Resource Manager or the lead owner can staff it.'}
+          {!task.can_staff && ' You can view the allocation but only the Resource Manager or the lead owner can assign it.'}
         </p>
       )}
 
@@ -55,7 +55,7 @@ export function AllocationPanel({ task, onSubmitted, showIntro = false }) {
           Not due yet{opensOn ? ` — opens ${formatDate(opensOn)}` : ''}. You can allocate now:
           {task.auto_closes_when_staffed
             ? ' with the required slots filled, this step completes itself when it opens, so it never lands in your queue.'
-            : ' the allocation is kept and the step opens already staffed.'}
+            : ' the allocation is kept and the step opens already assigned.'}
         </p>
       )}
 

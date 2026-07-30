@@ -605,16 +605,49 @@ def _reconcile_stages(lead, wf):
             resources.release_stage_allocations(lead, stage)
 
 
+def _announce_mining_window(task):
+    """The mining-opportunity task (21) has opened — the lead is in its Mining
+    stage and someone has to go look for new work (§5.3.1).
+
+    Louder than the generic task-open notification the API sends: the assignee
+    **and** the lead's owner/creator hear about it, because this task opens off a
+    trigger months after go-live (§4.12) rather than off somebody's click.
+    Flags the in-memory task ``open_announced`` so the caller doesn't also send
+    the generic note to the assignee.
+    """
+    lead = task.lead
+    message = (
+        f"Mining window open on “{lead.company_name} — {lead.project_name}”: "
+        f"Task {task.task_no} “{task.task_name}” is ready — check the client for a "
+        f"new project opportunity."
+    )
+    link = events.lead_link(lead)
+    events.notify(task.assigned_to, Notification.Type.TASK_OPENED, message, link)
+    events.notify_lead_managers(
+        lead,
+        Notification.Type.TASK_OPENED,
+        message,
+        link=link,
+        exclude=[task.assigned_to_id],
+    )
+    task.open_announced = True
+
+
 def _apply_on_open(task, tdef):
     """Run the task's ``on_open`` side effects (R5, Tech Req §4.7).
 
-    Generic — the concrete task number (27) lives only in the workflow JSON.
-    Currently the only ``on_open`` hook is releasing the lead's Implementation/
-    Extension-loop resource allocations (D11).
+    Generic — the concrete task numbers (21, 27) live only in the workflow JSON.
+    The hooks are releasing the lead's Implementation/Extension-loop resource
+    allocations (``on_open.release_allocations``, D11) and announcing the mining
+    window (``is_mining_opportunity`` — a task-level marker, since the frontend
+    reads the same flag). Runs on both open paths: :func:`open_task` for an
+    immediate open and :func:`open_pending_task` when a trigger fires.
     """
     oc = tdef.get("on_open") or {}
     if oc.get("release_allocations"):
         resources.release_open_engagement_allocations(task.lead)
+    if tdef.get("is_mining_opportunity"):
+        _announce_mining_window(task)
 
 
 def _record_project_cycle(task, user):
@@ -660,7 +693,7 @@ def _apply_on_close(task, tdef, user):
 
 def _spawn_mining_lead(parent, user):
     """Task 21 "go-ahead = Yes": spawn + start the Mining child lead, notify
-    its owner, and log the event on both lead rows.
+    its owner and the parent's managers, and log the event on both lead rows.
 
     Called from the matched routing rule's ``spawn_lead`` flag (not an
     ``on_close`` hook — it is conditional on the answer, which routing already
@@ -668,12 +701,13 @@ def _spawn_mining_lead(parent, user):
     """
     child = projects.spawn_mining_lead(parent, user)
     start_workflow(child)
+    child_project_id = projects.derived_project_id(child)
     events.log_activity(
         parent,
         user,
         "lead",
         f"Mining opportunity approved — spawned a new Mining lead (#{child.id}, "
-        f"{projects.derived_project_id(child)})",
+        f"{child_project_id})",
     )
     events.log_activity(
         child,
@@ -681,13 +715,25 @@ def _spawn_mining_lead(parent, user):
         "lead",
         f"Spawned from parent lead #{parent.id} (Task 21 go-ahead)",
     )
+    message = (
+        f"“{parent.company_name} — {parent.project_name}” has gone into Mining — "
+        f"a new Mining lead ({child_project_id}) is open at Task 1."
+    )
+    link = events.lead_link(child)
     if child.assigned_to_id:
-        events.notify(
-            child.assigned_to,
-            Notification.Type.LEAD_ASSIGNED,
-            f"A new Mining lead was spawned for “{child.company_name} — {child.project_name}”.",
-            events.lead_link(child),
-        )
+        events.notify(child.assigned_to, Notification.Type.LEAD_ASSIGNED, message, link)
+    # The parent's owner/creator hear about it too — the mining lead is a new
+    # engagement off their lead. The actor is skipped (they get the in-session
+    # alert from the Save & Complete response) and so is the child's owner,
+    # already notified above.
+    events.notify_lead_managers(
+        parent,
+        Notification.Type.LEAD_ASSIGNED,
+        message,
+        actor=user,
+        link=link,
+        exclude=[child.assigned_to_id],
+    )
     return child
 
 
@@ -796,7 +842,8 @@ def _complete_lead(gate, tdef, actor):
 @transaction.atomic
 def complete_task(task, user):
     """Validate, close ``task``, apply its ``on_close`` effects, and create its
-    successor(s). Returns the opened tasks.
+    successor(s). Returns the opened tasks; a Mining lead spawned off Task 21 is
+    additionally exposed as ``task.spawned_mining_lead`` (see below).
 
     A successor that has an active :class:`WorkflowTriggerConfig` is created
     ``pending`` (the scheduler opens it on its offset date, Phase 5) unless
@@ -859,7 +906,11 @@ def complete_task(task, user):
     # ``spawn_lead`` on its matched rule — conditional on the answer, so it
     # lives on the rule rather than an unconditional ``on_close`` hook.
     if rule.get("spawn_lead"):
-        _spawn_mining_lead(task.lead, user)
+        # Stashed on the in-memory task (a transient attribute, not a field) so
+        # the API layer can tell the person who just answered "Yes" that the
+        # lead has gone into Mining, in the same response — their own bell
+        # notification would otherwise only surface on the next poll.
+        task.spawned_mining_lead = _spawn_mining_lead(task.lead, user)
 
     # flow_of_tasks entry edges + skip-filtering (D6). An ``edges`` entry for this
     # task overrides its default ``open`` list (e.g. SnT flow routes Task 2 → 9,

@@ -24,7 +24,7 @@ import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hook
 import { useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS } from '@/api/scope'
-import { formatDate, formatDateTime } from '@/lib/format'
+import { formatDate, formatDateTime, personName } from '@/lib/format'
 
 // Every status transition now goes through a dedicated action (Tech Req §4.3.2):
 // Completed is system-only, Hold via the Hold button, and Dropped via the Drop
@@ -252,7 +252,9 @@ export default function LeadDetail() {
         </CardContent></Card>
         <Card className="py-0"><CardContent className="p-4">
           <p className="text-xs text-muted-foreground">Assigned to</p>
-          <p className="mt-1 text-sm font-medium">{lead.assigned_to_name || 'Not assigned'}</p>
+          <p className="mt-1 text-sm font-medium">
+            {personName(lead.assigned_to_name, user, { id: lead.assigned_to, capitalize: true }) || 'Not assigned'}
+          </p>
         </CardContent></Card>
       </div>
 

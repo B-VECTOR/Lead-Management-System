@@ -38,6 +38,25 @@ export function initials(name) {
   return name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase()
 }
 
+// Is this row's person the signed-in user? Matches on id where the row carries
+// one (names aren't unique), falling back to the display name.
+export function isCurrentUser(currentUser, id, name) {
+  if (!currentUser) return false
+  if (id != null) return id === currentUser.id
+  return !!name && name === currentUser.name
+}
+
+// A person's name for display, where the signed-in user reads as "me" instead
+// of their own name (per the user: "Assigned to me", not "Assigned to <my
+// name>"). `capitalize` for a standalone value — a table cell or a stat card;
+// leave it off mid-sentence. Returns the name unchanged for everyone else, and
+// passes through null/'' so callers keep their own "Not assigned" fallback.
+export function personName(name, currentUser, { id = null, capitalize = false } = {}) {
+  if (!name) return name
+  if (isCurrentUser(currentUser, id, name)) return capitalize ? 'Me' : 'me'
+  return name
+}
+
 // Roles are many-to-many with an always-present implicit 'Employee' — hide
 // that one in free-text display since it's not a meaningful distinguisher.
 export function displayRoles(user) {
