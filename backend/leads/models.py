@@ -1133,6 +1133,14 @@ class Notification(models.Model):
         ordering = ["-created_at", "-id"]
         verbose_name = _("notification")
         verbose_name_plural = _("notifications")
+        indexes = [
+            # The feed is always "this user's, newest first", filtered by read
+            # state for the unread tab / badge count.
+            models.Index(
+                fields=["user", "is_read", "-created_at"],
+                name="notification_user_feed_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"[{self.user_id}] {self.type}: {self.message[:40]}"

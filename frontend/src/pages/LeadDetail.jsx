@@ -14,10 +14,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { LeadStatusBadge, LeadTypeBadge } from '@/components/shared/StatusBadge'
 import { ProgressRing } from '@/components/shared/ProgressRing'
 import { HoldActionButton } from '@/components/leads/HoldActionButton'
+import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
-import { useLead, useDropLead, useAssignLeadOwner, useShortCloseLead } from '@/hooks/useLeads'
+import { useLead, useDropLead, useAssignLeadOwner } from '@/hooks/useLeads'
 import { useHoldLead, useUnholdLead } from '@/hooks/useHolds'
 import { useActivitiesForLead } from '@/hooks/useActivities'
 import { useAttachments, useUploadAttachment, useDeleteAttachment } from '@/hooks/useAttachments'
@@ -53,7 +54,6 @@ export default function LeadDetail() {
   const assignOwner = useAssignLeadOwner()
   const holdLead = useHoldLead()
   const unholdLead = useUnholdLead()
-  const shortCloseLead = useShortCloseLead()
   const uploadAttachment = useUploadAttachment('lead', id)
   const deleteAttachment = useDeleteAttachment('lead', id)
 
@@ -66,8 +66,6 @@ export default function LeadDetail() {
   const [reassignRemark, setReassignRemark] = useState('')
   const [dropOpen, setDropOpen] = useState(false)
   const [dropRemark, setDropRemark] = useState('')
-  const [shortCloseOpen, setShortCloseOpen] = useState(false)
-  const [shortCloseRemark, setShortCloseRemark] = useState('')
 
   if (isLoading) return <div className="text-sm text-muted-foreground">Loading lead…</div>
   if (isError || !lead) {
@@ -84,7 +82,6 @@ export default function LeadDetail() {
   const canEdit = PERMISSIONS.editLead(user, lead)
   const canHold = PERMISSIONS.holdLead(user, lead)
   const canDrop = PERMISSIONS.dropLead(user, lead)
-  const canShortClose = PERMISSIONS.shortCloseLead(user) && lead.can_short_close
   const isHeld = lead.status === 'Hold'
   const isDropped = lead.status === 'Dropped'
 
@@ -104,22 +101,6 @@ export default function LeadDetail() {
       { id, remark: dropRemark.trim() },
       {
         onSuccess: () => { toast.success('Lead dropped'); setDropOpen(false); setDropRemark('') },
-        onError: (err) => toast.error(err.message),
-      },
-    )
-  }
-
-  function handleShortClose() {
-    const remark = shortCloseRemark.trim()
-    if (!remark) return
-    shortCloseLead.mutate(
-      { id, remark },
-      {
-        onSuccess: () => {
-          toast.success('Project short-closed; closure task opened')
-          setShortCloseOpen(false)
-          setShortCloseRemark('')
-        },
         onError: (err) => toast.error(err.message),
       },
     )
@@ -160,11 +141,8 @@ export default function LeadDetail() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {canShortClose && (
-            <Button variant="outline" className="text-blue-600 hover:text-blue-700" onClick={() => setShortCloseOpen(true)}>
-              <XCircle className="size-4" /> Short-close
-            </Button>
-          )}
+          {/* Gates itself on the RM role + `can_short_close` (see the component). */}
+          <ShortCloseButton leadId={id} canShortClose={lead.can_short_close} />
           {canDrop && ['In Progress', 'Hold'].includes(lead.status) && (
             <Button variant="outline" className="text-red-600 hover:text-red-700" onClick={() => setDropOpen(true)}>
               <XCircle className="size-4" /> Drop
@@ -379,36 +357,6 @@ export default function LeadDetail() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={shortCloseOpen} onOpenChange={setShortCloseOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Short-close project</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This opens Project Closure right away — any task still open, on hold, or waiting on a date trigger is skipped. The project still runs through Closure and Accounts Approval and ends <span className="font-medium text-foreground">Completed</span>. This cannot be undone.
-          </p>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="short-close-remark">Remark (required)</Label>
-            <Textarea
-              id="short-close-remark"
-              value={shortCloseRemark}
-              onChange={(e) => setShortCloseRemark(e.target.value)}
-              placeholder="Why is this project being short-closed?"
-              rows={3}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setShortCloseOpen(false)}>Cancel</Button>
-            <Button
-              type="button"
-              onClick={handleShortClose}
-              disabled={shortCloseLead.isPending || !shortCloseRemark.trim()}
-            >
-              Short-close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={dropOpen} onOpenChange={setDropOpen}>
         <DialogContent>

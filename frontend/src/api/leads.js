@@ -38,6 +38,13 @@ function fromApiLead(l) {
     has_held_task: l.has_held_task ?? false,
     drop_remark: l.drop_remark || '',
     active_hold: l.active_hold || null,
+    // Short-close (§9.2/§5.12): whether the action is available right now
+    // (`engine.can_short_close`) and the stamp left behind once it has fired.
+    // Both were missing from this adapter until 2026-07-30, which silently
+    // killed every short-close affordance — the Lead Detail CTA/banner and the
+    // Leads-list icon all read them off the mapped object.
+    can_short_close: l.can_short_close ?? false,
+    short_close_info: l.short_close_info || null,
     name: l.project_name,
     project_name: l.project_name,
     company_name: l.company_name,

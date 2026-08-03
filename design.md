@@ -165,6 +165,16 @@ Available and in use: `button`, `input`, `textarea`, `select`, `checkbox`, `labe
 
 Build new cross-page composites here (not inside a page) when a pattern repeats.
 
+### Lead action buttons — `src/components/leads/`
+
+Lead-level actions that appear on more than one screen are packaged as **self-gating** button+dialog components — `HoldActionButton.jsx`, `ShortCloseButton.jsx`. The pattern:
+
+- The component takes the ids/flags it needs and **renders `null`** when the viewer lacks the role (`PERMISSIONS.*`) or the backend says the action is unavailable. Callers never duplicate the permission check, and a screen can drop the button in unconditionally.
+- Confirmation dialog and the mutation live **inside** the component, so every surface gets the identical copy, the same required/optional remark rule, and the same disabled-until-valid Confirm.
+- Both halves of the gate are **data from the caller/server**, never inferred from task numbers in the UI.
+
+Reach for this whenever an action outgrows a single page — `ShortCloseButton` renders from both Lead Detail's header and the Resource queue's project group headers.
+
 ### Tables
 
 Wrap in a `Card className="py-0"` with `CardContent className="overflow-x-auto p-0"` so wide tables scroll horizontally on mobile without breaking the page, and the card border hugs the table with no extra top/bottom padding. Header cells: `<TableHead>`; use a second header `<TableRow>` for per-column filter inputs (`h-8 text-xs`). Empty/loading state: a single full-`colSpan` `<TableCell className="py-8 text-center text-muted-foreground">`. Clickable rows: `className="cursor-pointer"` + `onClick`; stop propagation on inner links.

@@ -22,7 +22,7 @@ from rest_framework.test import APITestCase
 
 from reference.models import Area, Country, Industry
 
-from . import engine, projects, resources
+from . import engine, events, projects, resources, views
 from .models import (
     ActivityLog,
     Attachment,
@@ -1054,7 +1054,8 @@ class MiningExtensionParallelTests(WorkflowTestBase):
 
 class ShortCloseTests(WorkflowTestBase):
     """Short-close (§9.2/§5.12, R6): a Resource-Manager action, available once
-    Task 26 has ever opened, that jumps straight to Project Closure."""
+    Task 20 or Task 26 has ever opened (widened from 26-only by the user on
+    2026-07-30), that jumps straight to Project Closure."""
 
     def _lead_at_open_extension_implementation(self):
         lead = self.create_lead(lead_type=Lead.LeadType.EXTENSION, flow_of_tasks="")
@@ -1106,7 +1107,7 @@ class ShortCloseTests(WorkflowTestBase):
         )
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_short_close_unavailable_before_task_26_ever_opened(self):
+    def test_short_close_unavailable_before_implementation_ever_opened(self):
         lead = self.create_lead()
         self.assertFalse(engine.can_short_close(lead))
         self.client.force_authenticate(self.resource_manager)
@@ -1114,6 +1115,66 @@ class ShortCloseTests(WorkflowTestBase):
             f"/api/leads/{lead.id}/short-close/", {"remark": "too early"}, format="json"
         )
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_grant_arrives_with_task_20_and_not_before(self):
+        """The widened grant (user, 2026-07-30): available from the moment
+        Implementation opens, through the extension loop, and never during the
+        BD/pre-sale stages before it."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.walk_to_task16(lead, owner)
+        # Deep in the BD path, engagement not live yet — still no access.
+        self.assertFalse(engine.can_short_close(lead))
+
+        self.staff_and_submit(self.resource_manager, self.task(lead, 17), {"execution_red": self.red})
+        self.staff_and_submit(
+            self.resource_manager, self.task(lead, 18),
+            {"auditor_1": self.auditor1, "auditor_2": self.auditor2},
+        )
+        self.complete(owner, self.task(lead, 19))
+        self.task(lead, 20)  # Implementation is open
+        self.assertTrue(engine.can_short_close(lead))
+
+    def test_short_close_mid_implementation_sweeps_and_opens_closure(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.walk_to_task16(lead, owner)
+        self.staff_and_submit(self.resource_manager, self.task(lead, 17), {"execution_red": self.red})
+        self.staff_and_submit(
+            self.resource_manager, self.task(lead, 18),
+            {"auditor_1": self.auditor1, "auditor_2": self.auditor2},
+        )
+        self.complete(owner, self.task(lead, 19))
+        implementation = self.task(lead, 20)
+
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/leads/{lead.id}/short-close/",
+            {"remark": "Client pulled the plug mid-implementation"}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+        implementation.refresh_from_db()
+        self.assertEqual(implementation.status, "skipped")
+        self.assertTrue(implementation.short_closed)
+        # The IM stage is closed with no project_details row — Task 20 never
+        # closed, so its commercials were never finalized.
+        self.assertEqual(lead.stages.get(stage=LeadStage.IM).status, LeadStage.Status.CLOSED)
+        self.assertFalse(lead.project_details.exists())
+
+        closure = self.task(lead, 27)
+        self.complete(self.red, closure, self.f27("Yes"))
+        self.complete(self.finance, self.task(lead, 28), self.f_gate("Yes"))
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.COMPLETE)
+
+    def test_pending_grant_task_does_not_unlock_short_close(self):
+        """A seeded-but-unopened Task 26 is waiting on its date trigger — the
+        docs grant access "on open", so it must not count."""
+        lead, owner = self._lead_at_open_extension_implementation()
+        task26 = self.task(lead, 26)
+        Task.objects.filter(pk=task26.pk).update(status=Task.Status.PENDING)
+        self.assertFalse(engine.can_short_close(lead))
 
 
 class ResourceAllocationApiTests(WorkflowTestBase):
@@ -1908,6 +1969,83 @@ class NotificationTests(SimpleLeadTestBase):
         self.client.force_authenticate(self.employee)
         res = self.client.post(f"/api/notifications/{note.id}/read/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class NotificationFeedTests(SimpleLeadTestBase):
+    """The feed is bounded: paginated, filterable, and self-pruning."""
+
+    def _make(self, count, *, read=False, user=None):
+        for i in range(count):
+            Notification.objects.create(
+                user=user or self.employee,
+                type="followup",
+                message=f"note {i}",
+                is_read=read,
+            )
+
+    def test_list_is_paginated_and_carries_unread_count(self):
+        self._make(25)
+        self.client.force_authenticate(self.employee)
+        res = self.client.get("/api/notifications/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data["results"]), 20)
+        self.assertEqual(res.data["count"], 25)
+        self.assertEqual(res.data["unread_count"], 25)
+        self.assertIsNotNone(res.data["next"])
+
+    def test_page_size_is_honoured_and_capped(self):
+        self._make(30)
+        self.client.force_authenticate(self.employee)
+        res = self.client.get("/api/notifications/?page_size=6")
+        self.assertEqual(len(res.data["results"]), 6)
+        # An oversized request cannot pull the whole table back.
+        self.assertEqual(views.NotificationPagination.max_page_size, 100)
+        res = self.client.get("/api/notifications/?page_size=500")
+        self.assertLessEqual(len(res.data["results"]), 100)
+
+    def test_unread_filter_still_reports_full_unread_count(self):
+        self._make(3, read=True)
+        self._make(2)
+        self.client.force_authenticate(self.employee)
+        res = self.client.get("/api/notifications/?unread=1")
+        self.assertEqual(res.data["count"], 2)
+        self.assertEqual(res.data["unread_count"], 2)
+        res_all = self.client.get("/api/notifications/")
+        self.assertEqual(res_all.data["count"], 5)
+        self.assertEqual(res_all.data["unread_count"], 2)
+
+    def test_clear_read_deletes_only_read_and_only_own(self):
+        self._make(3, read=True)
+        self._make(2)
+        self._make(4, read=True, user=self.lead_manager)
+        self.client.force_authenticate(self.employee)
+        res = self.client.post("/api/notifications/clear-read/")
+        self.assertEqual(res.data["deleted"], 3)
+        self.assertEqual(Notification.objects.filter(user=self.employee).count(), 2)
+        self.assertEqual(Notification.objects.filter(user=self.lead_manager).count(), 4)
+
+    def test_old_read_notifications_are_pruned_on_list(self):
+        from django.core.cache import cache
+
+        cache.clear()  # the prune is throttled once/hour per user
+        self._make(1, read=True)
+        self._make(1)
+        stale = timezone.now() - timedelta(days=views.NOTIFICATION_RETENTION_DAYS + 1)
+        Notification.objects.filter(user=self.employee).update(created_at=stale)
+        self.client.force_authenticate(self.employee)
+        res = self.client.get("/api/notifications/")
+        # The read one aged out; the unread one is kept regardless of age.
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(res.data["unread_count"], 1)
+
+    def test_duplicate_unread_notification_is_collapsed(self):
+        events.notify(self.employee, "followup", "same message", "/leads/1")
+        events.notify(self.employee, "followup", "same message", "/leads/1")
+        self.assertEqual(Notification.objects.filter(user=self.employee).count(), 1)
+        # Once read, a repeat is a genuinely new alert again.
+        Notification.objects.filter(user=self.employee).update(is_read=True)
+        events.notify(self.employee, "followup", "same message", "/leads/1")
+        self.assertEqual(Notification.objects.filter(user=self.employee).count(), 2)
 
 
 class DashboardTests(SimpleLeadTestBase):

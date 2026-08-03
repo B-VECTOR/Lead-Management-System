@@ -27,6 +27,7 @@ from .views import (
     LeadResourceAllocationListView,
     LeadShortCloseView,
     LeadTaskListView,
+    NotificationClearReadView,
     NotificationListView,
     NotificationMarkAllReadView,
     NotificationMarkReadView,
@@ -198,6 +199,11 @@ urlpatterns = [
         "api/notifications/mark-all-read/",
         NotificationMarkAllReadView.as_view(),
         name="api-notifications-mark-all-read",
+    ),
+    path(
+        "api/notifications/clear-read/",
+        NotificationClearReadView.as_view(),
+        name="api-notifications-clear-read",
     ),
     path(
         "api/notifications/<int:pk>/read/",

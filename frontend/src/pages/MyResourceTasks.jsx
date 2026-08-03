@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { slotSummary } from '@/components/resources/AllocationSlots'
 import { AllocationPanel } from '@/components/resources/AllocationPanel'
+import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
 import { formatDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useAllocationTasks } from '@/hooks/useResources'
@@ -98,6 +99,10 @@ function groupByProject(tasks) {
     group.latestId = Math.max(...group.tasks.map((t) => t.id))
     group.todoCount = group.tasks.filter((t) => TODO_STATUSES.includes(t.status)).length
     group.team = currentTeam(group.tasks)
+    // Lead-level, so every task in the group carries the same value — any one
+    // of them answers it (`some` rather than `[0]` only to tolerate an older
+    // cached payload that predates the field).
+    group.canShortClose = group.tasks.some((t) => t.lead_can_short_close)
   }
   return list.sort((a, b) => b.latestId - a.latestId)
 }
@@ -122,6 +127,16 @@ function ProjectHeaderRow({ group }) {
               {group.tasks.length} allocation {group.tasks.length === 1 ? 'step' : 'steps'}
               {group.todoCount > 0 && ` · ${group.todoCount} to do`}
             </span>
+            {/* Short-close (user, 2026-07-30): the same control as Lead Detail's
+                header, offered here so the role never has to leave its module.
+                Renders nothing unless the action is currently available on this
+                lead — `lead_can_short_close`, read off the group's tasks. */}
+            <ShortCloseButton
+              leadId={group.lead}
+              canShortClose={group.canShortClose}
+              size="sm"
+              className="ml-auto text-blue-600 hover:text-blue-700"
+            />
           </div>
           {group.team.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">

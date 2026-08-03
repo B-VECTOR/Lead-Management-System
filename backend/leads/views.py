@@ -1,9 +1,13 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -1277,15 +1281,69 @@ class AttachmentDeleteView(LeadQuerysetMixin, generics.DestroyAPIView):
 
 # --- Notifications (Phase 8, Decision #4) ----------------------------------
 
+#: Read notifications older than this are pruned on read (see
+#: :func:`_prune_read_notifications`). Unread rows are never auto-deleted.
+NOTIFICATION_RETENTION_DAYS = 30
+
+#: How often the prune runs per user, in seconds. The bell polls every 15s, so
+#: the sweep is throttled through the cache rather than run on every request.
+NOTIFICATION_PRUNE_EVERY = 60 * 60
+
+
+def _prune_read_notifications(user):
+    """Best-effort delete of the user's long-read notifications.
+
+    Runs at most once an hour per user (cache-throttled) off the back of a list
+    request, so the table self-maintains without a cron entry. Failures are
+    swallowed — pruning must never break the feed.
+    """
+    key = f"notif-prune:{user.pk}"
+    if cache.get(key):
+        return
+    cache.set(key, True, NOTIFICATION_PRUNE_EVERY)
+    cutoff = timezone.now() - timedelta(days=NOTIFICATION_RETENTION_DAYS)
+    Notification.objects.filter(
+        user=user, is_read=True, created_at__lt=cutoff
+    ).delete()
+
+
+class NotificationPagination(PageNumberPagination):
+    """Paginates the notification feed and carries the unread count with it.
+
+    The bell needs the badge number and a short preview from one request, so
+    the count rides along in the envelope instead of costing a second call.
+    """
+
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        response = super().get_paginated_response(data)
+        response.data["unread_count"] = self.request._notification_unread_count
+        return response
+
+
 class NotificationListView(generics.ListAPIView):
-    """The caller's own in-app notifications, newest first."""
+    """The caller's own in-app notifications, newest first.
+
+    Paginated (default 20/page, ``?page_size=`` up to 100) and filterable with
+    ``?unread=1`` — previously this returned every notification the user had
+    ever received, which is what made the bell and the page unbounded.
+    """
 
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
-    pagination_class = None
+    pagination_class = NotificationPagination
 
     def get_queryset(self):
-        return Notification.objects.filter(user=self.request.user)
+        _prune_read_notifications(self.request.user)
+        qs = Notification.objects.filter(user=self.request.user)
+        # The unread badge counts everything unread, not just the current page.
+        self.request._notification_unread_count = qs.filter(is_read=False).count()
+        if self.request.query_params.get("unread") in ("1", "true", "True"):
+            qs = qs.filter(is_read=False)
+        return qs
 
 
 class NotificationMarkReadView(APIView):
@@ -1311,6 +1369,23 @@ class NotificationMarkAllReadView(APIView):
             user=request.user, is_read=False
         ).update(is_read=True)
         return Response({"updated": updated})
+
+
+class NotificationClearReadView(APIView):
+    """Delete the caller's already-read notifications.
+
+    The manual counterpart to :func:`_prune_read_notifications` — lets a user
+    empty a backlog now instead of waiting out the retention window. Unread
+    notifications are left alone.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        deleted, _ = Notification.objects.filter(
+            user=request.user, is_read=True
+        ).delete()
+        return Response({"deleted": deleted})
 
 
 # --- Leads-funnel dashboard (Phase 8, PRD §6) ------------------------------

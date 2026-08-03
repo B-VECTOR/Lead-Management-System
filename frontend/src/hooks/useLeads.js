@@ -64,6 +64,13 @@ export function useShortCloseLead() {
       qc.invalidateQueries({ queryKey: ['activities', 'lead', id] })
       qc.invalidateQueries({ queryKey: ['project-closure'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
+      // The Resource module's queue is a short-close surface too now (its group
+      // headers carry the button), and the sweep + resource release changes what
+      // it shows — its own rows go `skipped`, and the closure task's `on_open`
+      // frees the allocations.
+      qc.invalidateQueries({ queryKey: ['allocation-tasks'] })
+      qc.invalidateQueries({ queryKey: ['resource-allocations'] })
+      qc.invalidateQueries({ queryKey: ['lead-resource-allocations'] })
     },
   })
 }

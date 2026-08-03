@@ -2,14 +2,21 @@ import { Bell } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { useMarkNotificationRead, useNotifications } from '@/hooks/useNotifications'
+import {
+  useMarkAllNotificationsRead,
+  useMarkNotificationRead,
+  useNotificationPreview,
+} from '@/hooks/useNotifications'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 export function NotificationBell() {
-  const { data: notifications = [] } = useNotifications()
+  const { data } = useNotificationPreview()
+  const notifications = data?.results ?? []
+  const unread = data?.unreadCount ?? 0
+  const total = data?.count ?? 0
   const markRead = useMarkNotificationRead()
-  const unread = notifications.filter((n) => !n.read).length
+  const markAllRead = useMarkAllNotificationsRead()
 
   return (
     <Popover>
@@ -25,12 +32,24 @@ export function NotificationBell() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 p-0">
         <div className="flex items-center justify-between border-b px-3 py-2">
-          <span className="text-sm font-semibold">Notifications</span>
-          <Link to="/notifications" className="text-xs text-muted-foreground hover:underline">View all</Link>
+          <span className="text-sm font-semibold">
+            Notifications
+            {unread > 0 && <span className="ml-1.5 font-normal text-muted-foreground">{unread} unread</span>}
+          </span>
+          {unread > 0 && (
+            <button
+              type="button"
+              onClick={() => markAllRead.mutate()}
+              disabled={markAllRead.isPending}
+              className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
+            >
+              Mark all read
+            </button>
+          )}
         </div>
-        <div className="max-h-80 overflow-y-auto">
+        <div className="max-h-72 overflow-y-auto">
           {notifications.length === 0 && <div className="p-4 text-sm text-muted-foreground">You're all caught up.</div>}
-          {notifications.slice(0, 8).map((n) => (
+          {notifications.map((n) => (
             <Link
               key={n.id}
               to={n.link}
@@ -47,6 +66,13 @@ export function NotificationBell() {
             </Link>
           ))}
         </div>
+        {total > notifications.length && (
+          <div className="border-t px-3 py-2 text-center">
+            <Link to="/notifications" className="text-xs text-muted-foreground hover:underline">
+              View all {total}
+            </Link>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

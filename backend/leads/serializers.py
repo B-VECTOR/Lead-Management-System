@@ -417,6 +417,12 @@ class TaskSerializer(serializers.ModelSerializer):
     # Mining stage without hardcoding a task number. Readable while the task is
     # still trigger-``pending``, when ``stage_code`` ("M") isn't set yet.
     is_mining_opportunity = serializers.SerializerMethodField()
+    # Whether short-close is available on this task's *lead* right now
+    # (``engine.can_short_close``) — the Resource module's allocation queue
+    # groups its rows by lead and offers short-close on the group header (user,
+    # 2026-07-30), so it needs the flag without a per-lead fetch. Same value the
+    # lead endpoint's ``can_short_close`` returns.
+    lead_can_short_close = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -447,6 +453,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "allocation",
             "auto_closes_when_staffed",
             "is_mining_opportunity",
+            "lead_can_short_close",
             "short_closed",
             "project_id",
             "task_start_dt",
@@ -532,6 +539,16 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_is_mining_opportunity(self, obj):
         tdef = self._task_def(obj)
         return bool(tdef and tdef.get("is_mining_opportunity"))
+
+    def get_lead_can_short_close(self, obj):
+        # Memoized per lead: the allocation queue lists several tasks per lead
+        # (one per stage), and the underlying check costs a workflow lookup plus
+        # two task-existence queries — so without this a grouped queue would run
+        # it once per row instead of once per project.
+        memo = self.context.setdefault("_short_close_memo", {})
+        if obj.lead_id not in memo:
+            memo[obj.lead_id] = engine.can_short_close(obj.lead)
+        return memo[obj.lead_id]
 
     def get_allocation(self, obj):
         tdef = self._task_def(obj)

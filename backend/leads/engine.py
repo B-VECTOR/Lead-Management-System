@@ -987,15 +987,19 @@ def can_short_close(lead):
 
     Data-driven — no task numbers hardcoded. The workflow JSON marks its
     Project-Closure task with ``is_project_closure`` and whichever task(s)
-    grant short-close access with ``grants_short_close`` (Task 26, Extension
-    Implementation — TR row 26 / §9.2: "on open, give Shailesh short-close
-    access"). *Design decision (R6, documented — no natural closure trigger
-    exists mid-Extension-loop, TR row 27's list of Task-27 openers, unlike the
-    base Implementation's engagement-end-date trigger):* once granted, access
-    persists for the lead's life (the docs describe no revocation) until
-    closure has actually been reached — i.e. any instance of the closure task
-    already exists, regardless of its current status (even a Finance-bounced
-    one back to ``open``).
+    grant short-close access with ``grants_short_close`` (Task 20 Implementation
+    and Task 26 Extension Implementation — TR row 26 / §9.2: "on open, give
+    Shailesh short-close access", widened to Task 20 by the user on 2026-07-30 so
+    the hatch covers the whole live engagement). *Design decision (R6,
+    documented — no natural closure trigger exists mid-Extension-loop, TR row
+    27's list of Task-27 openers, and Task 20's engagement-end-date trigger only
+    fires on the planned end date):* once granted, access persists for the lead's
+    life (the docs describe no revocation) until closure has actually been
+    reached — i.e. any instance of the closure task already exists, regardless of
+    its current status (even a Finance-bounced one back to ``open``).
+
+    A ``pending`` grant task doesn't count: it is a seeded row waiting on its
+    date trigger, and the docs grant access "on open".
     """
     if lead.status != Lead.Status.IN_PROGRESS:
         return False
@@ -1008,7 +1012,11 @@ def can_short_close(lead):
     grant_nos = [no for no, tdef in defs.items() if tdef.get("grants_short_close")]
     if not grant_nos:
         return False
-    return lead.tasks.filter(task_no__in=grant_nos).exists()
+    return (
+        lead.tasks.filter(task_no__in=grant_nos)
+        .exclude(status=Task.Status.PENDING)
+        .exists()
+    )
 
 
 @transaction.atomic

@@ -34,11 +34,25 @@ def log_activity(lead, actor, type, summary, body=""):
 
 
 def notify(user, type, message, link=""):
-    """Create one in-app notification for ``user`` (skipped if ``user`` is None)."""
+    """Create one in-app notification for ``user`` (skipped if ``user`` is None).
+
+    Collapses exact repeats: if the user already has an *unread* notification
+    with the same type/message/link, no second row is written. A task that is
+    re-opened or a lead re-assigned to the same person otherwise stacks
+    identical lines the user has to scroll past — the existing unread row
+    already says the same thing. Read notifications are never collapsed, so a
+    repeat after the user has cleared the first one still shows up.
+    """
     if user is None:
         return None
+    link = link or ""
+    existing = Notification.objects.filter(
+        user=user, type=type, message=message, link=link, is_read=False
+    ).first()
+    if existing is not None:
+        return existing
     return Notification.objects.create(
-        user=user, type=type, message=message, link=link or ""
+        user=user, type=type, message=message, link=link
     )
 
 

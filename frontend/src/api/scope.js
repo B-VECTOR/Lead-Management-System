@@ -109,7 +109,8 @@ export const PERMISSIONS = {
     hasRole(user, 'Lead Admin') ||
     (hasRole(user, 'Lead Manager') && (lead?.created_by === user?.id || lead?.assigned_to === user?.id)),
   // Short-close (R6, §9.2/§5.12) — Resource Manager only; the backend's
-  // `lead.can_short_close` gates *when* it's actually available.
+  // `lead.can_short_close` gates *when* it's actually available (from Task 20
+  // Implementation onward, until Project Closure is reached — DD-R6-5a).
   shortCloseLead: (user) => hasRole(user, 'Resource Manager'),
   manageUsers: (user) => hasRole(user, 'User Management'),
   // Lead Admin: global visibility, read-only across the lead screens.

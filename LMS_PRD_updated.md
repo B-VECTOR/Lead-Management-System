@@ -215,7 +215,9 @@ Resource allocation is performed through the workflow allocation tasks (3, 10, 1
 
 **Release of resources.** A stage's resources are released when that stage's work ends. In particular, the Implementation/Extension resources default to showing as occupied on the project **until Task 27 (Project Closure) opens**, at which point the currently allocated resources are released.
 
-**Screen access.** The Resource Manager works **entirely inside the Resource module** — they do not get the Leads tab. Their Resources screen lists every allocation task waiting on them (including ones **not yet due**, so a team or the auditors can be staffed ahead of time) and each row opens in place to the slots and the submit action. Alongside it they have **Resource History** (days worked per resource, per slot and stage, with reassignment chains) and **Project Closure**. The lead's Default BD Person staffs their own lead's allocation from the lead's task list, as before.
+**Screen access.** The Resource module is the Resource Manager's home. Their Resources screen lists every allocation task waiting on them (including ones **not yet due**, so a team or the auditors can be staffed ahead of time) and each row opens in place to the slots and the submit action. Alongside it they have **Resource History** (days worked per resource, per slot and stage, with reassignment chains) and **Project Closure**. The lead's Default BD Person staffs their own lead's allocation from the lead's task list, as before.
+
+> ~~They do not get the Leads tab.~~ **Superseded 2026-07-29 (per the user: "in resource module i want leads to be visible for resource person too … a resource person can assign resource from both the tab, from lead too and from resource tab too"):** the Resource Manager **does** see the Leads list and lead detail, **read-only** apart from their own allocation steps, and scoped to leads that have **reached an allocation task** (3/10/17/18/24/25). Staffing is therefore reachable by two deliberately redundant routes — the Resources queue and the lead's own task stepper — and **short-close** (§5.12) is offered on both surfaces for the same reason.
 
 ## 5.8 Lead & Task Hold / Unhold
 
@@ -252,9 +254,18 @@ Anyone who can view a lead (its owner, a task assignee, the Resource Manager, �
 
 ## 5.12 Short-Close
 
-The engagement can be short-closed to move it straight to closure regardless of which step it is on. When Task 26 (Extension Implementation) opens, Shailesh is given short-close access. Triggering a short-close opens **Task 27 (Project Closure)** and sweeps whatever other task is currently open, on hold, or waiting on a date trigger to **Skipped** in the same action. A **remark is compulsory** on short-close (the confirm control stays disabled until a remark is typed).
+The engagement can be short-closed to move it straight to closure regardless of which step it is on. When **Task 20 (Implementation)** opens, Shailesh is given short-close access, and keeps it for the rest of the engagement — through the extension loop (Task 26 grants it too, for a standalone Extension lead that never had a Task 20) — until Task 27 has been reached by any route. It is never available during the BD/pre-sale stages (Tasks 1–19), which have their own drop path. Triggering a short-close opens **Task 27 (Project Closure)** and sweeps whatever other task is currently open, on hold, or waiting on a date trigger to **Skipped** in the same action. A **remark is compulsory** on short-close (the confirm control stays disabled until a remark is typed).
 
 > **Change from v3:** there is **no separate "Short Closed" status**. A short-closed engagement runs Task 27 (and Task 28) and ends as **Completed**, like any other closure — the short-close remark and the swept-task notes remain in the record for traceability.
+
+> **Change 2026-07-30 (user):** the grant point moved from Task 26 to **Task 20**. Previously a project that died mid-Implementation had no manual route to closure — only Task 20's engagement-end-date trigger, which fires on the *planned* end date however dead the project already is.
+
+**Who can short-close, and from where.** The action is the **Resource Manager's** alone (§6). It is offered on two surfaces, and nowhere else:
+
+1. **Lead Detail** — in the header, alongside Hold and Drop.
+2. **The Resource module's allocation queue** — on each project's group header, so the role can short-close without leaving its own module (added 2026-07-30 at the user's request, after the control proved hard to find).
+
+Both open the same confirm dialog with its compulsory remark, and neither appears at all unless short-close is currently available on that engagement — i.e. Implementation (or Extension Implementation) has opened and closure has not yet been reached.
 
 ## 5.13 Lead Admin
 
@@ -350,6 +361,7 @@ Every column is filterable from a filter row under the headers: free-text search
 | Edit own open tasks | Yes | Yes | No | No | No | No | No |
 | Work resource-allocation tasks | No | No | No | No | Yes (+ BD owner co-assignee) | No | No |
 | Work Finance approval gates (7,15,28) | No | No | No | No | No | No | Yes |
+| Short-close a live engagement (§5.12) | No | No | No | No | Yes | No | No |
 | Add follow-up on a viewable lead | Yes | Yes | No | Yes | Yes | Yes | Yes |
 | View own follow-up tasks | Yes | Yes | No | Yes | Yes | No | No |
 | View all follow-up history | No | Yes (Lead Detail) | No | No | No | No | No |

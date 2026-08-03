@@ -76,9 +76,11 @@ Per-task keys
 - ``spawn_lead`` (Task 21's matched routing rule, not ``on_close`` — it's
   conditional on the answer): spawns + starts a fresh Mining lead sharing this
   lead's ``base_code`` (§5.3.1/§13, ``engine._spawn_mining_lead``).
-- ``grants_short_close`` (Task 26): once any instance of this task has opened,
-  short-close (§9.2/§5.12) becomes available on the lead — see
-  ``engine.can_short_close``.
+- ``grants_short_close`` (Tasks 20 and 26): once any instance of this task has
+  opened, short-close (§9.2/§5.12) becomes available on the lead — see
+  ``engine.can_short_close``. Task 20 carries it as well as 26 (user, 2026-07-30)
+  so the Resource Manager's escape hatch spans the whole live engagement, not
+  just the extension loop.
 - ``is_project_closure`` (Task 27): lets the engine find the Project-Closure
   task generically (short-close opens it directly; ``can_short_close`` checks
   whether an instance already exists) instead of hardcoding its number.
@@ -575,6 +577,16 @@ BD_WORKFLOW = {
             # project_details (its own stage auto-closes via the ordinary
             # main-sequence stage reconcile, once Closure opens — DD3).
             "on_close": {"project_details": True},
+            # ``grants_short_close`` (user, 2026-07-30 — widens TR row 26/§9.2,
+            # which granted access only from Task 26): the engagement is live and
+            # resources are occupied from here on, so the Resource Manager's
+            # escape hatch opens with Implementation and persists through the
+            # extension loop. Without this, a project that dies mid-Implementation
+            # had no manual route to closure — only Task 20's engagement-end-date
+            # trigger, which fires on the *planned* end date however dead the
+            # project already is. Still nothing before this: the BD/pre-sale
+            # stages (1–19) have their own drop path.
+            "grants_short_close": True,
             "routing": [{"open": [21, 22]}],
         },
         # ---- Mining stage (21) — parallel ----------------------------------
