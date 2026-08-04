@@ -57,8 +57,18 @@ function notifyMiningWindow(task) {
 
 function notifyMiningSpawned(lead, navigate) {
   const owner = lead.assigned_to_name
+  // The entry task comes from the response, never assumed (R19): a spawned
+  // Mining lead starts on the flow-selection task (Task 0), and only once that
+  // is answered does its real first task open.
+  const at =
+    lead.first_task_no != null
+      ? `Task ${lead.first_task_no}${lead.first_task_name ? ` (${lead.first_task_name})` : ''}`
+      : 'its first task'
+  const next = lead.awaiting_flow_selection
+    ? ' — its flow of tasks has to be selected before the workflow starts'
+    : ''
   toast.success('Project has gone into Mining', {
-    description: `${lead.project_id} — a new Mining lead for “${lead.company_name} — ${lead.project_name}” is open at Task 1${owner ? `, with ${owner}` : ''}.`,
+    description: `${lead.project_id} — a new Mining lead for “${lead.company_name} — ${lead.project_name}” is open at ${at}${owner ? `, with ${owner}` : ''}${next}.`,
     duration: 20_000,
     action: { label: 'Open lead', onClick: () => navigate(`/leads/${lead.id}`) },
   })

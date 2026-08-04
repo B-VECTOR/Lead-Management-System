@@ -525,6 +525,16 @@ class TaskCompleteView(TaskScopeMixin, APIView):
                 "assigned_to_name": (
                     spawned.assigned_to.name if spawned.assigned_to_id else None
                 ),
+                # R19: the child starts on the flow-selection task, so the toast
+                # can tell its owner that a decision is waiting rather than
+                # implying the workflow is already under way.
+                "awaiting_flow_selection": not spawned.flow_of_tasks,
+                "first_task_no": getattr(
+                    getattr(spawned, "entry_task", None), "task_no", None
+                ),
+                "first_task_name": getattr(
+                    getattr(spawned, "entry_task", None), "task_name", None
+                ),
                 "link": events.lead_link(spawned),
             }
         return Response(payload)

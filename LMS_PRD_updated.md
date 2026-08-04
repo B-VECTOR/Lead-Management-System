@@ -14,7 +14,7 @@ A companion engineering document, `LMS_Technical_Requirements_updated.md`, provi
 
 - The workflow is now a single **BD → Extension → Mining** flow of **28 tasks** (was 17). Mining and Extension are **in scope**.
 - Every task now belongs to a **Stage** (BD, 2HR, SnT, Implementation, Extension, Mining). Stage is a first-class, tracked concept — a lead can have **more than one stage open at once** (Mining and Extension run in **parallel**).
-- The lead now carries a **Flow of tasks** selector (which stages run) and a **Type of Project** label, alongside **Type** (BD / Extension / Mining).
+- The lead now carries a **Flow of tasks** selector (which stages run) and a **Type of Project** label, alongside **Type** (BD / Extension / Mining). *(Added 2026-08-04: a Mining lead spawned by a Task-21 go-ahead selects its Flow of tasks on a pre-flow task of its own, months later, instead of inheriting the parent's — §5.3.1.)*
 - **Resource Manager** (Shailesh) and **Finance** (Abhay) are both **live roles**. Finance now owns three **payment-approval gate tasks** (7, 15, 28). Resource allocation is done through workflow tasks, and the full allocation history (who worked which slot, for how long, including reassignments) is retained for the dashboard.
 - **Project ID** is auto-generated at lead creation with the **current stage shown as a suffix** (e.g. `IN-PHNPDCFF26001-2HR`, `…-IM`, `…-E1`, `…-M`). ~~Now `Area + YY + Sequence`; Country and Industry codes are no longer part of the ID.~~ **Composition finalized by the user 2026-07-28:** Country Code + Industry + Area + Type of Project + Year + auto-generated number + stage of intervention — see §5.15.
 - Lead **Status** is simplified to **In Progress / Hold / Dropped / Completed**. "Hybernation" and "Short Closed" statuses are removed; short-close remains as an **action** that routes to closure.
@@ -92,7 +92,7 @@ User form fields:
 | Scope | Text | No |
 | Assigned To | Dropdown — BD users | Yes (Lead Manager); left blank for Marketing |
 | Type | BD / Extension / Mining | Yes |
-| Flow of tasks | Dropdown (4 options — §5.3.1) | Yes |
+| Flow of tasks | Dropdown (4 options — §5.3.1) | Yes (not applicable to Extension; **not asked at all** on a Task-21-spawned Mining lead, which selects it later on Task 0 — §5.3.1) |
 | Type of Project | Dropdown (6 options — §5.2.2) | Yes |
 | Status | System-managed | Auto |
 
@@ -133,7 +133,7 @@ The workflow is organized into **Stages**, each a group of tasks:
 | 2HR | 3–8 | 2-Hour Study & Presentation, reimbursement, accounts approval, Solution Blueprint confirmation |
 | SnT | 9–16 | Solution Blueprint proposal, study, payment, accounts approval, Project Proposal Submission |
 | Implementation | 17–20 | Team & auditor allocation, initiation, implementation |
-| Mining | 21 | Exploit Mining Opportunities (spawns a fresh BD cycle) |
+| Mining | 21 (and Task 0 on the lead it spawns) | Exploit Mining Opportunities (spawns a fresh cycle, which begins by selecting its own flow of tasks — §5.3.1) |
 | Extension | 22–26 | Extension proposal, detail, team & auditor allocation, extension implementation |
 | Closure | 27–28 | Project closure + accounts approval |
 
@@ -144,12 +144,16 @@ Stage is **tracked as its own record** with its own start/end dates and status, 
 | Type | Behavior |
 |---|---|
 | BD | Runs the workflow from Task 1, shaped by the Flow of tasks selection. |
-| Mining | Runs the workflow from Task 1 with a `-M` marker on the Project ID (§5.15). |
+| Mining | Runs the workflow with a `-M` marker on the Project ID (§5.15), shaped by the Flow of tasks selection. A Mining lead **created by hand** starts at its flow's entry task like a BD lead; a Mining lead **spawned by a Task-21 go-ahead** starts at the flow-selection task instead (below). |
 | Extension | Enters directly at the Extension stage (Task 22, Extension Proposal). Flow of tasks does not apply. |
+
+> **Change 2026-08-04 (user):** *"they will have a special task open before all the task open that will be to select the flow of task for that mining project, because this mining project will start after many months so at that stage no one will knew what flow it is going to be."*
+>
+> A Mining lead spawned by Task 21 no longer copies the parent's flow of tasks — that was wrong (a parent on Direct Proposal spawned a child that also skipped Tasks 1–15, though the mining engagement is a new pitch with its own path). The child is created with **no flow**, and its first and only open task is **"Select Flow of Tasks"** — a pre-flow step, numbered **Task 0** because it runs before the flow it chooses. It is assigned to the lead's Default BD Person, carries **no due date**, and simply waits: the whole point is that the answer arrives months later, when the mining project firms up. Answering it records the flow on the lead and opens that flow's real first task (Task 1, or Task 16 for Direct Proposal), skipping the stages the flow skips. Until then the lead's Flow of tasks reads **"Not selected yet"** and cannot be set from the lead edit form — the task is the only place the decision is made. This applies **only** to a BD→Mining conversion; a manually-created Mining lead already has a flow its creator chose.
 
 ### 5.3.2 Flow of tasks (BD & Mining only)
 
-The Flow of tasks selection decides which stages run for a BD/Mining lead. In-flow branch questions (Tasks 8, 12, 13) still operate for the paths that reach them.
+The Flow of tasks selection decides which stages run for a BD/Mining lead. It is chosen at lead creation — except on a Task-21-spawned Mining lead, which chooses it later on Task 0 (§5.3.1). In-flow branch questions (Tasks 8, 12, 13) still operate for the paths that reach them.
 
 | Flow | Intro (1–2) | 2HR (3–8) | SnT (9–15) | From Project Proposal (16→) |
 |---|---|---|---|---|
@@ -162,7 +166,7 @@ Stages that a flow skips are marked **Skipped** so the path taken is explicit an
 
 ## 5.4 The 28-Task Workflow
 
-The workflow is a fixed, ordered sequence of **28 tasks** grouped by stage. Task 1 opens once the lead has an assigned owner (except Direct Proposal, which opens at Task 16). Each task contains a checklist and, in most cases, additional fields the assignee must complete. A task can be closed only when all its checklist items are complete and all mandatory fields are filled — closing a task opens the next task per the routing rules. Some tasks branch, some loop, and some (Finance gates) can **re-open a previously closed task**.
+The workflow is a fixed, ordered sequence of **28 tasks** grouped by stage. Task 1 opens once the lead has an assigned owner (except Direct Proposal, which opens at Task 16; and a Task-21-spawned Mining lead, which opens the **Task 0** flow-selection step first — §5.3.1). Each task contains a checklist and, in most cases, additional fields the assignee must complete. A task can be closed only when all its checklist items are complete and all mandatory fields are filled — closing a task opens the next task per the routing rules. Some tasks branch, some loop, and some (Finance gates) can **re-open a previously closed task**.
 
 The full 28-task table — names, assignees, checklists, extra fields, stage, and routing notes — is in the Technical Requirements document (§5). The key behaviors and branch points are summarized below.
 
@@ -180,7 +184,7 @@ The full 28-task table — names, assignees, checklists, extra fields, stage, an
   - *"Re-presentation required?"* — **Yes** → open Task 13 (loops).
   - **No** + *"Has project moved to the next stage?"* = **Yes** → open **Task 14 (Solution Blueprint Payment)** and **Task 16 (Project Proposal Submission)**.
   - **No** + moved to next stage = **No** → open **Task 27 (Project Closure)** directly.
-- **Task 21 (Exploit Mining Opportunities):** *"Client go-ahead for a new project?"* — **Yes** → a **new Project ID with a `-M` marker** is opened and a **fresh BD cycle begins from Task 1** (see §5.15, Mining). Mining runs **in parallel** with any ongoing extension.
+- **Task 21 (Exploit Mining Opportunities):** *"Client go-ahead for a new project?"* — **Yes** → a **new Project ID with a `-M` marker** is opened and a fresh cycle begins (see §5.15, Mining). ~~from Task 1~~ **Corrected 2026-08-04:** the new lead opens **Task 0 "Select Flow of Tasks"** and waits there until its owner picks a flow, which then opens the real first task (§5.3.1) — nothing is assumed from the parent. The person completing Task 21 is told so, in the confirmation and in both leads' history. Mining runs **in parallel** with any ongoing extension.
 - **Task 22 (Extension Proposal):** *"Extension approved?"* — **Yes** → Task 23 (Extension Detail) and the extension cycle. **No** → Task 27 (Project Closure). The extension cycle can loop (an extension of an extension); each loop increments the extension marker `-E1 → -E2 → -E3` (§5.15).
 
 **Closure**
@@ -313,12 +317,14 @@ Type-of-Project codes: Consulting Full Fledged `CFF`, AMC `AMC`, Upgrade `UPG`, 
 | Mining cycle that itself extends | `IN-PHNPDCFF26001-M-E1` |
 
 - **Extension marker `-E1 / -E2 / -E3 …`** — the number is the extension **loop counter**; the **first** extension shows `-E1` (numbering starts at 1 — user decision 2026-07-29). It increments each time the extension cycle repeats.
-- **Mining (`-M`)** — when Task 21 = Yes, a **new lead record is created for the same project** (same base code, so no new number is consumed), carrying the `-M` marker and a link back to the parent lead, and a fresh BD cycle begins from Task 1. Because it is a separate lead record, its Mining stage can run **in parallel** with the parent's Extension stage; the data for each is tracked independently.
+- **Mining (`-M`)** — when Task 21 = Yes, a **new lead record is created for the same project** (same base code, so no new number is consumed), carrying the `-M` marker and a link back to the parent lead, and a fresh cycle begins — at the **Task 0** flow-selection step, not at Task 1, since the new lead's flow of tasks is chosen on that task rather than inherited (2026-08-04, §5.3.1). Because it is a separate lead record, its Mining stage can run **in parallel** with the parent's Extension stage; the data for each is tracked independently.
 - The stage suffix is **derived** from the lead's current stage — it is display logic, not a stored key. Internally the system joins on stable identifiers, never on the suffixed string.
 
 ## 5.16 Workflow Configuration
 
 Workflows are stored as JSON in a workflow table rather than hardcoded, so the task engine reads the active workflow definition for a given lead. The Django admin panel provides add/edit access with fields: Name, Type, Workflow (JSON), Status. This lets the workflow evolve without changing the engine code.
+
+This extends to **where a lead starts**: each entry point (per Flow of tasks, for Extension, and for the pre-flow selection step of §5.3.1) is a row in the workflow JSON, not a rule in code. A task's extra fields are likewise declared there — including dropdown-style **choice** fields whose option list travels with the workflow and is validated against on close, so a question with more than two answers needs no code change.
 
 ## 5.17 Reference Data — Industry, Area, Belt
 

@@ -86,7 +86,10 @@ export default function LeadForm() {
         scope: existingLead.scope || '',
         assigned_to: existingLead.assigned_to || '',
         lead_type: existingLead.lead_type || 'BD',
-        flow_of_tasks: existingLead.flow_of_tasks || 'DEFAULT',
+        // Left blank on purpose for a lead still awaiting its flow gate (R19) —
+        // defaulting it here would let an unrelated edit set the flow behind the
+        // Task-0 decision's back.
+        flow_of_tasks: existingLead.flow_of_tasks || '',
         type_of_project: existingLead.type_of_project || '',
       })
     }
@@ -105,6 +108,11 @@ export default function LeadForm() {
 
   // Flow of tasks does not apply to Extension leads (they enter at Task 22).
   const isExtension = form.lead_type === 'Extension'
+  // A Mining lead spawned by a Task-21 go-ahead has no flow until its Task 0
+  // gate is answered (R19). The field is hidden and left out of the payload
+  // while that is pending, so editing the lead's other details neither forces
+  // nor fakes the decision.
+  const awaitingFlowGate = isEdit && !!existingLead && !existingLead.flow_of_tasks && !isExtension
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -118,10 +126,11 @@ export default function LeadForm() {
       division: form.division.trim(),
       scope: form.scope.trim(),
       lead_type: form.lead_type,
-      // Extension leads carry no flow (backend clears it); send it otherwise.
-      flow_of_tasks: isExtension ? '' : form.flow_of_tasks,
       type_of_project: form.type_of_project,
     }
+    // Extension leads carry no flow (backend clears it); a lead awaiting its
+    // Task-0 gate keeps whatever the gate will set. Otherwise send the choice.
+    if (!awaitingFlowGate) payload.flow_of_tasks = isExtension ? '' : form.flow_of_tasks
     if (canAssignOwner) payload.assigned_to = form.assigned_to || null
 
     try {
@@ -143,7 +152,7 @@ export default function LeadForm() {
   const canSubmit =
     form.company_name.trim() && form.project_name.trim() &&
     form.country && form.industry && form.domain && form.lead_type && form.type_of_project &&
-    (isExtension || form.flow_of_tasks) &&
+    (isExtension || awaitingFlowGate || form.flow_of_tasks) &&
     (!ownerRequired || form.assigned_to)
 
   if (!isEdit && !PERMISSIONS.createLead(user)) return null
@@ -193,7 +202,16 @@ export default function LeadForm() {
             </Select>
           </div>
 
-          {!isExtension && (
+          {awaitingFlowGate && (
+            <div className="flex flex-col gap-1.5">
+              <Label>Flow of tasks</Label>
+              <p className="flex min-h-9 items-center text-sm text-muted-foreground">
+                Selected on this lead's “Select Flow of Tasks” task, not here.
+              </p>
+            </div>
+          )}
+
+          {!isExtension && !awaitingFlowGate && (
             <div className="flex flex-col gap-1.5">
               <Label>Flow of tasks *</Label>
               <Select value={form.flow_of_tasks} onValueChange={(v) => setIfPresent('flow_of_tasks', v)}>

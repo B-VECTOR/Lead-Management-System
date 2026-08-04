@@ -187,7 +187,7 @@ Wrap in a `Card className="py-0"` with `CardContent className="overflow-x-auto p
 - Inputs/selects/textareas are the shadcn versions (border `border-input`, `bg-transparent`, focus ring via `ring-ring`).
 - **Validation errors reference the field's display label, never the internal field name** (PRD §5.5 rule 6). Show errors with `text-destructive` / `aria-invalid` styling.
 - **Dates default to "no past dates allowed"** except fields the PRD explicitly exempts (e.g. Date of Joining) — enforce in both the picker and server-side (CLAUDE.md global rule).
-- Multi-step task forms live in `components/leads/` (e.g. `TaskStepFields`, `TaskStepper`) — reuse their field-rendering conventions (`required_when`, conditional show/require).
+- Multi-step task forms live in `components/leads/` (e.g. `TaskStepFields`, `TaskStepper`) — reuse their field-rendering conventions (`required_when`, conditional show/require). The backend `field_schema` drives them entirely; the renderer covers `text` / `number` / `date` / `boolean` (a Yes-No `Select`) / `choice` (the same `Select`, options supplied by the workflow) / `rowgroup` (repeatable rows). **Add a field type to the schema and the renderer, never a per-task special case in a page.**
 - Success feedback via `toast.success(...)`; keep messages short and specific ("Task reassigned", "Follow-up created").
 
 ### Formatting helpers — `src/lib/format.js`

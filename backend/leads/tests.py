@@ -592,6 +592,10 @@ class WorkflowTestBase(LeadApiTestBase):
     def f21(self, go_ahead="No"):
         return {"mining_go_ahead": go_ahead}
 
+    def f0(self, flow="DEFAULT"):
+        """The pre-flow selection task's answer (R19, Task 0)."""
+        return {"flow_of_tasks": flow}
+
     def f22(self, approved="No"):
         return {"extension_approved": approved}
 
@@ -642,8 +646,9 @@ class WorkflowTestBase(LeadApiTestBase):
             f16["planned_start_date"] = planned_start
         self.complete(owner, self.task(lead, 16), f16)
 
-    def walk_to_task20(self, lead, owner):
-        self.walk_to_task16(lead, owner)
+    def walk_17_to_20(self, lead, owner):
+        """Task 16 closed → Task 20 closed: the Implementation tail, shared by
+        the DEFAULT walk and the Direct-Proposal one (which enters at 16)."""
         self.staff_and_submit(self.resource_manager, self.task(lead, 17), {"execution_red": self.red})
         self.staff_and_submit(
             self.resource_manager, self.task(lead, 18),
@@ -651,6 +656,20 @@ class WorkflowTestBase(LeadApiTestBase):
         )
         self.complete(owner, self.task(lead, 19))
         self.complete(self.red, self.task(lead, 20), self.f20())
+
+    def walk_to_task20(self, lead, owner):
+        self.walk_to_task16(lead, owner)
+        self.walk_17_to_20(lead, owner)
+
+    def walk_to_task20_direct(self, lead, owner):
+        """A ``DIRECT_PROPOSAL`` lead's walk: it enters at Task 16 (1–15 are
+        pre-skipped), so only the Implementation tail runs."""
+        self.complete(owner, self.task(lead, 16), self.f16())
+        self.walk_17_to_20(lead, owner)
+
+    def select_flow(self, lead, owner, flow="DEFAULT"):
+        """Answer a spawned Mining lead's pre-flow selection task (R19)."""
+        return self.complete(owner, self.task(lead, 0), self.f0(flow))
 
 
 class FullFlowWalkTests(WorkflowTestBase):
@@ -877,7 +896,9 @@ class FinanceGateBounceTests(WorkflowTestBase):
 
 class MiningSpawnTests(WorkflowTestBase):
     """Task 21 "go-ahead = Yes" spawns a standalone Mining child lead sharing
-    the parent's ``base_code`` and running its own BD cycle (§5.3.1/§13, R6)."""
+    the parent's ``base_code`` and running its own cycle (§5.3.1/§13, R6). R19:
+    the child starts on the pre-flow selection task (Task 0) — it has no
+    ``flow_of_tasks`` until that is answered."""
 
     def test_mining_go_ahead_spawns_child_lead(self):
         lead = self.create_lead()
@@ -890,7 +911,17 @@ class MiningSpawnTests(WorkflowTestBase):
         self.assertEqual(child.lead_type, Lead.LeadType.MINING)
         self.assertEqual(child.base_code, lead.base_code)
         self.assertEqual(child.assigned_to, lead.assigned_to)
-        self.assertEqual(child.tasks.get().task_no, 1)
+        # Its only task is the flow gate, in the mining marker stage — no BD
+        # stage and no workflow tasks exist yet (R19).
+        self.assertEqual(child.tasks.get().task_no, 0)
+        self.assertEqual(child.tasks.get().stage.stage, "M")
+        self.assertEqual(child.flow_of_tasks, "")
+        self.assertFalse(child.stages.filter(stage="BD").exists())
+
+        self.select_flow(child, owner, Lead.FlowOfTasks.DEFAULT)
+        child.refresh_from_db()
+        self.assertEqual(child.flow_of_tasks, Lead.FlowOfTasks.DEFAULT)
+        self.assertEqual(self.task(child, 1).task_no, 1)
         self.assertTrue(projects.derived_project_id(child).endswith("-M-BD"))
         # Stored project_id snapshots (2026-07-27): each stage/task row carries
         # its own ID string in the DB, matching the per-stage derived value.
@@ -900,7 +931,7 @@ class MiningSpawnTests(WorkflowTestBase):
             projects.project_id_for_stage(child, "BD"),
         )
         self.assertTrue(child_bd_stage.project_id.endswith("-M-BD"))
-        self.assertEqual(child.tasks.get().project_id, child_bd_stage.project_id)
+        self.assertEqual(self.task(child, 1).project_id, child_bd_stage.project_id)
         self.assertIn(
             "Mining",
             ActivityLog.objects.filter(lead=lead, type="lead").latest("id").summary,
@@ -937,6 +968,10 @@ class MiningSpawnTests(WorkflowTestBase):
         )
         self.assertEqual(notes.count(), 2)
         self.assertIn("gone into Mining", notes.first().message)
+        # The alert names the task that actually opened — the flow gate (R19).
+        self.assertIn("Select Flow of Tasks", notes.first().message)
+        self.assertEqual(spawned["first_task_no"], 0)
+        self.assertTrue(spawned["awaiting_flow_selection"])
 
     def test_mining_window_open_is_announced_to_owner_and_managers(self):
         """Task 21 opening (the lead entering its Mining stage) replaces the
@@ -961,6 +996,93 @@ class MiningSpawnTests(WorkflowTestBase):
         res = self.client.get(f"/api/tasks/{task21.id}/")
         self.assertTrue(res.data["is_mining_opportunity"])
         self.assertFalse(self.client.get(f"/api/tasks/{self.task(lead, 22).id}/").data["is_mining_opportunity"])
+
+    def test_spawned_mining_lead_does_not_inherit_the_parents_flow(self):
+        """R19 / the reported bug: a Direct-Proposal parent used to hand its flow
+        to the Mining child, which then entered at Task 16 with Tasks 1–15
+        pre-skipped. The child must instead start on the flow gate with nothing
+        skipped, and run whatever is chosen there — here the full path."""
+        lead = self.create_lead(flow_of_tasks=Lead.FlowOfTasks.DIRECT_PROPOSAL)
+        owner = self.lead_manager
+        self.walk_to_task20_direct(lead, owner)
+        res = self.complete(owner, self.task(lead, 21), self.f21("Yes"))
+
+        child = Lead.objects.get(parent_lead=lead)
+        self.assertEqual(child.flow_of_tasks, "")
+        self.assertEqual([t.task_no for t in child.tasks.all()], [0])
+        spawned = res["spawned_lead"]
+        self.assertEqual(spawned["first_task_no"], 0)
+        self.assertEqual(spawned["first_task_name"], "Select Flow of Tasks")
+        self.assertTrue(spawned["awaiting_flow_selection"])
+
+        self.select_flow(child, owner, Lead.FlowOfTasks.DEFAULT)
+        self.task(child, 1)  # the full path, not the parent's Direct Proposal
+        self.assertFalse(
+            child.tasks.filter(status=Task.Status.SKIPPED).exists(),
+            "the parent's Direct-Proposal skips must not reach the child",
+        )
+
+    def test_flow_selection_answer_drives_the_childs_entry_task(self):
+        """The chosen flow — not the parent's — decides where the child enters:
+        Direct Proposal here, off a DEFAULT parent."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.assertEqual(lead.flow_of_tasks, Lead.FlowOfTasks.DEFAULT)
+        self.walk_to_task20(lead, owner)
+        self.complete(owner, self.task(lead, 21), self.f21("Yes"))
+
+        child = Lead.objects.get(parent_lead=lead)
+        res = self.select_flow(child, owner, Lead.FlowOfTasks.DIRECT_PROPOSAL)
+        child.refresh_from_db()
+
+        self.assertEqual(child.flow_of_tasks, Lead.FlowOfTasks.DIRECT_PROPOSAL)
+        self.assertEqual([t["task_no"] for t in res["opened_tasks"]], [16])
+        self.task(child, 16)
+        for no in range(1, 16):
+            self.assertEqual(self.task(child, no, expect_status=None).status, "skipped")
+        # Answerable from the history: why this Mining lead started at Task 16.
+        self.assertIn(
+            "Direct Proposal",
+            ActivityLog.objects.filter(lead=child, type="lead").latest("id").summary,
+        )
+
+    def test_flow_selection_task_needs_a_valid_flow_before_it_closes(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.walk_to_task20(lead, owner)
+        self.complete(owner, self.task(lead, 21), self.f21("Yes"))
+        child = Lead.objects.get(parent_lead=lead)
+        gate = self.task(child, 0)
+
+        # Nothing chosen → the task stays open and no workflow task exists.
+        self.complete(owner, gate, expect=status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.task(child, 0).id, gate.id)
+        self.assertEqual(child.tasks.count(), 1)
+
+        # An off-list value is rejected at save time — the `choice` option list
+        # is enforced server-side, not merely offered by the UI.
+        self.client.force_authenticate(owner)
+        res = self.client.patch(
+            f"/api/tasks/{gate.id}/",
+            {"extra_fields": {"flow_of_tasks": "NOT_A_FLOW"}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+
+        self.select_flow(child, owner, Lead.FlowOfTasks.SNT_PROPOSAL)
+        child.refresh_from_db()
+        self.assertEqual(child.flow_of_tasks, Lead.FlowOfTasks.SNT_PROPOSAL)
+        self.task(child, 1)
+
+    def test_manually_created_mining_lead_has_no_flow_gate(self):
+        """The gate is for BD→Mining conversions only: a Mining lead created by
+        hand already carries the flow its creator picked, so it starts on the
+        workflow itself."""
+        lead = self.create_lead(
+            lead_type=Lead.LeadType.MINING, flow_of_tasks=Lead.FlowOfTasks.DEFAULT
+        )
+        self.assertEqual([t.task_no for t in lead.tasks.all()], [1])
+        self.assertFalse(lead.tasks.filter(task_no=0).exists())
 
     def test_declined_mining_spawns_nothing_and_alerts_nobody(self):
         lead = self.create_lead(owner=self.other_manager)
@@ -1039,6 +1161,10 @@ class MiningExtensionParallelTests(WorkflowTestBase):
         self.walk_to_task20(lead, owner)
         self.complete(owner, self.task(lead, 21), self.f21("Yes"))
         child = Lead.objects.get(parent_lead=lead)
+        # The child's own path is chosen on its flow gate first (R19); until then
+        # only its ``M`` marker stage is open.
+        self.assertEqual(child.stages.filter(status=LeadStage.Status.IN_PROGRESS).count(), 1)  # M
+        self.select_flow(child, owner, Lead.FlowOfTasks.DEFAULT)
 
         # Open the parent's Extension loop instead of declining it.
         self.complete(owner, self.task(lead, 22), self.f22("Yes"))

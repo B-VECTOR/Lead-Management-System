@@ -80,10 +80,18 @@ def _flow_for(lead, wf):
 
     Extension-type leads use the ``EXTENSION`` entry (Task 22); BD/Mining leads
     use their ``flow_of_tasks`` code (default ``DEFAULT``).
+
+    A BD/Mining lead with **no** ``flow_of_tasks`` yet takes the
+    ``FLOW_SELECTION`` entry instead (R19): only a lead spawned by the Task-21
+    go-ahead reaches here blank — the API requires a flow on every
+    manually-created BD/Mining lead — and its path is chosen months later, on
+    the pre-flow selection task itself.
     """
     flows = (wf.workflow or {}).get("flows", {})
     if lead.lead_type == Lead.LeadType.EXTENSION:
         return flows.get("EXTENSION", {"entry": [22]})
+    if not lead.flow_of_tasks and "FLOW_SELECTION" in flows:
+        return flows["FLOW_SELECTION"]
     key = lead.flow_of_tasks or "DEFAULT"
     return flows.get(key, flows.get("DEFAULT", {"entry": [1]}))
 
@@ -380,24 +388,13 @@ def reassign_owner_tasks(lead, old_owner, new_owner, actor):
     return moved
 
 
-@transaction.atomic
-def start_workflow(lead):
-    """Start a newly-owned lead's workflow at its flow/type entry point (§4.3.1).
+def _enter_flow(lead, wf):
+    """Pre-mark the lead's flow skips and open its entry task(s); returns them.
 
-    Idempotent and guarded: only for an active lead that has an owner and no
-    tasks yet. The entry task(s) and any stages the flow skips are data on the
-    workflow's ``flows`` map (DD1/DD2): BD/Mining leads enter per ``flow_of_tasks``
-    (Task 1, or Task 16 for Direct Proposal), Extension leads at Task 22. The
-    flow's ``skip`` list is pre-marked ``skipped`` for tracker accuracy. Returns
-    the first opened Task, or ``None`` if nothing was started.
+    The entry point of a *flow*, not of a lead's whole life: called at workflow
+    start and again when Task 0's answer resolves a spawned Mining lead's flow
+    (R19), which is why it is separate from :func:`start_workflow`'s guards.
     """
-    if not lead.assigned_to_id or lead.status != Lead.Status.IN_PROGRESS:
-        return None
-    if lead.tasks.exists():
-        return None
-    wf = active_workflow(lead.lead_type)
-    if wf is None:
-        return None
     defs = _task_defs(wf.workflow)
     flow = _flow_for(lead, wf)
     _materialize_skips(lead, defs, flow.get("skip", []))
@@ -407,6 +404,30 @@ def start_workflow(lead):
         if tdef is not None:
             opened.append(open_task(lead, tdef))
     _reconcile_stages(lead, wf)
+    return opened
+
+
+@transaction.atomic
+def start_workflow(lead):
+    """Start a newly-owned lead's workflow at its flow/type entry point (§4.3.1).
+
+    Idempotent and guarded: only for an active lead that has an owner and no
+    tasks yet. The entry task(s) and any stages the flow skips are data on the
+    workflow's ``flows`` map (DD1/DD2): BD/Mining leads enter per ``flow_of_tasks``
+    (Task 1, or Task 16 for Direct Proposal), Extension leads at Task 22, and a
+    Mining lead spawned off Task 21 — which has no flow yet — at the pre-flow
+    selection task (Task 0, R19). The flow's ``skip`` list is pre-marked
+    ``skipped`` for tracker accuracy. Returns the first opened Task, or ``None``
+    if nothing was started.
+    """
+    if not lead.assigned_to_id or lead.status != Lead.Status.IN_PROGRESS:
+        return None
+    if lead.tasks.exists():
+        return None
+    wf = active_workflow(lead.lead_type)
+    if wf is None:
+        return None
+    opened = _enter_flow(lead, wf)
     return opened[0] if opened else None
 
 
@@ -451,6 +472,14 @@ def _validate_scalar(field, value):
     elif ftype == "boolean":
         if value not in ("Yes", "No"):
             return "Select Yes or No."
+    elif ftype == "choice":
+        # R18: a fixed option list in the workflow data (e.g. Task 21's flow for
+        # the Mining lead it spawns). An empty/absent ``options`` list accepts
+        # anything rather than rejecting everything — a mis-seeded workflow
+        # shouldn't make its task uncloseable.
+        allowed = [o.get("value") for o in field.get("options", [])]
+        if allowed and value not in allowed:
+            return "Select one of the listed options."
     return None
 
 
@@ -691,33 +720,64 @@ def _apply_on_close(task, tdef, user):
 # --- Mining spawn (R6, PRD §5.3.1, §13; TR row 21) --------------------------
 
 
-def _spawn_mining_lead(parent, user):
+def _choice_label(field, value):
+    """The display label for a ``choice`` field's stored value (R19)."""
+    for option in (field or {}).get("options", []):
+        if option.get("value") == value:
+            return option.get("label", value)
+    return value
+
+
+def _spawn_mining_lead(task, user):
     """Task 21 "go-ahead = Yes": spawn + start the Mining child lead, notify
     its owner and the parent's managers, and log the event on both lead rows.
 
     Called from the matched routing rule's ``spawn_lead`` flag (not an
     ``on_close`` hook — it is conditional on the answer, which routing already
     evaluates) — see :func:`complete_task`.
+
+    The child is spawned with **no** ``flow_of_tasks`` (R19), so it starts on the
+    pre-flow selection task (Task 0) rather than on a path copied from the
+    parent: the mining project only begins months from now, and nobody can name
+    its flow at go-ahead time. Which task that is comes from
+    :func:`start_workflow`, not from an assumption here.
     """
+    parent = task.lead
     child = projects.spawn_mining_lead(parent, user)
-    start_workflow(child)
+    # ``start_workflow`` usually returns None here: setting the child's owner
+    # inside ``spawn_mining_lead`` already fired the workflow-start signal
+    # (leads/signals.py), and it is idempotent. So fall back to reading the
+    # entry task off the child — excluding any ``skipped`` rows the flow
+    # pre-materialized, which are created *before* the entry task and would
+    # otherwise sort first.
+    first_task = start_workflow(child) or (
+        child.tasks.exclude(status=Task.Status.SKIPPED).order_by("id").first()
+    )
+    # Transient, for the API layer's ``spawned_lead`` payload.
+    child.entry_task = first_task
     child_project_id = projects.derived_project_id(child)
     events.log_activity(
         parent,
         user,
         "lead",
         f"Mining opportunity approved — spawned a new Mining lead (#{child.id}, "
-        f"{child_project_id})",
+        f"{child_project_id}); its flow of tasks is still to be selected",
     )
     events.log_activity(
         child,
         user,
         "lead",
-        f"Spawned from parent lead #{parent.id} (Task 21 go-ahead)",
+        f"Spawned from parent lead #{parent.id} (Task 21 go-ahead) — "
+        f"awaiting flow-of-tasks selection",
+    )
+    opened_at = (
+        f"Task {first_task.task_no} ({first_task.task_name})"
+        if first_task is not None
+        else "its first task"
     )
     message = (
         f"“{parent.company_name} — {parent.project_name}” has gone into Mining — "
-        f"a new Mining lead ({child_project_id}) is open at Task 1."
+        f"a new Mining lead ({child_project_id}) is open at {opened_at}."
     )
     link = events.lead_link(child)
     if child.assigned_to_id:
@@ -735,6 +795,42 @@ def _spawn_mining_lead(parent, user):
         exclude=[child.assigned_to_id],
     )
     return child
+
+
+# --- Flow-of-tasks selection (R19, Task 0) ----------------------------------
+
+
+def _apply_flow_selection(task, tdef, wf, user):
+    """Close-time effect of the pre-flow selection task (``selects_flow_of_tasks``).
+
+    Writes the chosen flow onto the lead, then **enters** it — the successors are
+    the newly-resolved flow's ``entry`` list plus its pre-marked ``skip`` rows,
+    which no routing rule could name (the answer is given in the same breath).
+    Returns the opened tasks so :func:`complete_task` can hand them back like any
+    other successor set.
+    """
+    lead = task.lead
+    key = (tdef.get("selects_flow_of_tasks") or {}).get("field_key", "flow_of_tasks")
+    chosen = (task.extra_fields or {}).get(key)
+    # ``assert_closable`` already enforced "required" + the ``choice`` option
+    # list; this guards the remaining case — a workflow seeded with an option
+    # that is not a real Lead.FlowOfTasks value, which would otherwise leave the
+    # lead blank and re-enter the selection flow forever.
+    if chosen not in {code for code, _ in Lead.FlowOfTasks.choices}:
+        raise serializers.ValidationError(
+            {key: "Select a valid flow of tasks before completing this task."}
+        )
+    field = next((f for f in tdef.get("extra_fields", []) if f.get("key") == key), None)
+    lead.flow_of_tasks = chosen
+    lead.save(update_fields=["flow_of_tasks", "updated_at"])
+    events.log_activity(
+        lead,
+        user,
+        "lead",
+        f"Flow of tasks selected: “{_choice_label(field, chosen)}” — the workflow "
+        f"starts on this path",
+    )
+    return _enter_flow(lead, wf)
 
 
 # --- Finance gates + task re-open + auto-drop (R4, PRD §5.5/§5.10) ----------
@@ -884,6 +980,13 @@ def complete_task(task, user):
         _reconcile_stages(task.lead, wf)
         return []
 
+    # Flow-of-tasks selection (R19, Task 0): the answer *is* the routing — it
+    # sets the lead's flow and opens that flow's entry task(s). An early return
+    # like the gate bounce above, since the successors come from the flow map
+    # rather than from this task's (empty) routing rules.
+    if tdef.get("selects_flow_of_tasks"):
+        return _apply_flow_selection(task, tdef, wf, user)
+
     rule = _matched_route(tdef, values)
 
     # Auto-drop (§5.5): a matched routing rule may carry a ``lead_status`` side
@@ -910,7 +1013,7 @@ def complete_task(task, user):
         # the API layer can tell the person who just answered "Yes" that the
         # lead has gone into Mining, in the same response — their own bell
         # notification would otherwise only surface on the next poll.
-        task.spawned_mining_lead = _spawn_mining_lead(task.lead, user)
+        task.spawned_mining_lead = _spawn_mining_lead(task, user)
 
     # flow_of_tasks entry edges + skip-filtering (D6). An ``edges`` entry for this
     # task overrides its default ``open`` list (e.g. SnT flow routes Task 2 → 9,

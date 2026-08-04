@@ -22,6 +22,7 @@ This is a structural rework, not an increment. The major changes:
 - **Lead status simplified** to `In Progress / Hold / Dropped / Completed`. **`Hybernation` and `Short Closed` are removed.** Short-close remains as an action that routes to closure and ends as `Completed`.
 - **Completion is Finance-gated:** the lead becomes `Completed` only when **both** Task 27 and Task 28 close.
 - **Automatic drop** from Task 8 ("Go-ahead = No") — Tasks 6 & 7 remain open on such a drop.
+- **Added 2026-08-04 (post-v17.0):** a **pre-flow step, Task 0 "Select Flow of Tasks"** — the one task outside the 1–28 table. A Mining lead spawned by a Task-21 go-ahead is created with **no `flow_of_tasks`** (it no longer inherits the parent's) and opens Task 0 instead; answering it writes the flow onto the lead and *then* opens that flow's real entry task. Rationale, per the user: the mining project begins months after the go-ahead, so nobody can name its path at conversion time. See §4.3.4, §5 (Task 0). Also adds a **`choice`** extra-field type (§4.6) — a workflow-supplied option list, validated server-side.
 
 ### Retained from prior versions
 Global validation rules (§3), audit columns on every table (§4.0), Django-Groups role storage, reference tables with `active/inactive` status, hold/unhold with optional remarks and the Hold Items menu, the Leads Tracker column and header filters, follow-ups open to anyone who can view a lead, and the configurable date-offset trigger job. These are unchanged except where the new stage/task model touches them.
@@ -149,7 +150,7 @@ One row per **project cycle**: the original lead, plus a **new row for each Mini
 | scope | text | No | |
 | assigned_to | FK → users, nullable | Yes for Lead-Manager-created; NULL for Marketing-created | "Default BD Person" throughout the workflow = this field. No "Not Assigned" value is stored; NULL means unassigned. |
 | lead_type | dropdown (`BD`/`Extension`/`Mining`) | Yes | macro entry point (§4.3.4) |
-| flow_of_tasks | dropdown (4 options) | Yes | which stages run (§4.3.4). Applies to BD/Mining; ignored for Extension. |
+| flow_of_tasks | dropdown (4 options) | Yes — **except a Task-21-spawned Mining lead** | which stages run (§4.3.4). Applies to BD/Mining; ignored for Extension. **Blank 2026-08-04:** a Mining lead spawned off Task 21 is created with this **empty** — the API still requires it on every manually-created BD/Mining lead, so "blank" reliably means "spawned, flow not yet decided" and routes the lead to the pre-flow selection task (Task 0). The lead edit form hides the field while that is pending, so an unrelated edit cannot write a flow behind the task's back. |
 | type_of_project | dropdown (6 options) | Yes | reporting/filter label — does not affect the task path — **and** a Project ID segment via its code (§13.4). Options: Consulting Full Fledged, AMC, Upgrade, Vectorflow Lite, Audit only, Consulting Lite + No software. |
 | status | dropdown | Auto | `In Progress` / `Hold` / `Dropped` / `Completed` (§4.3.2) |
 | lead_start_dt | date/timestamp | Auto | when the lead/cycle was created (lifecycle start) |
@@ -162,7 +163,7 @@ One row per **project cycle**: the original lead, plus a **new row for each Mini
 #### 4.3.1 Marketing-sourced leads & workflow start
 - Marketing adds a lead with `assigned_to` hidden; on save it is NULL and no Task 1 opens.
 - Marketing can view/edit their created leads (all fields except `assigned_to`) at any time.
-- Lead Admin assigns an owner to a Not-Assigned lead; that assignment **starts the workflow** (opens Task 1 — or Task 16 for the Direct Proposal flow).
+- Lead Admin assigns an owner to a Not-Assigned lead; that assignment **starts the workflow** (opens Task 1 — or Task 16 for the Direct Proposal flow, or Task 0 for a lead with no flow yet, §4.3.4).
 - **Workflow-start trigger:** `assigned_to` transitioning `NULL → user` (signal/hook), not merely lead creation.
 
 #### 4.3.2 Status Flow
@@ -187,8 +188,10 @@ One row per **project cycle**: the original lead, plus a **new row for each Mini
 | Type | Entry |
 |---|---|
 | BD | Task 1, shaped by Flow of tasks |
-| Mining | Task 1 with `-M` marker (§13); a Mining lead row is created off a parent via Task 21 |
+| Mining | Task 1 with `-M` marker (§13), shaped by Flow of tasks — **but** a Mining lead row created off a parent via Task 21 enters at **Task 0** (below) to choose that flow first |
 | Extension | Enters at Task 22 (Extension Proposal); Flow of tasks not applied |
+
+**Pre-flow selection (Task 0)** — added 2026-08-04. A BD/Mining lead whose `flow_of_tasks` is **blank** — only ever a Task-21-spawned Mining lead — enters at **Task 0 "Select Flow of Tasks"** instead of at a flow entry point. The condition is the blank flow, not the lead type or the presence of `parent_lead_id`, so a lead that already has an answer can never reach the gate. Task 0 is assigned to the lead's Default BD Person, sits in the `M` stage the child already opened (its *real* first stage isn't known until the answer — Direct Proposal starts at Task 16, in `SnT`), has **no trigger** and waits indefinitely: the premise is that the answer arrives whenever the mining project firms up, months later. Closing it writes the chosen flow to `lead.flow_of_tasks`, logs it, pre-marks that flow's skips, and opens its entry task(s) — the same code path a normal workflow start uses. Holds and follow-ups work on it like any other task.
 
 **Flow of tasks** (BD/Mining):
 
@@ -199,7 +202,7 @@ One row per **project cycle**: the original lead, plus a **new row for each Mini
 | 3 · Direct Proposal | **skipped** | skipped | skipped | opens at Task 16 |
 | 4 · SnT → Proposal | open | skipped | open | open |
 
-Skipped stages have their tasks set to `skipped` at creation so the tracker and path stay accurate. In-flow branch questions (Tasks 8, 12, 13) still operate for the paths that reach them.
+Skipped stages have their tasks set to `skipped` at creation so the tracker and path stay accurate. In-flow branch questions (Tasks 8, 12, 13) still operate for the paths that reach them. For a lead that came through Task 0, "at creation" means *when Task 0 closes* — nothing is pre-skipped before the flow is known.
 
 ### 4.4 `lead_stage`
 
@@ -223,7 +226,7 @@ The extension loop counter is encoded in the stage value: the **first** extensio
 | Field | Type | Notes |
 |---|---|---|
 | id | auto (PK) | |
-| task_no | integer | **canonical workflow step 1–28** (drives skip/tracker/routing logic) |
+| task_no | integer | **canonical workflow step 1–28** (drives skip/tracker/routing logic), plus **0** for the pre-flow selection task (§4.3.4, added 2026-08-04) — numbered 0 because it runs *before* the flow it selects, leaving the 1–28 numbering a 1:1 map of §5 |
 | task_name | text | from workflow JSON |
 | stage_id | FK → `lead_stage` | **always set** — every task belongs to a stage |
 | project_id | text | **stored display snapshot** copied from the task's stage when it opens (decision 2026-07-27). Display only — **never a join key** (§13). |
@@ -243,6 +246,8 @@ The extension loop counter is encoded in the stage value: the **first** extensio
 ### 4.6 `task_extra_fields` (per-task dynamic fields)
 
 Task-specific fields (dates, numerics, fee blocks, stakeholder rows, invoice rows) are stored as structured JSON per task instance, keyed by field name, since the field set differs per task and repeatable row-groups (e.g. "Name | Role x3 + add more", "Invoice No / Value / Date x3 + add more") need a flexible schema. A per-task JSON schema in `workflows` drives form rendering. All numeric/date values obey §3.
+
+**Field types:** `text`, `number`, `date`, `boolean` (Yes/No), **`choice`** (added 2026-08-04 — a fixed `options: [{value, label}]` list carried in the workflow JSON; the submitted value must be one of the option values, enforced server-side at close, and renders as a Select), and `rowgroup` (repeatable rows with a `columns` list + `min_rows`). Every field is mandatory unless it carries `required: false`; a `required_when: {field, equals}` field is shown *and* required only once its controller field holds that value.
 
 ### 4.7 `resource_allocation` (append-only allocation history)
 
@@ -332,8 +337,11 @@ For tasks that open "X days/weeks/months before/after a date captured earlier" (
 
 Authoritative sequence, transcribed from `lms_updated_wf.csv`. Encode as the `workflows.workflow` JSON seed. **"Shailesh" = Resource Manager; "Accounts (Abhay)" = Finance.** Allocation-task assignees marked "Shailesh + Default BD" have **two assignees**; either can complete the allocation.
 
+**Task 0** below is *not* from the workflow sheet — it is the pre-flow selection step added 2026-08-04 (§4.3.4), reached only by a Mining lead spawned off Task 21. The sheet's 1–28 numbering is untouched.
+
 | # | Task | Assigned To | Stage | Checklist | Extra Fields / Branch | Notes |
 |---|---|---|---|---|---|---|
+| **0** | **Select Flow of Tasks** *(not a sheet row — added 2026-08-04)* | Default BD Person | `M` (the mining marker stage the child opened at creation) | 0.1 Flow of tasks for this mining project decided | **Flow of tasks for this mining project** — a `choice` field (§4.6) whose options are the four §4.3.4 flows, mandatory. | Opens **only** for a lead whose `flow_of_tasks` is blank — i.e. a Mining lead spawned by Task 21. **No trigger:** it opens with the lead and waits indefinitely (the mining project starts months later). No routing rules of its own — closing it writes the answer to `lead.flow_of_tasks`, pre-marks that flow's skips, and opens the flow's entry task(s) (Task 1, or Task 16 for Direct Proposal). An option that isn't a valid flow code is refused. |
 | 1 | Introduction and First Meeting | Default BD Person | BD | 1.1 Vector's Intro Email · 1.2 Intro presentation to decision maker | Key stakeholder contact (Name·Role ×3 + add more); **Is 2HR study agreed?** If Yes → open Task 2 | First task; opens on `assigned_to` set (§4.3.1). Skipped when Flow = Direct Proposal. |
 | 2 | 2HR Study Agreement | Default BD Person | BD | 2.1 Area of work / objective agreed | Expected start date of next stage; **Is manpower support required from the resource-allocation team?** If **Yes** → capture Manpower (PM + additional; Brown = number, White = number) and **open Task 3 against Shailesh**. If **No** → skip Task 3. | Conditional allocation branch. |
 | 3 | 2Hr Study & Presentation Team Allocation | Shailesh and/or Default BD Person | 2HR | *allocation task* | Execution Red; Execution Brown; White; Project Member 1–10 *(RM-only, optional)* | Opens per trigger-config (X weeks before Task 2's expected start). **Only opens if Task 2 manpower = Yes.** Creates `resource_allocation` rows (2HR). |
@@ -354,7 +362,7 @@ Authoritative sequence, transcribed from `lms_updated_wf.csv`. Encode as the `wo
 | 18 | Project Auditor Allocation | Shailesh + Default BD Person | Implementation | *allocation task* | Auditor 1; Auditor 2; Auditor 3; Auditor 4 *(3–4 RM-only, optional)* | **Hanging task** — non-blocking; can be completed in parallel and does not hold up the sequence. Opens with Task 17's trigger. **`auto_close_when_staffed`:** if both auditors were already allocated in advance (while pending), it closes itself the moment it opens. *Add to Sutradhar — deferred.* |
 | 19 | Project Initiation | Default BD Person | Implementation | 19.1 Email sent to initiate Project | — | |
 | 20 | Implementation | Execution Red (from Task 17) | Implementation | 20.1 Handover & Engagement Start · 20.2 PO from Customer · 20.3 First Fixed fee invoice raised · 20.4 Agreement/Contract · 20.5 Variable Parameter Finalisation · 20.6 Variable Baseline Sign-off · 20.7 Addendum Agreement · 20.8 Expected variable fee over eligible period submitted | Actual Engagement Start Date; Duration (months) *(prefilled & editable from Task 16)*; Modified Planned Engagement End Date (auto = actual start + duration); Fixed Fee + Variable Fee Caps (Total/Milestone/Performance) *(prefilled & editable from Task 16)*; Actual Fixed fee invoice date; Variable Fee Start Date | Resource occupancy: project (shown until Task 27). **On open, give Shailesh short-close access** (§9.2) — held for the rest of the engagement. **On close:** create the `project_details` cycle row (stage `IM`) and enable the downstream Mining (Task 21) and Extension (Task 22) triggers. |
-| 21 | Exploit Mining Opportunities | Default BD Person | BD (Mining origin) | 21.1 Visit to client location · 21.2 Discussion with key stakeholders · 21.3 Area for improvement identified · 21.4 Pitch Proposal to Client? | **Is client go-ahead received for a new project?** Yes → **spawn a new lead row (same `base_code`, `parent_lead_id` = this lead), open a `-M` Mining cycle, and start a fresh BD flow from Task 1**. No → close task. | Opens X months after Task 20's engagement start (Y months if Task 20 duration < 6 months). Mining stage is `M` until 2HR starts. **Runs in parallel with any Extension.** |
+| 21 | Exploit Mining Opportunities | Default BD Person | BD (Mining origin) | 21.1 Visit to client location · 21.2 Discussion with key stakeholders · 21.3 Area for improvement identified · 21.4 Pitch Proposal to Client? | **Is client go-ahead received for a new project?** Yes → **spawn a new lead row (same `base_code`, `parent_lead_id` = this lead), open a `-M` Mining cycle, and start its own cycle** — ~~a fresh BD flow from Task 1~~ **corrected 2026-08-04:** the child is spawned with **no `flow_of_tasks`** and opens **Task 0** (§4.3.4), which asks for its flow; the flow is **not** inherited from the parent and **not** asked here. No → close task. | Opens X months after Task 20's engagement start (Y months if Task 20 duration < 6 months). Mining stage is `M` until 2HR starts. **Runs in parallel with any Extension.** The bug this fixed: a Direct-Proposal parent spawned a child that also pre-skipped Tasks 1–15. The flow is asked on the child, not here, because at go-ahead time the mining project is still months away. Both leads' activity logs record the spawn as awaiting selection; the API's spawn payload reports the entry task + `awaiting_flow_selection`. |
 | 22 | Extension Proposal | Default BD Person / Execution Red | Extension | 22.1 Discussion with client stakeholders · 22.2 Identify area of extension · 22.3 Solution design & preparation · 22.4 Pitch Extension proposal | **Extension approved?** Yes → Task 23. No → Task 27. | Opens X months before the engagement end date from **Task 20 or Task 26** (extension-of-extension). Entry point for Type = Extension. |
 | 23 | Extension Detail | Execution Red | Extension | 23.1 Addendum Agreement · 23.2 Expected variable fee over eligible period submitted | Extended Engagement Start Date; Period (months); Planned Ext. Engagement End Date (auto); Fixed Fee (blocks per period-month) — *if a resource is engaged beyond the planned end date, allow **zero** fee to keep them engaged*; Total/Milestone/Performance Variable Fee Cap; Manpower (Brown, White) | Opens if Task 22 = Yes. |
 | 24 | Project Extension Team Allocation | Shailesh + Default BD Person | Extension | *allocation task* | Execution Red; Execution Brown; White; Project Member 1–10 *(RM-only, optional)* | Creates `resource_allocation` (Extension), prefilled from the previous cycle. |
@@ -365,6 +373,7 @@ Authoritative sequence, transcribed from `lms_updated_wf.csv`. Encode as the `wo
 
 **Cross-cutting rules**
 - "Default BD Person" = `lead.assigned_to`.
+- No task numbers are hardcoded in the engine — entry points, skips, stages, routing and trigger hints are all data in the workflow JSON. Task 0 follows the same rule: it is reached via a `FLOW_SELECTION` entry in the flow map, and its close-time effect is a marker on the task definition, not a special case keyed on the number 0.
 - Allocation tasks (3, 10, 17, 18, 24, 25) have no checklist — status only until the Resource Manager (with the BD co-assignee) submits the allocation, which closes the task and opens the next, assigning it to the selected Execution Red. Task 18 is the one exception: staffed in advance, it closes itself on opening (`auto_close_when_staffed`, §4.7).
 - Manpower captured upstream (Tasks 2, 9, 16, 23) is the reference count for the over/under-allocation indicators.
 - All numeric fields ≥ 0; all date fields no-past-date (§3).
@@ -570,3 +579,5 @@ India (IN), Indonesia (ID). Maintained in the Django admin like the other refere
 1. **Final Project ID format** — you noted you'll finalize the exact composition; §13 captures the working model.
 2. **Primary-Domain rule** — with multi-select Domain, which selected Area supplies the Project ID's Area code (working assumption: first-selected/primary).
 3. **Type of Project** — currently a pure label; if any option (e.g. "Audit only") should run a reduced task path, that variation isn't defined yet.
+4. **Does a spawned Mining lead inherit the parent's `type_of_project`?** It currently does, and only the *flow of tasks* was decoupled on 2026-08-04. `type_of_project` is a Project ID segment (§13.4) and the child deliberately shares the parent's `base_code`, so changing it would change the child's ID — flagged rather than changed.
+5. **Mining leads spawned before 2026-08-04** carry a flow copied from their parent and have no Task 0 to correct it. There is no safe automatic repair (the right flow is a per-lead human judgement), so no data migration was written — the flow on those rows needs a manual review.

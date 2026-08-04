@@ -1,4 +1,5 @@
-"""Authoritative 28-task workflow definition (Tech Req §5 / PRD §5.3–5.6).
+"""Authoritative workflow definition — TR §5's 28 tasks plus the pre-flow
+Task 0 (Tech Req §5 / PRD §5.3–5.6).
 
 This is the *source* of the ``workflows.workflow`` JSON that the engine walks.
 It is intentionally plain data (no logic) so it can be seeded into the DB and
@@ -10,6 +11,11 @@ tasks. Mining/Extension leads run the *same* graph, entered at a different task
 via the per-flow / per-type ``entry`` list (see ``WORKFLOW["flows"]``). No task
 numbers are hardcoded in the engine — routing, skips, stages, entry edges and
 trigger hints are all data here.
+
+**R19** prepends **Task 0 "Select Flow of Tasks"** — not a TR §5 row, and only
+ever reached by a lead the Task-21 go-ahead spawned (see the ``FLOW_SELECTION``
+flow). It is numbered 0 because it runs *before* the flow it selects; the 1–28
+numbering stays aligned with the TR table.
 
 Top-level keys
 --------------
@@ -75,7 +81,12 @@ Per-task keys
   stage so the loop-back to Task 22 opens the *next* one.
 - ``spawn_lead`` (Task 21's matched routing rule, not ``on_close`` — it's
   conditional on the answer): spawns + starts a fresh Mining lead sharing this
-  lead's ``base_code`` (§5.3.1/§13, ``engine._spawn_mining_lead``).
+  lead's ``base_code`` (§5.3.1/§13, ``engine._spawn_mining_lead``). The child is
+  spawned with no ``flow_of_tasks``, so it starts on Task 0 (R19).
+- ``selects_flow_of_tasks`` (Task 0 only, R19): ``{"field_key": …}`` — closing
+  the task writes that answer to ``Lead.flow_of_tasks`` and then enters the
+  chosen flow (``engine._apply_flow_selection`` → ``_enter_flow``), instead of
+  routing to a successor of its own.
 - ``grants_short_close`` (Tasks 20 and 26): once any instance of this task has
   opened, short-close (§9.2/§5.12) becomes available on the lead — see
   ``engine.can_short_close``. Task 20 carries it as well as 26 (user, 2026-07-30)
@@ -91,8 +102,10 @@ Per-task keys
   two-rule variant). Seeded into ``WorkflowTriggerConfig`` (§4.12, D8).
 - ``checklist``: ``[{"key","label"}, …]`` — every item must be ``complete`` to close.
 - ``extra_fields``: dynamic fields — ``key``, ``label``, ``type`` (``text`` |
-  ``number`` | ``date`` | ``boolean`` | ``rowgroup``), ``required`` (default
-  every field true per D9), optional ``required_when`` (``{field, equals}``), and
+  ``number`` | ``date`` | ``boolean`` | ``choice`` | ``rowgroup``), ``required``
+  (default every field true per D9), optional ``required_when``
+  (``{field, equals}``), for ``choice`` an ``options`` list
+  (``[{"value","label"}, …]`` — the stored value must be one of them), and
   for ``rowgroup`` a ``columns`` list + ``min_rows``. Global rules (§3) apply.
 - ``routing``: ordered rules evaluated on close. Each: optional ``when`` (a single
   ``{field, equals}`` or a **list** AND-ed together), ``open`` (successor
@@ -125,6 +138,19 @@ _TEAM_ALLOCATION_SLOTS = [
 ] + [f"project_member_{n}" for n in range(1, 11)]
 
 _AUDITOR_ALLOCATION_SLOTS = ["auditor_1", "auditor_2", "auditor_3", "auditor_4"]
+
+
+# Flow-of-tasks options offered on the pre-flow selection task (Task 0, R19).
+# Values must match ``Lead.FlowOfTasks`` and the keys of ``WORKFLOW["flows"]``
+# below; mirrored here rather than imported for the same reason as the
+# allocation slots above — this module is plain data, loaded before the app
+# registry in some paths.
+_FLOW_OF_TASKS_OPTIONS = [
+    {"value": "DEFAULT", "label": "2HR → SnT → Proposal (default)"},
+    {"value": "2HR_PROPOSAL", "label": "2HR → Project Proposal"},
+    {"value": "DIRECT_PROPOSAL", "label": "Direct Proposal"},
+    {"value": "SNT_PROPOSAL", "label": "SnT → Project Proposal"},
+]
 
 
 # Reused column set for the "Name | Role" stakeholder row-groups.
@@ -201,8 +227,43 @@ BD_WORKFLOW = {
         # Extension is a lead_type (flow_of_tasks is cleared for it); it enters
         # directly at the Extension Proposal (Task 22). §4.3.4 / D10.
         "EXTENSION": {"entry": [22]},
+        # R19: a BD lead that converted to Mining (Task 21 go-ahead) is spawned
+        # with **no** flow_of_tasks — its own project starts months later, so
+        # which path it runs isn't knowable at conversion time. Such a lead
+        # enters at the pre-flow selection task (Task 0), whose answer sets
+        # ``flow_of_tasks`` and *then* enters the flow above
+        # (``engine._apply_flow_selection``). Reached via ``engine._flow_for``
+        # on a blank flow rather than by a lead-type check.
+        "FLOW_SELECTION": {"entry": [0]},
     },
     "tasks": [
+        # ---- Pre-flow (0): mining flow selection (R19) ---------------------
+        {
+            "task_no": 0,
+            "name": "Select Flow of Tasks",
+            # The mining marker stage the child already opened at creation —
+            # deliberately not "BD": the project's real first stage isn't known
+            # until this task is answered (Direct Proposal starts at Task 16, in
+            # SnT).
+            "stage": "M",
+            "assignee": "default_bd_person",
+            # Marks this as the flow gate: closing it writes the answer to
+            # ``Lead.flow_of_tasks`` and opens the chosen flow's entry task(s).
+            # ``routing`` is therefore empty — no rule can name a successor that
+            # depends on an answer given in the same breath.
+            "selects_flow_of_tasks": {"field_key": "flow_of_tasks"},
+            "checklist": _cl(("0.1", "Flow of tasks for this mining project decided")),
+            "extra_fields": [
+                {
+                    "key": "flow_of_tasks",
+                    "label": "Flow of tasks for this mining project",
+                    "type": "choice",
+                    "options": _FLOW_OF_TASKS_OPTIONS,
+                    "required": True,
+                },
+            ],
+            "routing": [{"open": []}],
+        },
         # ---- BD stage (1–2) ------------------------------------------------
         {
             "task_no": 1,
@@ -612,11 +673,14 @@ BD_WORKFLOW = {
                 {"key": "mining_go_ahead", "label": "Is client go-ahead received for a new project?", "type": "boolean", "required": True},
             ],
             # R6: "Yes" spawns a fresh Mining lead (same base_code, parent_lead
-            # set, its own BD cycle from Task 1) — the ``spawn_lead`` flag on
-            # the matched rule, not an on_close hook, since it's conditional on
-            # the answer (engine.complete_task). Leaf either way. Opens X months
-            # after Task 20's engagement start (two-rule per the shorter offset
-            # when duration < 6 months — trigger config, D8).
+            # set, its own cycle) — the ``spawn_lead`` flag on the matched rule,
+            # not an on_close hook, since it's conditional on the answer
+            # (engine.complete_task). Leaf either way. R19: the child starts on
+            # Task 0, which asks for its flow of tasks — that is *not* asked
+            # here, because the mining project begins months later and the path
+            # isn't knowable at go-ahead time. Opens X months after Task 20's
+            # engagement start (two-rule per the shorter offset when duration <
+            # 6 months — trigger config, D8).
             "trigger": {
                 "reference_task_no": 20,
                 "reference_field_key": "actual_start_date",

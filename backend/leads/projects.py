@@ -253,9 +253,16 @@ def spawn_mining_lead(parent, user, *, when=None):
     Shares the parent's ``base_code`` (so both Project IDs read as the same
     engagement, distinguished by the ``-M`` marker, §13) and is linked back via
     ``parent_lead``. Copies the parent's classification/ownership so the child
-    can start a fresh BD cycle from Task 1 immediately — it opens its own ``M``
-    stage (via :func:`initialize_new_lead`) that runs independently until its
-    own 2HR study starts, in parallel with any open Extension on the parent.
+    can start its own cycle immediately — it opens its own ``M`` stage (via
+    :func:`initialize_new_lead`) that runs independently until its own 2HR study
+    starts, in parallel with any open Extension on the parent.
+
+    ``flow_of_tasks`` is left **blank** (R19), the one case where a BD/Mining
+    lead has no flow: the mining project begins months from now, so its path is
+    chosen later, on the pre-flow selection task the blank flow routes it to
+    (``engine._flow_for`` → ``FLOW_SELECTION``). It is deliberately *not* copied
+    from the parent — that silently forced e.g. a Direct-Proposal parent's child
+    to skip Tasks 1–15.
     """
     # ``assigned_to`` is set *after* ``initialize_new_lead`` below, not at
     # creation — assigning an owner at creation fires the workflow-start signal
@@ -278,7 +285,7 @@ def spawn_mining_lead(parent, user, *, when=None):
         division=parent.division,
         scope=parent.scope,
         lead_type=Lead.LeadType.MINING,
-        flow_of_tasks=parent.flow_of_tasks or Lead.FlowOfTasks.DEFAULT,
+        flow_of_tasks="",  # chosen on Task 0, not inherited (R19)
         type_of_project=parent.type_of_project,
         status=Lead.Status.IN_PROGRESS,
         created_by=user,

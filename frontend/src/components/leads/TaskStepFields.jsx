@@ -16,7 +16,8 @@ import { useSaveTaskDraft } from '@/hooks/useTasks'
 
 // Renders a task's dynamic extra fields from the backend `field_schema`
 // (Tech Req §4.6). Field types: text / number / date / boolean (Yes/No) /
-// rowgroup (repeatable rows). A field carrying `required_when` is shown only
+// choice (a workflow-supplied `options` list) / rowgroup (repeatable rows).
+// A field carrying `required_when` is shown only
 // once its controller field holds the required value (e.g. Task 5's fee /
 // manpower fields appear once "Is Solution Blueprint required?" = Yes).
 // "Save" is the workflow's Save-as-Draft — it persists values without closing.
@@ -46,13 +47,21 @@ function ScalarInput({ field, value, disabled, onChange }) {
       </div>
     )
   }
-  if (field.type === 'boolean') {
+  if (field.type === 'boolean' || field.type === 'choice') {
+    // `choice` carries its own option list from the workflow data (e.g. Task
+    // 21's flow of tasks for the Mining lead it spawns); `boolean` is the
+    // fixed Yes/No pair.
+    const options =
+      field.type === 'choice'
+        ? field.options || []
+        : [{ value: 'Yes', label: 'Yes' }, { value: 'No', label: 'No' }]
     return (
       <Select value={value || undefined} onValueChange={(v) => v && onChange(v)} disabled={disabled}>
         <SelectTrigger className="w-full"><SelectValue placeholder="Select…" /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="Yes">Yes</SelectItem>
-          <SelectItem value="No">No</SelectItem>
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value}>{o.label || o.value}</SelectItem>
+          ))}
         </SelectContent>
       </Select>
     )

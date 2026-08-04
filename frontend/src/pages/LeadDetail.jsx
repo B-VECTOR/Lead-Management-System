@@ -336,7 +336,12 @@ export default function LeadDetail() {
               <InfoRow label="Lead type" value={lead.lead_type} />
               <InfoRow label="Type of project" value={lead.type_of_project || '—'} />
               {lead.lead_type !== 'Extension' && (
-                <InfoRow label="Flow of tasks" value={lead.flow_of_tasks || '—'} />
+                <InfoRow
+                  label="Flow of tasks"
+                  // Blank means the flow gate (Task 0) hasn't been answered yet —
+                  // only ever true for a Mining lead spawned off Task 21 (R19).
+                  value={lead.flow_of_tasks || 'Not selected yet'}
+                />
               )}
             </CardContent>
           </Card>
