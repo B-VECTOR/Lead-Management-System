@@ -13,7 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import engine, events, holds, projects, resources
+from . import analytics, engine, events, holds, projects, resources
 from .models import (
     ActivityLog,
     Attachment,
@@ -1398,90 +1398,42 @@ class NotificationClearReadView(APIView):
         return Response({"deleted": deleted})
 
 
-# --- Leads-funnel dashboard (Phase 8, PRD §6) ------------------------------
+# --- Role dashboards (Phase 8, rebuilt in R20 — PRD §6) ---------------------
+#
+# One endpoint per module, each gated by the permission class that already owns
+# that module (DD-R20-1). The aggregation itself lives in `analytics.py`; these
+# views are the gate and the envelope.
 
-class DashboardView(LeadQuerysetMixin, APIView):
-    """Leads-funnel aggregation for the landing dashboard (PRD §6).
 
-    Scope follows lead visibility: a Lead Admin's funnel spans every lead, a
+class DashboardView(APIView):
+    """Leads analytics for the landing dashboard (PRD §6).
+
+    Scope follows lead visibility: a Lead Admin's numbers span every lead, a
     Lead Manager's / Marketing's their own — the §6 "own vs all leads-funnel"
-    rows. Users with no lead scope (Employee/Resource Manager) get an empty
-    funnel and rely on the follow-up/task counts, which are always their own.
+    rows, resolved by :func:`analytics.scoped_lead_ids`. A user with no lead
+    scope (a plain Employee, the Resource Manager) gets empty lead sections and
+    a populated ``my_work``, which is always their own.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        leads = super().get_queryset()
+        return Response(analytics.leads_dashboard(request.user))
 
-        # ``Count("id", distinct=True)``: ``lead_scope_q`` joins tasks (and, since
-        # R9, allocation rows), so a plain Count would tally one row per joined
-        # child and inflate every funnel bucket. The mixin's ``.distinct()`` can't
-        # help here — it de-duplicates the grouped ``(status, n)`` rows, not the
-        # count inside them. (Pre-existing for any task-joined scope; R9 added a
-        # second join, so it is fixed here rather than left to compound.)
-        counts = dict(
-            leads.values_list("status")
-            .annotate(n=Count("id", distinct=True))
-            .values_list("status", "n")
-        )
-        count_by_status = [
-            {"status": value, "count": counts.get(value, 0)}
-            for value in Lead.Status.values
-        ]
 
-        active_qs = leads.filter(
-            status__in=[Lead.Status.IN_PROGRESS, Lead.Status.ON_HOLD]
-        ).prefetch_related("tasks", "stages")
-        active_leads = []
-        for lead in active_qs:
-            tasks = [
-                t for t in lead.tasks.all() if t.status != Task.Status.SKIPPED
-            ]
-            total = len(tasks)
-            closed = sum(1 for t in tasks if t.status == Task.Status.CLOSED)
-            progress = round(closed / total * 100) if total else 0
-            active_leads.append(
-                {
-                    "id": lead.id,
-                    "company_name": lead.company_name,
-                    "project_name": lead.project_name,
-                    "status": lead.status,
-                    # R2 (§13): derived stage-legible Project ID (front-end key
-                    # `project_id_display`, matching the lead serializer).
-                    "project_id_display": projects.derived_project_id(lead),
-                    "progress": progress,
-                }
-            )
+class ResourceDashboardView(APIView):
+    """Resource-module analytics — Resource Manager only (PRD §5.7 / §6)."""
 
-        today = timezone.now().date()
-        overdue = (
-            Followup.objects.filter(
-                assigned_to=request.user,
-                status=Followup.Status.OPEN,
-                followup_date__lt=today,
-            )
-            .select_related("lead")
-            .order_by("followup_date")
-        )
-        overdue_followups = [
-            {
-                "id": f.id,
-                "lead": f.lead_id,
-                "title": f.title,
-                "followup_date": f.followup_date,
-            }
-            for f in overdue
-        ]
+    permission_classes = [ResourceManagerPermission]
 
-        return Response(
-            {
-                "total_leads": leads.count(),
-                "active_lead_count": len(active_leads),
-                "completed_count": counts.get(Lead.Status.COMPLETE, 0),
-                "dropped_count": counts.get(Lead.Status.DROPPED, 0),
-                "count_by_status": count_by_status,
-                "active_leads": active_leads,
-                "overdue_followups": overdue_followups,
-            }
-        )
+    def get(self, request):
+        return Response(analytics.resources_dashboard(request.user))
+
+
+class FinanceDashboardView(APIView):
+    """Accounts-module analytics — Finance only (PRD §5.10 / §6)."""
+
+    permission_classes = [FinancePermission]
+
+    def get(self, request):
+        return Response(analytics.finance_dashboard(request.user))

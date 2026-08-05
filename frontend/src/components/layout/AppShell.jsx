@@ -8,7 +8,7 @@ export function AppShell() {
   const [collapsed, toggleCollapsed] = useSidebarCollapsed()
 
   return (
-    <div className="flex h-svh w-full overflow-hidden bg-muted/30">
+    <div className="flex h-full w-full overflow-hidden bg-muted/30">
       <Sidebar
         collapsed={collapsed}
         onToggle={toggleCollapsed}

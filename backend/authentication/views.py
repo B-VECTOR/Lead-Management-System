@@ -222,6 +222,26 @@ class UserListCreateView(APIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+class UserDashboardView(APIView):
+    """User-management analytics (R20-6).
+
+    Lives here rather than in ``leads`` because it aggregates *users* — role
+    spread, belt spread, joining trend, and the accounts asking for attention.
+    Gated by the same :class:`UserManagementPermission` as the CRUD API above
+    (GET → ``view_user``), and reports over the same population as the list
+    screen, so the two can never disagree.
+    """
+
+    permission_classes = [UserManagementPermission]
+
+    def get(self, request):
+        # Imported here: `leads.analytics` imports from `leads.views`, which
+        # imports this app's models — a module-level import would close the ring.
+        from leads import analytics
+
+        return Response(analytics.users_dashboard())
+
+
 class UserDetailView(APIView):
     """Retrieve, update, or soft-delete a single user.
 

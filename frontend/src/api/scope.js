@@ -75,6 +75,14 @@ export const canSeeResources = (user) => hasRole(user, 'Resource Manager')
 // no use for this tab.
 export const canSeeHeldTasks = (user) => !!user && !hasRole(user, 'User Management')
 
+// The dashboard's "My work" module (own open tasks, follow-ups, allocations) is
+// everyone's for the same reason Held Tasks nearly is — and it stops at the same
+// role. A User Management holder is dropped from every people-selection queryset
+// (`leads/permissions.exclude_user_management`), so they can never be a task
+// assignee, a follow-up owner or an allocation slot-holder: the section is
+// structurally empty for them, not merely empty today.
+export const canSeeMyWork = (user) => !!user && !hasRole(user, 'User Management')
+
 // Back-compat alias (older callers) — the stricter lead-facing gate.
 export const canSeeHeldQueues = canSeeHeldLeads
 

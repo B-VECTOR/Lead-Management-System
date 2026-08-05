@@ -165,6 +165,27 @@ Available and in use: `button`, `input`, `textarea`, `select`, `checkbox`, `labe
 
 Build new cross-page composites here (not inside a page) when a pattern repeats.
 
+### Charts — `src/components/charts/`
+
+The data-viz primitives (R20), all plain SVG/HTML against the chart tokens — **no charting library**. Full rules in §9.
+
+| Component | Purpose |
+|---|---|
+| `ChartCard` | The frame: title, subtitle, action, legend, and the **table-view toggle** |
+| `ChartLegend` | Swatch + label row; renders only for ≥ 2 series |
+| `ChartTable` | The table twin every chart ships (`columns` + the same `rows` the chart plotted) |
+| `ChartEmpty` | Centered muted empty state, so a chart never draws an axis over nothing |
+| `BarChart` | Horizontal bars — the default for "compare magnitude across named categories" |
+| `ColumnChart` | Grouped columns over time; measures its container, one y-scale only |
+| `DonutChart` | Part-to-whole at a glance, ≤ 6 segments, total in the middle |
+| `FunnelChart` | Ordered stage funnel on the ordinal ramp, with per-step drop-off |
+| `StatTile` / `Meter` | A single value (label · value · hint · optional meter), and a ratio against a limit |
+| `palette.js` | `seriesColor` / `statusColor` / `ordinalColor` / `MARK` — every colour as a token reference |
+
+### Dashboard page furniture — `src/pages/dashboard/shared.jsx`
+
+`DashboardHeader`, `ListCard`, `ListRow`, `ViewAllButton`, `DashboardSkeleton`, `DashboardError`, plus the `num` / `pct` / `days` formatters that render a missing figure as `—`. The five module dashboards are built from these, which is what keeps them one family.
+
 ### Lead action buttons — `src/components/leads/`
 
 Lead-level actions that appear on more than one screen are packaged as **self-gating** button+dialog components — `HoldActionButton.jsx`, `ShortCloseButton.jsx`. The pattern:
@@ -217,3 +238,58 @@ Always format through these for consistency: `formatCurrency`, `formatCompactCur
 - [ ] Numbers use `tabular-nums`; dates/currency go through `lib/format.js`.
 - [ ] Nulls render `—`; loading/empty states present.
 - [ ] Any new reusable pattern added to `shared/` **and** documented here.
+
+---
+
+## 9. Data visualization
+
+Charts are read by people, so the colour part is **computed, not eyeballed**. Everything below is implemented in `src/components/charts/` and tokenized in [index.css](frontend/src/index.css).
+
+### The one rule that governs the rest
+
+**Pick the form before the colour.** What is the data's job?
+
+| The data is… | Use | Not |
+|---|---|---|
+| A single current value | `StatTile` | a one-bar bar chart |
+| A handful of headline numbers | a `StatTile` row | a grouped bar chart |
+| A ratio against a limit | `Meter` | a 2-slice donut |
+| Magnitude across named categories | `BarChart` (horizontal) | a pie |
+| Change over time | `ColumnChart` | two y-axes, ever |
+| Part-to-whole, ≤ 6 slices, at a glance | `DonutChart` | a donut for comparing close values |
+| An ordered sequence (stages, age bands) | `FunnelChart` / the ordinal ramp | categorical hues |
+| More than ~8 classes that all carry meaning | `ChartTable` | more colours |
+
+### Colour tokens
+
+Three families, three jobs. **Never a hex in a component** — always `var(--chart-*)` via `palette.js`.
+
+| Family | Token | Job |
+|---|---|---|
+| Categorical | `--chart-1` … `--chart-8` | **Identity** — industry, domain, slot family. Assigned in fixed slot order, never cycled; a 9th series folds into "Other" |
+| Status | `--chart-status-progress` / `-hold` / `-dropped` / `-complete` | **State** — matches the `StatusBadge` families exactly, so a chart and the badge beside it can't disagree |
+| Neutral / ordinal | `--chart-neutral`, `ordinalColor()` | De-emphasis grey, and the one-hue light→dark ramp for **ordered** scales |
+
+Chrome: `--chart-grid` (hairline gridlines), `--chart-axis`, `--chart-track` (unfilled bar track), `--chart-surface` (the 2px gap colour between touching marks).
+
+**These values are validated, not chosen.** Both palettes were run against this app's real surfaces (light `#ffffff`, dark `#171717`) for the lightness band, chroma floor, colour-blind separation (adjacent ΔE ≥ 8, OKLab×100) and contrast. The categorical eight pass every gate in both modes. The status quartet passes with **one documented exception**: light-mode `--chart-status-hold` sits at 2.65:1 against white, below the 3:1 bar — allowed *only* because every status chart carries a visible text label and a table view. The obvious Tailwind-500 picks were tried first and failed outright (amber ↔ red measured ΔE 4.4 under deuteranopia). **If you change a chart colour, re-run the validation** rather than judging by eye, and keep the amber↔red pair apart.
+
+### Mark specs (fixed everywhere — `MARK` in `palette.js`)
+
+- Bars **≤ 24px** thick; **4px rounded data-end, square at the baseline**.
+- A **2px gap in the surface colour** separates touching marks — stacked segments and adjacent bars alike. Never a border drawn around a mark.
+- Gridlines and axes: **solid hairlines**, one step off the surface, recessive. Never dashed.
+- Lines 2px; markers ≥ 8px with a 2px surface ring.
+
+### Labels, legend, interaction
+
+- **Text never wears the data colour.** Values, labels and legends use text tokens; a coloured swatch *beside* the text carries identity.
+- A **legend is always present for ≥ 2 series**; a single series gets none (the title names it).
+- **Label selectively** — never a number on every point. Bars label their tip; the axis, legend and tooltip carry the rest.
+- Every chart has a **hover tooltip** and a **table-view twin** (`ChartCard`'s toggle). A tooltip may enhance a value, never gate it.
+- Hit targets are the whole row/band, not the mark — a 10px bar is not a hover target.
+- Numbers in **columns** get `tabular-nums`; a large standalone figure (a `StatTile` value) does **not** — equal-width digits make it look loose.
+
+### Anti-patterns — if the chart matches one, it's wrong
+
+Dual-axis charts · recolour-on-filter (colour follows the entity, never its rank) · generating a 9th hue · a value-ramp on nominal categories · a rainbow sequential scale · a status colour used for a non-status series · eight hues when the story is one number · a one-bar bar chart · a number on every point · a label clipped by its own bar · a fixed chart height that excludes the x-axis band · skeleton flash on refetch (hold the previous render at reduced opacity instead).

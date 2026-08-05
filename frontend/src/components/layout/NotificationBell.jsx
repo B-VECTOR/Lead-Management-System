@@ -47,7 +47,7 @@ export function NotificationBell() {
             </button>
           )}
         </div>
-        <div className="max-h-72 overflow-y-auto">
+        <div className="max-h-72 overflow-y-auto overscroll-contain">
           {notifications.length === 0 && <div className="p-4 text-sm text-muted-foreground">You're all caught up.</div>}
           {notifications.map((n) => (
             <Link

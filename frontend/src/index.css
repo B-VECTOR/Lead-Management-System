@@ -25,6 +25,43 @@
   --ring: oklch(0.708 0 0);
   --success: oklch(0.6 0.15 145);
   --warning: oklch(0.7 0.18 75);
+
+  /* --- Chart tokens (R20) -------------------------------------------------
+     Data-viz colour lives here, not in components — same rule as the semantic
+     tokens above. Two families:
+
+     `--chart-1…8` — CATEGORICAL, for identity-only breakdowns (industry,
+     domain, slot family). Assigned in fixed slot order and never cycled; a 9th
+     series folds into "Other" instead of inventing a hue.
+
+     `--chart-status-*` — the four lead/task states, matching the StatusBadge
+     families so a chart and the badge beside it can never disagree.
+
+     Both sets are validated (not eyeballed) against this app's own chart
+     surfaces — light #ffffff, dark #171717 — for the lightness band, chroma
+     floor, colour-blind separation (adjacent ΔE ≥ 8 in OKLab×100) and contrast.
+     Light `--chart-status-hold` sits at 2.65:1, below the 3:1 bar: permitted
+     only because every status chart carries a visible text label and a table
+     view. See design.md §9 before changing any value here. */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+  --chart-7: #4a3aa7;
+  --chart-8: #e34948;
+  --chart-status-progress: #2563eb;
+  --chart-status-hold: #e08c00;
+  --chart-status-dropped: #e02424;
+  --chart-status-complete: #059669;
+  /* The de-emphasis grey: "not started", "no data", and the unfilled half of
+     every meter. Deliberately low-chroma — it must never read as a series. */
+  --chart-neutral: #94a3b8;
+  --chart-grid: oklch(0.922 0 0);
+  --chart-axis: oklch(0.556 0 0);
+  --chart-track: oklch(0.97 0 0);
+  --chart-surface: oklch(1 0 0);
 }
 
 .dark {
@@ -49,6 +86,27 @@
   --ring: oklch(0.556 0 0);
   --success: oklch(0.65 0.15 145);
   --warning: oklch(0.75 0.18 75);
+
+  /* Dark chart steps are *selected* for the dark surface, not an automatic
+     flip of the light ones — same eight hues, re-stepped and re-validated
+     against #171717 (where all eight clear 3:1, unlike in light mode). */
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
+  --chart-status-progress: #3b82f6;
+  --chart-status-hold: #c98500;
+  --chart-status-dropped: #dc2626;
+  --chart-status-complete: #0d9668;
+  --chart-neutral: #6b7280;
+  --chart-grid: oklch(1 0 0 / 12%);
+  --chart-axis: oklch(0.708 0 0);
+  --chart-track: oklch(0.269 0 0);
+  --chart-surface: oklch(0.205 0 0);
 }
 
 @theme inline {
@@ -73,6 +131,19 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+  --color-chart-neutral: var(--chart-neutral);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+  --color-chart-track: var(--chart-track);
+  --color-chart-surface: var(--chart-surface);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -83,7 +154,8 @@
   * {
     @apply border-border outline-ring/50;
   }
-  html, body {
+  html, body, #root {
+    height: 100%;
     overscroll-behavior: none;
   }
   body {

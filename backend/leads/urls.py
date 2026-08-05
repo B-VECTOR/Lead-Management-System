@@ -11,6 +11,7 @@ from .views import (
     AttachmentDeleteView,
     ChecklistItemUpdateView,
     DashboardView,
+    FinanceDashboardView,
     FinanceGateListView,
     FollowupAssigneeListView,
     FollowupDetailView,
@@ -33,6 +34,7 @@ from .views import (
     NotificationMarkReadView,
     ProjectClosureListView,
     ResourceAllocationListView,
+    ResourceDashboardView,
     TaskCompleteView,
     TaskDetailView,
     TaskHoldView,
@@ -210,8 +212,21 @@ urlpatterns = [
         NotificationMarkReadView.as_view(),
         name="api-notification-read",
     ),
-    # Leads-funnel dashboard (Phase 8 — PRD §6)
+    # Role dashboards (Phase 8, rebuilt in R20 — PRD §6). One endpoint per
+    # module, each behind that module's own permission class (DD-R20-1); the
+    # User-Management one lives in `authentication.urls`, since it aggregates
+    # users rather than leads.
     path("api/dashboard/", DashboardView.as_view(), name="api-dashboard"),
+    path(
+        "api/dashboard/resources/",
+        ResourceDashboardView.as_view(),
+        name="api-dashboard-resources",
+    ),
+    path(
+        "api/dashboard/finance/",
+        FinanceDashboardView.as_view(),
+        name="api-dashboard-finance",
+    ),
     # Finance Accounts queue — payment-approval gate tasks 7/15/28 (R4, §5.10)
     path("api/finance-gates/", FinanceGateListView.as_view(), name="api-finance-gates"),
 ]

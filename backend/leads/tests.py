@@ -12,7 +12,7 @@ import tempfile
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, Permission
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import override_settings
@@ -2201,3 +2201,283 @@ class DashboardTests(SimpleLeadTestBase):
         res = self.client.get("/api/dashboard/")
         self.assertEqual(res.data["total_leads"], 0)
         self.assertEqual(len(res.data["overdue_followups"]), 1)
+
+    def test_totals_carry_conversion_and_cycle_time(self):
+        """R20-2: the funnel gains rates, not just counts."""
+        now = timezone.now()
+        won = Lead.objects.create(
+            country=self.country, industry=self.industry, domain=self.area,
+            company_name="Won Co", project_name="Won", created_by=self.lead_manager,
+            assigned_to=self.lead_manager, status=Lead.Status.COMPLETE,
+            lead_start_dt=now - timedelta(days=10),
+        )
+        Lead.objects.create(
+            country=self.country, industry=self.industry, domain=self.area,
+            company_name="Lost Co", project_name="Lost", created_by=self.lead_manager,
+            assigned_to=self.lead_manager, status=Lead.Status.DROPPED,
+        )
+        self.client.force_authenticate(self.lead_manager)
+        totals = self.client.get("/api/dashboard/").data["totals"]
+        # 1 completed of 2 decided; the third lead is still in progress and so
+        # is deliberately outside the denominator.
+        self.assertEqual(totals["decided"], 2)
+        self.assertEqual(totals["conversion_rate"], 50.0)
+        self.assertEqual(totals["completed"], 1)
+        self.assertIsNotNone(won.lead_end_dt)
+        self.assertAlmostEqual(totals["avg_cycle_days"], 10.0, delta=1.0)
+
+    def test_conversion_rate_is_none_when_nothing_is_decided(self):
+        self.client.force_authenticate(self.lead_manager)
+        totals = self.client.get("/api/dashboard/").data["totals"]
+        self.assertIsNone(totals["conversion_rate"])
+        self.assertIsNone(totals["avg_cycle_days"])
+
+    def test_drop_hold_rate_spans_the_whole_book(self):
+        """Dropped + on hold over every lead in scope — a hold is not a decided
+        outcome, so it only makes sense against the full book."""
+        for name, status in (
+            ("Lost Co", Lead.Status.DROPPED),
+            ("Frozen Co", Lead.Status.ON_HOLD),
+            ("Won Co", Lead.Status.COMPLETE),
+        ):
+            Lead.objects.create(
+                country=self.country, industry=self.industry, domain=self.area,
+                company_name=name, project_name=name, created_by=self.lead_manager,
+                assigned_to=self.lead_manager, status=status,
+            )
+        self.client.force_authenticate(self.lead_manager)
+        totals = self.client.get("/api/dashboard/").data["totals"]
+        # 4 leads in scope: the in-progress fixture lead plus the three above.
+        self.assertEqual(totals["total"], 4)
+        self.assertEqual(totals["drop_hold"], 2)
+        self.assertEqual(totals["drop_hold_rate"], 50.0)
+
+    def test_drop_hold_rate_is_zero_when_the_book_is_clean(self):
+        """Only the in-progress fixture lead: 0%, not ``None`` — an empty
+        numerator over a real book is a genuine zero."""
+        self.client.force_authenticate(self.lead_manager)
+        totals = self.client.get("/api/dashboard/").data["totals"]
+        self.assertEqual(totals["drop_hold_rate"], 0.0)
+
+    def test_funnel_counts_stages_reached(self):
+        LeadStage.objects.create(lead=self.lead, stage=LeadStage.BD)
+        LeadStage.objects.create(lead=self.lead, stage=LeadStage.TWO_HR)
+        LeadStage.objects.create(lead=self.lead, stage="E2")
+        self.client.force_authenticate(self.lead_manager)
+        funnel = {row["code"]: row for row in self.client.get("/api/dashboard/").data["funnel"]}
+        self.assertEqual(funnel["BD"]["count"], 1)
+        self.assertEqual(funnel["2HR"]["count"], 1)
+        self.assertEqual(funnel["SnT"]["count"], 0)
+        # Extension loops collapse into one step — E2 counts as "reached
+        # Extension", it is not a stage code of its own in the funnel.
+        self.assertEqual(funnel["E"]["count"], 1)
+        self.assertEqual(funnel["2HR"]["from_previous"], 100.0)
+
+    def test_trend_is_a_dense_six_month_window(self):
+        self.client.force_authenticate(self.lead_manager)
+        trend = self.client.get("/api/dashboard/").data["trend"]
+        self.assertEqual(len(trend), 6)
+        # Months with no activity are present as zero columns, not missing.
+        self.assertEqual(trend[0]["created"], 0)
+        self.assertEqual(trend[-1]["created"], 1)
+
+    def test_stalled_leads_are_flagged_after_a_fortnight(self):
+        self.lead.lead_start_dt = timezone.now() - timedelta(days=40)
+        self.lead.save(update_fields=["lead_start_dt"])
+        self.client.force_authenticate(self.lead_manager)
+        attention = self.client.get("/api/dashboard/").data["attention"]
+        self.assertEqual(len(attention["stalled"]), 1)
+        self.assertGreaterEqual(attention["stalled"][0]["idle_days"], 40)
+
+    def test_a_recently_worked_lead_is_not_stalled(self):
+        self.lead.lead_start_dt = timezone.now() - timedelta(days=40)
+        self.lead.save(update_fields=["lead_start_dt"])
+        Task.objects.create(
+            lead=self.lead, task_no=1, task_name="Recent", status=Task.Status.CLOSED,
+            task_end_dt=timezone.now() - timedelta(days=1),
+        )
+        self.client.force_authenticate(self.lead_manager)
+        attention = self.client.get("/api/dashboard/").data["attention"]
+        self.assertEqual(attention["stalled"], [])
+
+    def test_owner_leaderboard_is_lead_admin_only(self):
+        self.client.force_authenticate(self.lead_manager)
+        self.assertEqual(self.client.get("/api/dashboard/").data["owners"], [])
+        self.client.force_authenticate(self.lead_admin)
+        admin = self.client.get("/api/dashboard/").data
+        self.assertEqual(admin["scope"], "all")
+        self.assertEqual(len(admin["owners"]), 1)
+        self.assertEqual(admin["owners"][0]["id"], self.lead_manager.id)
+
+    def test_breakdowns_are_labelled_not_keyed_by_id(self):
+        self.client.force_authenticate(self.lead_manager)
+        breakdowns = self.client.get("/api/dashboard/").data["breakdowns"]
+        self.assertEqual(breakdowns["industry"], [{"label": self.industry.name, "count": 1}])
+        self.assertEqual(breakdowns["domain"], [{"label": self.area.name, "count": 1}])
+
+    def test_my_work_is_the_employees_own_dashboard(self):
+        """R20-3: the section that is populated even when the funnel is empty."""
+        past = timezone.now().date() - timedelta(days=3)
+        Followup.objects.create(
+            lead=self.lead, title="Chase", assigned_to=self.employee,
+            created_by=self.lead_manager, followup_date=past,
+        )
+        Task.objects.create(
+            lead=self.lead, task_no=4, task_name="Mine", status=Task.Status.OPEN,
+            assigned_to=self.employee, task_start_dt=timezone.now() - timedelta(days=2),
+        )
+        self.client.force_authenticate(self.employee)
+        data = self.client.get("/api/dashboard/").data
+        # Being a task assignee is itself lead scope (`lead_scope_q`), so the
+        # lead is visible — but the funnel is still not what this user works to.
+        self.assertEqual(data["total_leads"], 1)
+        work = data["my_work"]
+        self.assertEqual(work["totals"]["open_tasks"], 1)
+        self.assertEqual(work["totals"]["overdue_followups"], 1)
+        self.assertEqual(work["open_tasks"][0]["task_no"], 4)
+        self.assertEqual(work["open_tasks"][0]["age_days"], 2)
+
+
+class ResourceDashboardTests(WorkflowTestBase):
+    """R20-4 — the Resource Manager's analytics endpoint."""
+
+    URL = "/api/dashboard/resources/"
+
+    def test_role_gated(self):
+        for user in (self.lead_manager, self.finance, self.employee):
+            self.client.force_authenticate(user)
+            self.assertEqual(
+                self.client.get(self.URL).status_code, status.HTTP_403_FORBIDDEN,
+            )
+
+    def _lead_at_allocation(self):
+        lead = self.create_lead()
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2())
+        return lead
+
+    def test_fill_and_bench_reflect_the_queue(self):
+        lead = self._lead_at_allocation()
+        alloc = self.task(lead, 3)
+
+        self.client.force_authenticate(self.resource_manager)
+        data = self.client.get(self.URL).data
+        self.assertGreaterEqual(data["totals"]["open_tasks"], 1)
+        self.assertIn(alloc.id, [row["task"] for row in data["fill"]])
+        row = next(r for r in data["fill"] if r["task"] == alloc.id)
+        self.assertGreater(row["required"], 0)
+        self.assertEqual(row["filled"], 0)
+        self.assertEqual(row["fill_rate"], 0.0)
+        # Nobody is allocated yet, so every belt-holder is on the bench.
+        self.assertEqual(data["totals"]["people_allocated"], 0)
+        self.assertEqual(
+            data["totals"]["slots_filled"], 0, "no slot is staffed before allocation",
+        )
+
+    def test_allocating_moves_a_person_into_utilization(self):
+        lead = self._lead_at_allocation()
+        alloc = self.task(lead, 3)
+        self.client.force_authenticate(self.resource_manager)
+        self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/",
+            {"slot": ResourceAllocation.Slot.EXECUTION_RED, "user_id": self.red.id},
+            format="json",
+        )
+        data = self.client.get(self.URL).data
+        self.assertEqual(data["totals"]["people_allocated"], 1)
+        self.assertEqual(data["utilization"][0]["id"], self.red.id)
+        self.assertEqual(data["utilization"][0]["current_allocations"], 1)
+        red_family = next(r for r in data["by_slot"] if r["label"] == "Execution Red")
+        self.assertEqual(red_family["count"], 1)
+
+
+class FinanceDashboardTests(WorkflowTestBase):
+    """R20-5 — the Accounts analytics endpoint."""
+
+    URL = "/api/dashboard/finance/"
+
+    def test_role_gated(self):
+        for user in (self.lead_manager, self.resource_manager, self.employee):
+            self.client.force_authenticate(user)
+            self.assertEqual(
+                self.client.get(self.URL).status_code, status.HTTP_403_FORBIDDEN,
+            )
+
+    def _lead_at_gate_7(self):
+        """1 → 6 closed, so Task 7 (2HR reimbursement approval) is open."""
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        self.staff_and_submit(
+            self.resource_manager, self.task(lead, 3), {"execution_red": self.red},
+        )
+        self.complete(owner, self.task(lead, 4))
+        self.complete(self.red, self.task(lead, 5), self.f5())
+        self.complete(self.red, self.task(lead, 6), self.f6())
+        return lead
+
+    def test_open_gate_shows_up_with_its_age_and_bucket(self):
+        lead = self._lead_at_gate_7()
+        gate = self.task(lead, 7)
+        self.client.force_authenticate(self.finance)
+        data = self.client.get(self.URL).data
+        self.assertEqual(data["totals"]["open_gates"], 1)
+        self.assertEqual(data["queue"][0]["id"], gate.id)
+        # The label is the workflow's own task name, not a copy kept in code.
+        self.assertEqual(data["queue"][0]["gate"], gate.task_name)
+        buckets = {row["label"]: row["count"] for row in data["aging"]}
+        self.assertEqual(buckets["0–30 days"], 1)
+        by_gate = {row["task_no"]: row for row in data["by_gate"]}
+        self.assertEqual(by_gate[7]["open"], 1)
+        self.assertEqual(by_gate[7]["cleared"], 0)
+
+    def test_a_bounced_gate_is_counted_and_listed(self):
+        lead = self._lead_at_gate_7()
+        self.complete(self.finance, self.task(lead, 7), self.f_gate("No"))
+        self.client.force_authenticate(self.finance)
+        data = self.client.get(self.URL).data
+        # A "No" bounces the *money task* (Task 6), which is where the counter
+        # lands — the gate's own counter only moves when it comes back round.
+        self.assertEqual(data["totals"]["reopens"], 1)
+        self.assertEqual(data["totals"]["chasing"], 1)
+        self.assertEqual(len(data["bounces"]), 1)
+        self.assertEqual(data["bounces"][0]["task_no"], 6)
+        self.assertEqual(data["bounces"][0]["gate_task_no"], 7)
+        self.assertEqual(data["bounces"][0]["reopened_count"], 1)
+        by_gate = {row["task_no"]: row for row in data["by_gate"]}
+        self.assertEqual(by_gate[7]["bounced"], 1)
+        self.assertEqual(data["totals"]["cleared"], 1, "the answered gate did close")
+
+
+class UserManagementDashboardTests(LeadApiTestBase):
+    """R20-6 — the User Management analytics endpoint."""
+
+    URL = "/api/dashboard/users/"
+
+    def test_requires_the_user_management_permission(self):
+        self.client.force_authenticate(self.lead_manager)
+        self.assertEqual(
+            self.client.get(self.URL).status_code, status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_reports_role_and_belt_spread(self):
+        manager = self._make_user("user_management")
+        manager.user_permissions.add(
+            Permission.objects.get(codename="view_user", content_type__app_label="authentication")
+        )
+        self.client.force_authenticate(manager)
+        data = self.client.get(self.URL).data
+        # The User-Management holder is excluded from the population, exactly as
+        # they are from the user list screen.
+        self.assertEqual(data["totals"]["total"], 5)
+        roles = {row["label"]: row["count"] for row in data["by_role"]}
+        self.assertEqual(roles["Lead Manager"], 2)
+        self.assertEqual(roles["Marketing"], 1)
+        self.assertNotIn("User Management", roles)
+        self.assertEqual(len(data["joining_trend"]), 12)
+        # No fixture user carries a belt, so none of them is allocatable.
+        self.assertEqual(data["totals"]["no_belt"], 5)
+        # Only the plain Employee holds no role of their own.
+        self.assertEqual(len(data["attention"]["no_role"]), 1)
+        self.assertNotIn("never_logged_in", data["totals"])

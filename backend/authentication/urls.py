@@ -16,6 +16,7 @@ from .views import (
     PasswordResetTokenView,
     RefreshView,
     SignUpView,
+    UserDashboardView,
     UserDetailView,
     UserListCreateView,
     profile,
@@ -47,6 +48,12 @@ urlpatterns = [
     # User management CRUD API
     path("api/users/", UserListCreateView.as_view(), name="api-user-list"),
     path("api/users/<int:pk>/", UserDetailView.as_view(), name="api-user-detail"),
+    # User-management dashboard analytics (R20-6)
+    path(
+        "api/dashboard/users/",
+        UserDashboardView.as_view(),
+        name="api-dashboard-users",
+    ),
     # Reference-data lookups (roles, belts) for the user create/edit form
     path("api/groups/", GroupListView.as_view(), name="api-group-list"),
     path("api/belts/", BeltListView.as_view(), name="api-belt-list"),
