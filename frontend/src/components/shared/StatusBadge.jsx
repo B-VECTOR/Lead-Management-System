@@ -269,6 +269,31 @@ export function SlotBadge({ slot, label, released, title, className }) {
   )
 }
 
+// Over/under-allocation (R23-3) — Tech Req §4.7's indicator, in design.md §7's
+// colours: over the approved manpower is **red**, short of it **amber**, matched
+// is neutral. The arithmetic behind `health` is `lib/allocation.js`; this only
+// decides how it looks, since all status colour lives in this module.
+const ALLOCATION_HEALTH_STYLES = {
+  over: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+  under: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+  ok: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+}
+
+export function AllocationHealthBadge({ health, title }) {
+  if (!health || health.status === 'none') {
+    return <span className="text-muted-foreground" title="This step staffs no manpower-counted slot">—</span>
+  }
+  const label =
+    health.status === 'over' ? `${health.overBy} over`
+      : health.status === 'under' ? `${health.shortBy} short`
+        : 'Full'
+  return (
+    <Pill title={title} className={ALLOCATION_HEALTH_STYLES[health.status]}>
+      {label} · {health.totalAllocated}/{health.totalRequired}
+    </Pill>
+  )
+}
+
 export function BeltBadge({ belt }) {
   if (!belt || belt === 'NA') return <Pill className={BELT_NA_STYLES}>N/A</Pill>
   if (belt.startsWith('Potential ')) {

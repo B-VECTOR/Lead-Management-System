@@ -5,6 +5,9 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { AllocationHealthBadge } from '@/components/shared/StatusBadge'
+import { allocationHealth } from '@/lib/allocation'
+import { cn } from '@/lib/utils'
 import {
   useAllocationUsers,
   useAllocateSlot,
@@ -27,8 +30,6 @@ import {
 // queue no longer renders it; that screen is a table whose cells are the pickers
 // (`AllocationCells.jsx`). Behaviour is identical either way, so the two can
 // still not drift on the rules; only the shape differs.
-
-const NONE = '__none__'
 
 // Which slots hold at most one currently-allocated resource — the rest (White)
 // is a pool that can carry several concurrent rows.
@@ -70,8 +71,18 @@ export function isRedMissing(task) {
 // most one `allocated` row. Picking a user allocates (empty slot) or reassigns
 // (already filled) — a reassign releases the old row and appends a new one
 // linked by `replaces` (§4.7); it's never overwritten in place.
-function SingleSlotControl({ slot, label, required, occupant, users, disabled, onAllocate, onReassign, onRelease }) {
-  const value = occupant?.user ? String(occupant.user) : NONE
+//
+// R23-2a: the trigger shows the holder's name as **plain text read off the
+// allocation row**, never through `<SelectValue>` (which resolves the display
+// text from a matched `<SelectItem>`). That is not cosmetic. `/api/allocation-
+// users/` is gated by `can_work_allocation_task`, which excludes every lead-side
+// viewer once the allocation task closes — so the option list came back 403/empty
+// and this control rendered **blank over a slot that was in fact filled**, which
+// is what the user saw after a Resource Manager changed a Red. The belt filter
+// (`ALLOCATION_SLOT_BELTS`) is a second route to the same blank. Same rule as
+// `AllocationCells.jsx` (DD-R22-2) and design.md §5.
+function SingleSlotControl({ slot, label, required, occupant, users, usersLoading, disabled, onOpen, onAllocate, onReassign, onRelease }) {
+  const name = occupant?.user_name?.name || occupant?.names
   return (
     // `max-w-sm`: a name picker never needs to be wider than this, and the hosts
     // (an expanded table row, the lead's task stepper) are much wider than that.
@@ -82,18 +93,32 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
       </Label>
       <div className="flex items-center gap-1.5">
         <Select
-          value={value}
+          value={occupant?.user ? String(occupant.user) : ''}
           disabled={disabled}
+          onOpenChange={(open) => open && onOpen()}
           onValueChange={(v) => {
-            if (v === NONE) return
             const userId = Number(v)
+            if (!userId) return
             if (occupant) onReassign(occupant.id, userId)
             else onAllocate(slot, userId)
           }}
         >
-          <SelectTrigger className="w-full"><SelectValue placeholder="— Select —" /></SelectTrigger>
+          <SelectTrigger className="w-full">
+            <span className="truncate" title={name || undefined}>
+              {name
+                ? <span className="font-medium">{name}</span>
+                : <span className={required > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
+                    {required > 0 ? 'Not assigned' : 'Optional'}
+                  </span>}
+            </span>
+          </SelectTrigger>
           <SelectContent position="popper">
-            {!occupant && <SelectItem value={NONE}>— None —</SelectItem>}
+            {usersLoading && (
+              <div className="px-2 py-1.5 text-sm text-muted-foreground">Loading people…</div>
+            )}
+            {!usersLoading && users.length === 0 && (
+              <div className="px-2 py-1.5 text-sm text-muted-foreground">Nobody available</div>
+            )}
             {users.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -126,9 +151,14 @@ function SingleSlotControl({ slot, label, required, occupant, users, disabled, o
 // real person — R14-1 retired the old "TBD" (to-be-decided) fill, since TBD is
 // not a user and an undecided White is just one that hasn't been added yet.
 // Legacy `is_tbd` rows (pre-R14) are filtered out rather than shown as people.
-function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, onRelease }) {
+function WhiteSlotControl({ required, occupants, users, usersLoading, disabled, onOpen, onAllocate, onRelease }) {
   const allocatedNames = occupants.filter((o) => !o.is_tbd)
   const allocatedIds = new Set(allocatedNames.map((o) => o.user))
+  // R23-3e: the White pool is the one slot that can genuinely be over-allocated
+  // — everything else holds at most one row. Tech Req §4.7: over the approved
+  // manpower is red, under it amber.
+  const over = required > 0 && allocatedNames.length > required
+  const short = required > 0 && allocatedNames.length < required
 
   // R9-6: picking a White allocates it there and then. The old two-step
   // "select, then press Add" lost the selection whenever someone forgot the
@@ -139,20 +169,33 @@ function WhiteSlotControl({ required, occupants, users, disabled, onAllocate, on
 
   return (
     <div className="flex w-full max-w-sm flex-col gap-1.5">
-      <Label className="text-xs">White {required > 0 && <span className="text-muted-foreground">(need {required})</span>}</Label>
+      <Label className="text-xs">
+        White{' '}
+        {required > 0 && (
+          <span className={cn(
+            over ? 'text-red-600' : short ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
+          )}>
+            ({allocatedNames.length} of {required}
+            {over ? ` — ${allocatedNames.length - required} over` : ''})
+          </span>
+        )}
+      </Label>
       <div className="flex flex-wrap gap-1.5">
         {allocatedNames.length === 0 && <span className="text-xs text-muted-foreground">None allocated yet.</span>}
         {allocatedNames.map((o) => (
           <span key={o.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
-            {o.user_name?.name}
+            {o.user_name?.name || o.names}
             {!disabled && <X className="size-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onRelease(o.id)} />}
           </span>
         ))}
       </div>
       {!disabled && (
-        <Select value="" onValueChange={pick}>
+        <Select value="" onOpenChange={(open) => open && onOpen()} onValueChange={pick}>
           <SelectTrigger className="w-full"><SelectValue placeholder="— Add a White —" /></SelectTrigger>
           <SelectContent position="popper">
+            {usersLoading && (
+              <div className="px-2 py-1.5 text-sm text-muted-foreground">Loading people…</div>
+            )}
             {users
               .filter((u) => !allocatedIds.has(u.id))
               .map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
@@ -177,16 +220,35 @@ export function AllocationSlots({ task, disabled }) {
   const coreSlots = slots.filter((s) => !isExtendedSlot(s))
   const extraSlots = slots.filter(isExtendedSlot)
 
-  const { data: redUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_red' })
-  const { data: brownUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'execution_brown' })
-  const { data: whiteUsers = [] } = useAllocationUsers({ taskId: task.id, slot: 'white' })
-  const { data: plainUsers = [] } = useAllocationUsers({ taskId: task.id })
-  const usersFor = (slot) => (
-    slot === 'execution_red' ? redUsers
-      : slot === 'execution_brown' ? brownUsers
-        : slot === 'white' ? whiteUsers
-          : plainUsers
+  // R23-2b: the four people-lookups used to fire on every render of this panel,
+  // for every viewer — including the read-only lead-side viewers who get a 403
+  // from `/api/allocation-users/` (it is gated by `can_work_allocation_task`).
+  // They now load only once the relevant picker has actually been opened, and
+  // never at all while the panel is read-only. Nothing on screen depends on
+  // them: the holders' names come off the allocation rows (R23-2a).
+  const [openedLists, setOpenedLists] = useState(() => new Set())
+  const listKey = (slot) => (
+    slot === 'execution_red' || slot === 'execution_brown' || slot === 'white' ? slot : 'other'
   )
+  const wants = (key) => !disabled && openedLists.has(key)
+  const openList = (slot) => setOpenedLists((prev) => {
+    const key = listKey(slot)
+    if (prev.has(key)) return prev
+    return new Set(prev).add(key)
+  })
+
+  const red = useAllocationUsers({ taskId: wants('execution_red') ? task.id : null, slot: 'execution_red' })
+  const brown = useAllocationUsers({ taskId: wants('execution_brown') ? task.id : null, slot: 'execution_brown' })
+  const white = useAllocationUsers({ taskId: wants('white') ? task.id : null, slot: 'white' })
+  const other = useAllocationUsers({ taskId: wants('other') ? task.id : null })
+  const queryFor = (slot) => (
+    slot === 'execution_red' ? red
+      : slot === 'execution_brown' ? brown
+        : slot === 'white' ? white
+          : other
+  )
+  const usersFor = (slot) => queryFor(slot).data || []
+  const usersLoadingFor = (slot) => queryFor(slot).isLoading
 
   async function handleAllocate(slot, userId) {
     try {
@@ -219,7 +281,9 @@ export function AllocationSlots({ task, disabled }) {
       required={alloc.required?.[slot] || 0}
       occupant={(alloc.occupants?.[slot] || [])[0]}
       users={usersFor(slot)}
+      usersLoading={usersLoadingFor(slot)}
       disabled={disabled}
+      onOpen={() => openList(slot)}
       onAllocate={handleAllocate}
       onReassign={handleReassign}
       onRelease={handleRelease}
@@ -227,9 +291,24 @@ export function AllocationSlots({ task, disabled }) {
   )
 
   const extrasFilled = filledCount(alloc, extraSlots)
+  const health = allocationHealth(task)
 
   return (
     <div className="flex flex-col gap-3">
+      {/* R23-3e — Tech Req §4.7 wants the indicator "live in the allocation
+          form" as well as in the queue, so the lead-side stepper reports the
+          same verdict the Resource Manager sees. */}
+      {health.status !== 'none' && (
+        <div className="flex flex-wrap items-center gap-2">
+          <AllocationHealthBadge health={health} />
+          <span className="text-xs text-muted-foreground">
+            {health.slots
+              .map((s) => `${s.label} ${s.allocated}/${s.required}`)
+              .join(' · ')}
+            {' — against the manpower approved upstream.'}
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {coreSlots.filter((s) => singleSlots.includes(s)).map(singleControl)}
         {coreSlots.filter((s) => isPool(s)).map((slot) => (
@@ -238,7 +317,9 @@ export function AllocationSlots({ task, disabled }) {
             required={alloc.required?.[slot] || 0}
             occupants={alloc.occupants?.[slot] || []}
             users={usersFor(slot)}
+            usersLoading={usersLoadingFor(slot)}
             disabled={disabled}
+            onOpen={() => openList(slot)}
             onAllocate={handleAllocate}
             onRelease={handleRelease}
           />

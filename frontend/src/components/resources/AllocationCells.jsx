@@ -4,6 +4,7 @@ import { CornerDownRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { isExtendedSlot } from '@/lib/allocation'
 import { cn } from '@/lib/utils'
 import {
   useAllocateSlot,
@@ -159,9 +160,20 @@ export function SlotCell({ task, slot, actions, disabled, label: labelProp }) {
   const empty = required > 0
     ? <span className="text-amber-700 dark:text-amber-400">Not assigned</span>
     : <span className="text-muted-foreground">Optional</span>
+  // R23-3d: a single-occupancy slot can only ever be "over" by being filled at
+  // all when the upstream manpower approved none of it — an Execution Brown
+  // staffed on a stage whose Task 2 answered "no manpower required". The R12
+  // named extras are exempt: they carry `required: 0` **by design** (PRD §5.7),
+  // so counting them would flag every optional name as an over-allocation.
+  const excess = !!occupant && required === 0 && !isExtendedSlot(slot)
 
   return (
     <div className="flex flex-col gap-1">
+      {excess && (
+        <span className="text-xs font-medium text-red-600" title="No manpower was approved for this slot upstream">
+          Over — none approved
+        </span>
+      )}
       <div className="flex items-center gap-0.5">
         <PeoplePicker
           taskId={task.id}
@@ -229,9 +241,22 @@ export function WhiteCell({ task, actions, disabled }) {
   const required = alloc.required?.white || 0
   const taken = new Set(rows.map((o) => o.user))
   const short = required > 0 && rows.length < required
+  // R23-3d: the White pool is the only slot that can hold more people than the
+  // manpower approved upstream, and going over it was invisible until now
+  // (Tech Req §4.7 — over is red, under amber).
+  const over = rows.length > required
+  const overBy = rows.length - required
 
   return (
     <div className="flex flex-col gap-1">
+      {over && (
+        <span
+          className="text-xs font-medium text-red-600"
+          title={`${rows.length} allocated against an approved manpower of ${required}`}
+        >
+          {overBy} over ({rows.length} of {required})
+        </span>
+      )}
       {rows.map((o) => (
         <div key={o.id} className="flex items-center gap-0.5">
           <span className="flex-1 truncate text-sm font-medium" title={o.user_name?.name}>

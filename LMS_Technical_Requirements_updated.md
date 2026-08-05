@@ -22,6 +22,8 @@ This is a structural rework, not an increment. The major changes:
 - **Lead status simplified** to `In Progress / Hold / Dropped / Completed`. **`Hybernation` and `Short Closed` are removed.** Short-close remains as an action that routes to closure and ends as `Completed`.
 - **Completion is Finance-gated:** the lead becomes `Completed` only when **both** Task 27 and Task 28 close.
 - **Automatic drop** from Task 8 ("Go-ahead = No") — Tasks 6 & 7 remain open on such a drop.
+- **Added 2026-08-05 (post-v17.0):** the **Lead Trail** — a lead-level, append-only comment thread (`lead_comment`, §4.10a). Everyone who can see a lead may add to it and read it, so context survives the handovers between BD, resourcing, delivery and the Lead Admin. Shown beneath Scope on Lead Detail, with an input below Scope on the lead form. Per the user.
+- **Changed 2026-08-05 (post-v17.0):** the **over/under-allocation indicators of §4.7 are now actually built** — over-allocation (red) had never been implemented on any screen and under-allocation only partially. See the note in §4.7.
 - **Changed 2026-08-05 (post-v17.0):** the **Resources queue (`/resources`) is a flat work-in-place table**, not a list of expandable rows — a column per role (Execution Red / Brown / White(s) / Auditors) whose cells are the people-pickers, so who is on a step and changing who is on it happen without opening anything. Per the user: the people working this screen are 40+/50+ and asked for Project Closure's table shape. **Presentation only** — no endpoint, payload, permission or workflow change; the lead-side task stepper keeps the form layout. See §7 step 2 and §9.1.
 - **Changed 2026-08-05 (post-v17.0):** **task reassignment belongs to the lead's custodians, not to whoever currently holds the task** — the LM who created the lead, its current owner, or a Lead Admin, for the lead's whole life. Being handed a task no longer carries the right to hand it on (it did, because `can_reassign_task` aliased `can_edit_task`). **Task-level hold** stays with the assignee — the Execution Red explicitly included — and *additionally* extends to those custodians, so the creator/owner can pause work they delegated. Per the user. See §6 "Task reassignment".
 - **Added 2026-08-04 (post-v17.0):** a **pre-flow step, Task 0 "Select Flow of Tasks"** — the one task outside the 1–28 table. A Mining lead spawned by a Task-21 go-ahead is created with **no `flow_of_tasks`** (it no longer inherits the parent's) and opens Task 0 instead; answering it writes the flow onto the lead and *then* opens that flow's real entry task. Rationale, per the user: the mining project begins months after the go-ahead, so nobody can name its path at conversion time. See §4.3.4, §5 (Task 0). Also adds a **`choice`** extra-field type (§4.6) — a workflow-supplied option list, validated server-side.
@@ -286,6 +288,8 @@ This replaces the wide single-row allocation table. **One row per resource, per 
 
 **Indicators (Resource-allocation screen):** allocated count > `man_power_required` → **red over-allocation**; allocated count < required → **amber under-allocation**. Shown live in the allocation form and on submitted rows.
 
+> **Built 2026-08-05 (R23-3).** The under-allocation half shipped partially and over-allocation not at all, so allocating three Whites against an approved manpower of two was invisible. Now: a **Manpower** column in the Resources queue carries the per-step verdict (badge + a per-slot tooltip), the White cell and the allocation form show `n of m` in red over / amber under, and the lead's Resources tab shows the same `n of m` per slot per stage (read-only, off each row's `man_power_required`). The **named extras are excluded from both sides of the comparison** — they carry `man_power_required` 0 *by design*, so counting them would report every optional name as an over-allocation. Nothing is blocked: over-allocation is an indicator, not a rule.
+
 **Extension prefill:** when an Extension loop's team allocation opens (Task 24), its slots are prefilled from the previous cycle's allocations (Implementation for the first extension, the previous Extension loop afterwards) — the Resource Manager only adjusts what changed (each change is still an append: release old + allocate new).
 
 **Slot visibility (R12).** Which slots an allocation task exposes is filtered per viewer, server-side (`resources.visible_slots`, enforced again in `allocate`/`reassign`/`release`):
@@ -326,6 +330,25 @@ Unchanged from prior versions. One row per hold/unhold cycle; optional `remark` 
 
 ### 4.10 `followups`
 lead_id, assigned_to (any Employee-role user, incl. self), created_by, followup_date (no past dates), remark, status (`open`/`done`). Surfaced on the **Other Tasks** screen for the assignee. Creatable by anyone who can view the lead.
+
+### 4.10a `lead_comment` (the Lead Trail)
+
+**Added 2026-08-05 (post-v17.0), per the user.** A lead-level, **append-only** comment thread — the running commentary on a lead, distinct from `activity_log` (auto-logged events nobody can write to) and from a follow-up's own comment thread (which is scoped to that follow-up).
+
+| Field | Type | Notes |
+|---|---|---|
+| id | auto (PK) | |
+| lead_id | FK → `lead` | |
+| project_id | text | display snapshot of the lead's Project ID when the comment was written (§13) — not a join key |
+| author_id | FK → users, required | set from the request, **never** client-settable |
+| comment | text, required | non-blank after trimming |
+| created_at | timestamp | |
+
+**Who may read and write:** exactly the people who can **see** the lead — visibility is the permission. That is its owner, its creator, the Lead Admin, and anyone the workflow has put on it (the Execution Red, whoever holds an open task, the Resource Manager on an allocation task, Finance on a payment gate). An out-of-scope lead 404s.
+
+**Append-only.** `GET` (list) and `POST` (create) only — no update or delete route, and the Django admin renders it read-only. A trail that can be rewritten is not a trail.
+
+**Surfaced:** on Lead Detail's Details tab, directly beneath **Scope** (newest first); and as a single "Lead trail" input on the lead create/edit form, below the Scope field — what is typed there is *appended* as a comment, never written over an existing one.
 
 ### 4.11 `workflows`
 name; type (`BD` / `Mining` / `Extension`); workflow (JSON — full task graph: order, assignment rule, checklist items, extra-field schema, stage, open-conditions, branch routing); status (active/inactive). Editable from Django Admin. **No workflow logic hardcoded outside this table.** The branch/route conditions support multi-condition (AND) branches (e.g. Task 12's "re-presentation = No AND moved-to-next-stage = Yes").

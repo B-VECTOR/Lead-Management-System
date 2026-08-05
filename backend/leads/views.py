@@ -20,6 +20,7 @@ from .models import (
     Checklist,
     Followup,
     Lead,
+    LeadComment,
     Notification,
     ProjectDetails,
     ResourceAllocation,
@@ -58,6 +59,7 @@ from .serializers import (
     ChecklistSerializer,
     FollowupSerializer,
     FollowupUpdateSerializer,
+    LeadCommentSerializer,
     LeadSerializer,
     NotificationSerializer,
     ProjectDetailsSerializer,
@@ -1233,6 +1235,56 @@ class LeadActivityListView(LeadQuerysetMixin, generics.ListAPIView):
 
     def get_queryset(self):
         return ActivityLog.objects.filter(lead=self.get_lead()).select_related("actor")
+
+
+class LeadCommentListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
+    """A lead's **Lead Trail** — list + append comments (R23-1, user 2026-08-05).
+
+    List and create only: the trail is append-only, so there is no update or
+    delete route (and none in the admin's normal path either). The lead is
+    resolved through the role-scoped queryset, so **visibility is the
+    permission** — everyone the workflow puts on this lead (its owner, its
+    creator, the Execution Red, whoever holds an open task, the Resource Manager
+    on an allocation task) plus the Lead Admin can both read the trail and add to
+    it, which is exactly the set the user asked for. An out-of-scope lead 404s.
+
+    ``author`` comes from the request, never the payload.
+
+    ``IsAuthenticated`` rather than ``LeadPermission`` on purpose:
+    ``LeadPermission``'s POST branch is the rule for *creating a lead*
+    (Lead Manager / Marketing only), which would shut the Execution Red and the
+    Lead Admin — two of the people the user explicitly named — out of the trail.
+    The role-scoped queryset above is what enforces access here, exactly as it
+    does for ``AttachmentDeleteView``: an out-of-scope lead 404s.
+    """
+
+    serializer_class = LeadCommentSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_lead(self):
+        return get_object_or_404(super().get_queryset(), pk=self.kwargs["lead_id"])
+
+    def get_queryset(self):
+        return LeadComment.objects.filter(lead=self.get_lead()).select_related("author")
+
+    def perform_create(self, serializer):
+        lead = self.get_lead()
+        serializer.save(
+            lead=lead,
+            author=self.request.user,
+            project_id=projects.row_project_id(lead),  # R9-1 display snapshot
+        )
+        # R23-1e: a trail nobody is told about is a dead letterbox. The lead's
+        # owner + creator hear about it (never the author) — the same recipients
+        # every other lead-level change notifies.
+        events.notify_lead_managers(
+            lead,
+            Notification.Type.LEAD_COMMENT,
+            f"{self.request.user.name} commented on “{lead.company_name} — "
+            f"{lead.project_name}”.",
+            actor=self.request.user,
+        )
 
 
 class LeadAttachmentListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):

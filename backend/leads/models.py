@@ -1059,6 +1059,51 @@ class Attachment(models.Model):
         return f"[{self.lead_id}] {self.title or self.filename}"
 
 
+class LeadComment(models.Model):
+    """One entry in a lead's **Lead Trail** — a human, append-only comment thread
+    at lead level (user request, 2026-08-05; R23-1).
+
+    Deliberately not :class:`ActivityLog`, which is the *auto-logged* event
+    stream nobody can write to, and not :class:`FollowupUpdate`, which is the
+    same idea hung off a single follow-up. This is the running commentary on the
+    lead itself: whoever is working it (the owner, the task workers, the
+    Execution Red) and the Lead Admin all leave notes in the same thread, so
+    context survives handovers between roles.
+
+    **Append-only.** A trail that can be edited or deleted is not a trail — the
+    API exposes list + create and nothing else. Visibility *is* the permission:
+    anyone who can see the lead may read and add to its trail (the same rule
+    ``FollowupUpdate`` uses for a follow-up's thread).
+    """
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="comments",
+        verbose_name=_("lead"),
+    )
+    project_id = project_id_snapshot()
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="lead_comments",
+        verbose_name=_("author"),
+    )
+    comment = models.TextField(_("comment"))
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+
+    class Meta:
+        # Newest first (DD-R23-2) — unlike a follow-up's short thread, a lead's
+        # trail runs for the months the engagement lasts, and the Activity tab
+        # beside it reads newest-first too.
+        ordering = ["-created_at", "-id"]
+        verbose_name = _("lead trail comment")
+        verbose_name_plural = _("lead trail")
+
+    def __str__(self):
+        return f"[{self.lead_id}] {self.author_id}: {self.comment[:40]}"
+
+
 class ActivityLog(models.Model):
     """An auto-logged, timestamped event on a lead (PRD §6 activity-log rows;
     NFR §7 "every action should be timestamped and attributable to a user").
@@ -1114,6 +1159,8 @@ class Notification(models.Model):
         TASK_REASSIGNED = "task_reassigned", _("task reassigned")
         TASK_COMPLETED = "task_completed", _("task completed")
         FOLLOWUP = "followup", _("follow-up")
+        # R23-1e — somebody added to a lead's trail.
+        LEAD_COMMENT = "lead_comment", _("lead trail comment")
         LEAD_HELD = "lead_held", _("lead put on hold")
         TASK_HELD = "task_held", _("task put on hold")
 

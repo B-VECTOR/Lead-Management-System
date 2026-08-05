@@ -219,6 +219,8 @@ Resource allocation is performed through the workflow allocation tasks (3, 10, 1
 
 **Manpower context & indicators.** When allocating, the Resource Manager sees the manpower figure captured upstream (Task 2 for 2HR, Task 9 for SnT, Task 16 for the project). If more resources are allocated than the approved manpower, a **red over-allocation** indicator appears; if fewer, an **amber under-allocation** indicator appears.
 
+*Built 2026-08-05, per the user ("in the resource tab I am not able to see resource been under allocated or excess allocated"). The Resources table carries a* **Manpower** *column stating the verdict for each step — how many are allocated against how many were approved, red when over, amber when short — with the per-slot breakdown on hover. The same figures appear on the allocation form the Default BD Person uses and, read-only, on the lead's own Resources tab. The optional named extras are excluded from the comparison: they are approved-for-zero by definition, so filling one is not an excess. Being over-allocated never blocks the allocation — it is a flag for the Resource Manager to act on, not a rule.*
+
 **How the screen works** *(revised 2026-08-05, per the user — the people working this screen daily are 40+/50+ and asked for the same table shape as Project Closure: "see the table, get the information quick and take action there itself")*. The Resources screen is **one table, worked in place**: a row per allocation step, grouped under its project, with a column for each role — Execution Red, Execution Brown, White(s), Auditors. Each of those cells shows the person's name and **is** the picker that changes it, so nothing has to be opened to see who is on a step or to put someone else there. Every change saves immediately and is confirmed on screen. A required slot nobody is in reads as "Not assigned" in amber, so gaps are visible down a column; a slot that step doesn't staff shows a dash. Where the previous stage had someone in a slot, the empty cell offers that name for one-press carry-over — the common case of an Execution Red continuing through the engagement. **Submit** sits in the row and stays blocked until an Execution Red is named. The optional named extras (Project Member 1–10, Auditor 3–4) open under the row rather than adding columns. The Default BD Person, staffing the same task from the lead's own task stepper, still sees the step as a form there — the rules are identical either way.
 
 **Release of resources.** A stage's resources are released when that stage's work ends. In particular, the Implementation/Extension resources default to showing as occupied on the project **until Task 27 (Project Closure) opens**, at which point the currently allocated resources are released.
@@ -266,6 +268,16 @@ This introduces a deliberate exception to the usual "closed is final" rule: **a 
 ## 5.11 Follow-Up Requests
 
 Anyone who can view a lead (its owner, a task assignee, the Resource Manager, …) may raise a follow-up on it, from the lead's Follow-up tab or a standalone "Other Tasks" screen. The follow-up form captures: the lead, an assignee (any Employee-role user, including the creator), a follow-up date, and a remark. The "Other Tasks" screen surfaces follow-ups relevant to the logged-in user.
+
+## 5.11a Lead Trail
+
+**Added 2026-08-05, per the user.** Every lead carries a **Lead Trail** — a running thread of comments, at lead level, that anyone working the lead can add to: its owner, its creator, the Execution Red, whoever holds an open task on it, the Resource Manager staffing its allocation, and the Lead Admin. Each entry records who wrote it and when.
+
+It is deliberately not the Activity tab (which is the system's own auto-logged event history and nobody can write to it) and not a follow-up's comment thread (which is about that one follow-up). The trail is how the *lead's* context — what the client said, why a date moved, what the next person needs to know — survives being handed between roles over the months an engagement runs.
+
+- **Where:** on Lead Detail, in the Details tab directly **below Scope**, newest comment first. The lead create/edit form has a matching **"Lead trail"** input below its Scope field.
+- **Append-only.** A comment cannot be edited or deleted, by anyone, including its author. Typing into the form's trail field **adds** an entry; it never overwrites what is already there.
+- **Notification:** a new comment tells the lead's owner and creator (not the author).
 
 ## 5.12 Short-Close
 
@@ -391,6 +403,9 @@ Every column is filterable from a filter row under the headers: free-text search
 | Manage users | No | No | Yes | No | No | No | No |
 | View own activity log | Yes | Yes | No | No | Yes | No | Yes |
 | View all activity log | No | Yes | No | No | No | No | No |
+| Read the Lead Trail on a viewable lead (§5.11a) | Yes | Yes | No | Yes | Yes | Yes | Yes |
+| Add to the Lead Trail on a viewable lead (§5.11a) | Yes | Yes | No | Yes | Yes | Yes | Yes |
+| Edit or delete a Lead Trail comment | No | No | No | No | No | No | No |
 
 # 7. Non-Functional Requirements
 

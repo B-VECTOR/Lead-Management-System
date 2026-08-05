@@ -11,7 +11,9 @@ import {
   slotShortLabel,
   stageLabel,
 } from '@/components/shared/StatusBadge'
+import { isExtendedSlot, slotHealth } from '@/lib/allocation'
 import { formatDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useLeadResourceAllocations } from '@/hooks/useResources'
 
 const STATUS_TOOLTIP = { allocated: 'Currently occupying the slot', released: 'Freed / released' }
@@ -76,12 +78,30 @@ function buildStages(allocations) {
     }
     stage.slots = [...bySlot.entries()]
       .sort(([a], [b]) => slotOrder(a) - slotOrder(b))
-      .map(([slot, rows]) => ({
-        slot,
-        label: rows[0].slot_label || slotShortLabel(slot),
-        current: rows.filter(isAllocated),
-        past: rows.filter((r) => !isAllocated(r)),
-      }))
+      .map(([slot, rows]) => {
+        const current = rows.filter(isAllocated)
+        // R23-3f — Tech Req §4.7's indicator "on submitted rows". The reference
+        // headcount is the `man_power_required` each row snapshotted from the
+        // upstream manpower task; it is a per-stage constant, so the highest
+        // value any of the slot's rows carries is it (an older row written before
+        // a slot's requirement was known would otherwise read as 0).
+        const required = Math.max(0, ...rows.map((r) => r.man_power_required || 0))
+        const past = rows.filter((r) => !isAllocated(r))
+        // Not measured when: the slot is one of the optional named extras
+        // (approved-for-zero by design, PRD §5.7), or nobody holds it now but
+        // somebody did — that is a **released** allocation (D11), i.e. history,
+        // not a staffing gap. Flagging a finished stage as under-allocated would
+        // make the indicator noise on every completed project.
+        const measured = !isExtendedSlot(slot) && !(current.length === 0 && past.length > 0)
+        return {
+          slot,
+          label: rows[0].slot_label || slotShortLabel(slot),
+          current,
+          past,
+          required,
+          health: measured ? slotHealth(required, current.length) : 'none',
+        }
+      })
     stage.activeCount = new Set(stage.rows.filter(isAllocated).map((r) => r.user)).size
   }
   return stages
@@ -169,10 +189,29 @@ function StageCard({ stage, index, continuityOf, showPast }) {
         </div>
 
         <div className="divide-y">
-          {stage.slots.map(({ slot, label, current, past }) => (
+          {stage.slots.map(({ slot, label, current, past, required, health }) => (
             <div key={slot} className="flex flex-col gap-1.5 px-4 py-2.5 sm:flex-row sm:items-start sm:gap-4">
-              <div className="sm:w-36 sm:shrink-0">
+              <div className="flex items-center gap-2 sm:w-44 sm:shrink-0">
                 <SlotBadge slot={slot} label={label} />
+                {/* R23-3f — over (red) / under (amber) against the approved
+                    manpower, the read-only counterpart of the queue's indicator. */}
+                {health !== 'none' && (
+                  <span
+                    className={cn(
+                      'text-xs tabular-nums',
+                      health === 'over' ? 'font-medium text-red-600'
+                        : health === 'under' ? 'font-medium text-amber-700 dark:text-amber-400'
+                          : 'text-muted-foreground',
+                    )}
+                    title={
+                      health === 'over' ? 'More allocated than the approved manpower'
+                        : health === 'under' ? 'Fewer allocated than the approved manpower'
+                          : 'Matches the approved manpower'
+                    }
+                  >
+                    {current.length} of {required}
+                  </span>
+                )}
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 {current.map((row) => {

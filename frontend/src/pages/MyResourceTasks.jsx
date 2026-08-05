@@ -4,7 +4,7 @@ import { CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { StageBadge, TaskStateBadge } from '@/components/shared/StatusBadge'
+import { AllocationHealthBadge, StageBadge, TaskStateBadge } from '@/components/shared/StatusBadge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -16,6 +16,7 @@ import {
   useAllocationActions,
 } from '@/components/resources/AllocationCells'
 import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
+import { allocationHealth } from '@/lib/allocation'
 import { formatDate } from '@/lib/format'
 import { useAllocationTasks, useSubmitAllocationTask } from '@/hooks/useResources'
 
@@ -63,7 +64,9 @@ const FROZEN_STATUSES = ['skipped', 'dropped']
 // 3–4 and the ten Project Members are optional extras, kept out of the main
 // columns and reachable from the row's "Team & extras" toggle.
 const CORE_AUDITOR_SLOTS = ['auditor_1', 'auditor_2']
-const COLUMN_COUNT = 9
+// Project ID | Stage | Step | Status | Red | Brown | White(s) | Auditors |
+// Manpower | Action — the Manpower column added in R23-3c.
+const COLUMN_COUNT = 10
 
 function isExtraSlot(slot) {
   return slot.startsWith('project_member_') || slot === 'auditor_3' || slot === 'auditor_4'
@@ -200,6 +203,7 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
   const inPlay = IN_PLAY_STATUSES.includes(task.status)
   const extraSlots = (alloc.slots || []).filter(isExtraSlot)
   const submittable = isSubmittable(task)
+  const health = allocationHealth(task)
 
   return (
     <>
@@ -232,6 +236,33 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
         </TableCell>
         <TableCell className="align-top">
           <AuditorsCell task={task} actions={actions} disabled={disabled} />
+        </TableCell>
+        {/* R23-3c — the over/under-allocation indicator Tech Req §4.7 has always
+            specified and no screen ever showed. The badge is the verdict; the
+            tooltip is the per-slot arithmetic behind it. */}
+        <TableCell className="align-top">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex cursor-help">
+                <AllocationHealthBadge health={health} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              {health.status === 'none' ? (
+                'This step staffs no manpower-counted slot.'
+              ) : (
+                <span className="flex flex-col gap-0.5">
+                  <span>Against the manpower approved upstream:</span>
+                  {health.slots.map((s) => (
+                    <span key={s.slot}>
+                      {s.label}: {s.allocated} of {s.required}
+                      {s.status === 'over' ? ' — over' : s.status === 'under' ? ' — short' : ''}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </TooltipContent>
+          </Tooltip>
         </TableCell>
         <TableCell className="align-top text-right">
           <div className="flex flex-col items-end gap-1">
@@ -383,6 +414,7 @@ export default function MyResourceTasks() {
                 <TableHead>Execution Brown</TableHead>
                 <TableHead>White(s)</TableHead>
                 <TableHead>Auditors</TableHead>
+                <TableHead>Manpower</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>

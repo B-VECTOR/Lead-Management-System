@@ -21,6 +21,7 @@ from .views import (
     HeldTaskListView,
     LeadActivityListView,
     LeadAttachmentListCreateView,
+    LeadCommentListCreateView,
     LeadDetailView,
     LeadDropView,
     LeadHoldView,
@@ -180,6 +181,13 @@ urlpatterns = [
         "api/leads/<int:lead_id>/activities/",
         LeadActivityListView.as_view(),
         name="api-lead-activities",
+    ),
+    # Lead Trail — the lead-level comment thread (R23-1, user 2026-08-05).
+    # Append-only: list + create, no detail/update/delete route.
+    path(
+        "api/leads/<int:lead_id>/comments/",
+        LeadCommentListCreateView.as_view(),
+        name="api-lead-comments",
     ),
     path(
         "api/leads/<int:lead_id>/attachments/",

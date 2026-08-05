@@ -10,6 +10,7 @@ from .models import (
     Followup,
     FollowupUpdate,
     Lead,
+    LeadComment,
     LeadStage,
     Notification,
     ProjectDetails,
@@ -896,6 +897,34 @@ class ActivityLogSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class LeadCommentSerializer(serializers.ModelSerializer):
+    """One Lead Trail entry (R23-1). ``comment`` is the only writable field —
+    ``author`` is taken from the request in the view, never from the payload, so
+    a trail entry cannot be attributed to somebody else.
+    """
+
+    author_name = serializers.CharField(source="author.name", read_only=True)
+
+    class Meta:
+        model = LeadComment
+        fields = [
+            "id",
+            "lead",
+            "project_id",
+            "author",
+            "author_name",
+            "comment",
+            "created_at",
+        ]
+        read_only_fields = ["id", "lead", "project_id", "author", "created_at"]
+
+    def validate_comment(self, value):
+        text = (value or "").strip()
+        if not text:
+            raise serializers.ValidationError("Enter a comment.")
+        return text
 
 
 class NotificationSerializer(serializers.ModelSerializer):

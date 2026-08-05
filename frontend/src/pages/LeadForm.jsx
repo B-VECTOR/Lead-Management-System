@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { LeadTrailRecent } from '@/components/leads/LeadTrail'
+import { addLeadComment } from '@/api/leadComments'
 import { useCreateLead, useLead, useUpdateLead } from '@/hooks/useLeads'
 import { useCountries, useIndustries, useAreas, useAssignableUsers } from '@/hooks/useLookups'
 import { useAuth } from '@/context/AuthContext'
@@ -44,6 +47,7 @@ export default function LeadForm() {
   const isEdit = !!id
   const navigate = useNavigate()
   const { user } = useAuth()
+  const queryClient = useQueryClient()
 
   const { data: countries = [] } = useCountries()
   const { data: industries = [] } = useIndustries()
@@ -63,6 +67,10 @@ export default function LeadForm() {
   const ownerRequired = hasRole(user, 'Lead Manager') && !isEdit
 
   const [form, setForm] = useState(emptyForm)
+  // R23-1d: not part of `form` — the trail is a separate append-only resource,
+  // not a lead column, so it never joins the lead payload and is never prefilled
+  // from the existing lead (that would invite overwriting somebody's comment).
+  const [trailComment, setTrailComment] = useState('')
 
   // Route guard: buttons are hidden for unauthorized users, but block direct
   // URL navigation too.
@@ -136,15 +144,35 @@ export default function LeadForm() {
     try {
       if (isEdit) {
         await updateLead.mutateAsync({ id, patch: payload })
+        await postTrailComment(id)
         toast.success('Lead updated')
         navigate(`/leads/${id}`)
       } else {
         const created = await createLead.mutateAsync(payload)
+        await postTrailComment(created.id)
         toast.success('Lead created')
         navigate(`/leads/${created.id}`)
       }
     } catch (err) {
       toast.error(err.message)
+    }
+  }
+
+  // The trail entry is a second request after the lead itself is saved (it needs
+  // a lead id, which on create only exists afterwards). Its failure is reported
+  // but never fails the save — the lead is already persisted at this point, so
+  // surfacing this as "Lead updated failed" would be a lie.
+  async function postTrailComment(leadId) {
+    const text = trailComment.trim()
+    if (!text) return
+    try {
+      await addLeadComment(leadId, text)
+      // Prefix-only: the key's id is a route string here and a number from the
+      // create response, so matching the whole key would miss one of the two.
+      queryClient.invalidateQueries({ queryKey: ['lead-comments'] })
+      setTrailComment('')
+    } catch (err) {
+      toast.error(`Lead saved, but the trail comment wasn’t added: ${err.message}`)
     }
   }
 
@@ -289,6 +317,28 @@ export default function LeadForm() {
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label>Scope</Label>
             <Textarea rows={3} value={form.scope} onChange={(e) => set('scope', e.target.value)} placeholder="Describe what's in scope for this engagement…" />
+          </div>
+
+          {/* R23-1d — the Lead Trail's input, directly below Scope. Unlike every
+              other field on this form it is **not** a lead column: what is typed
+              here is appended to the lead's trail as a comment (author + time
+              recorded), and existing entries are never overwritten. On create it
+              is posted once the lead exists. */}
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label htmlFor="lead-trail">Lead trail</Label>
+            {isEdit && <LeadTrailRecent leadId={id} />}
+            <Textarea
+              id="lead-trail"
+              rows={3}
+              value={trailComment}
+              onChange={(e) => setTrailComment(e.target.value)}
+              placeholder={isEdit ? 'Add a comment to this lead’s trail…' : 'Optional — the first comment on this lead’s trail…'}
+            />
+            <p className="text-xs text-muted-foreground">
+              A running commentary anyone working this lead can add to — kept with each author’s
+              name and time, visible on the lead’s detail page. Adding here never replaces what’s
+              already on the trail.
+            </p>
           </div>
         </CardContent>
       </Card>

@@ -7,6 +7,7 @@ from .models import (
     Followup,
     FollowupUpdate,
     Lead,
+    LeadComment,
     LeadHold,
     LeadStage,
     Notification,
@@ -196,6 +197,24 @@ class AttachmentAdmin(admin.ModelAdmin):
     search_fields = ("title", "filename", "lead__company_name", "lead__project_name")
     raw_id_fields = ("lead", "uploaded_by")
     readonly_fields = ("uploaded_at",)
+
+
+@admin.register(LeadComment)
+class LeadCommentAdmin(admin.ModelAdmin):
+    """Lead Trail entries. Read-only in the admin too (R23-1): the trail is
+    append-only in the app, so it shouldn't be quietly rewritable here either."""
+
+    list_display = ("id", "lead", "author", "comment", "created_at")
+    list_filter = ("created_at",)
+    search_fields = ("comment", "lead__company_name", "lead__project_name", "author__name")
+    raw_id_fields = ("lead", "author")
+    readonly_fields = ("lead", "project_id", "author", "comment", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ActivityLog)

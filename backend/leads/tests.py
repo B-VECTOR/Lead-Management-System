@@ -29,6 +29,7 @@ from .models import (
     Checklist,
     Followup,
     Lead,
+    LeadComment,
     LeadStage,
     Notification,
     ResourceAllocation,
@@ -2640,3 +2641,218 @@ class UserManagementDashboardTests(LeadApiTestBase):
         # Only the plain Employee holds no role of their own.
         self.assertEqual(len(data["attention"]["no_role"]), 1)
         self.assertNotIn("never_logged_in", data["totals"])
+
+
+class LeadTrailTests(WorkflowTestBase):
+    """The Lead Trail — a lead-level, append-only comment thread (R23-1).
+
+    Visibility *is* the permission: everyone the workflow puts on the lead plus
+    the Lead Admin may read the trail and add to it; anyone who cannot see the
+    lead gets a 404 (never a 403 — an out-of-scope lead does not exist for them).
+    """
+
+    def url(self, lead):
+        return f"/api/leads/{lead.id}/comments/"
+
+    def post(self, user, lead, comment, expect=status.HTTP_201_CREATED, **extra):
+        self.client.force_authenticate(user)
+        res = self.client.post(self.url(lead), {"comment": comment, **extra}, format="json")
+        self.assertEqual(res.status_code, expect, res.data)
+        return res
+
+    def test_owner_creator_and_lead_admin_can_all_comment(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        # created_by == assigned_to == lead_manager here, so add a third party the
+        # workflow has genuinely put on the lead: the Task-1 assignee is the owner,
+        # so use the Lead Admin (any-lead visibility) as the second actor.
+        self.post(self.lead_manager, lead, "Client asked to push the kickoff.")
+        self.post(self.lead_admin, lead, "Noted — flagging with delivery.")
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(self.url(lead))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+        # Newest first (DD-R23-2).
+        self.assertEqual(res.data[0]["comment"], "Noted — flagging with delivery.")
+        self.assertEqual(res.data[0]["author"], self.lead_admin.id)
+        self.assertEqual(res.data[0]["author_name"], self.lead_admin.name)
+
+    def test_execution_red_can_comment_on_a_lead_they_only_work_a_task_on(self):
+        """The point of the trail: whoever is *working* the lead can add to it,
+        not just the people who own it."""
+        lead = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2(manpower="Yes"))
+        self.staff_and_submit(
+            self.resource_manager, self.task(lead, 3),
+            {"execution_red": self.red, "execution_brown": self.brown, "white": self.white},
+        )
+        # The Red now holds an open task on this lead, which is what makes the
+        # lead visible to them.
+        self.post(self.red, lead, "2HR walkthrough done, report drafted.")
+        self.assertEqual(LeadComment.objects.filter(lead=lead, author=self.red).count(), 1)
+
+    def test_a_user_who_cannot_see_the_lead_cannot_read_or_write_the_trail(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        self.post(self.lead_manager, lead, "Internal note.")
+        self.client.force_authenticate(self.other_manager)
+        self.assertEqual(self.client.get(self.url(lead)).status_code, status.HTTP_404_NOT_FOUND)
+        self.post(
+            self.other_manager, lead, "Should not land", expect=status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(LeadComment.objects.filter(lead=lead).count(), 1)
+
+    def test_author_cannot_be_spoofed(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        self.post(
+            self.lead_manager, lead, "Mine, not theirs.", author=self.lead_admin.id,
+        )
+        entry = LeadComment.objects.get(lead=lead)
+        self.assertEqual(entry.author_id, self.lead_manager.id)
+
+    def test_blank_comment_is_rejected_and_whitespace_is_trimmed(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        self.post(self.lead_manager, lead, "   ", expect=status.HTTP_400_BAD_REQUEST)
+        self.post(self.lead_manager, lead, "  padded  ")
+        self.assertEqual(LeadComment.objects.get(lead=lead).comment, "padded")
+
+    def test_the_trail_is_append_only(self):
+        """No update or delete route exists — the trail is the lead's history."""
+        lead = self.create_lead(owner=self.lead_manager)
+        self.post(self.lead_manager, lead, "First.")
+        entry = LeadComment.objects.get(lead=lead)
+        self.client.force_authenticate(self.lead_manager)
+        for method, kwargs in (
+            (self.client.patch, {"data": {"comment": "rewritten"}, "format": "json"}),
+            (self.client.put, {"data": {"comment": "rewritten"}, "format": "json"}),
+            (self.client.delete, {}),
+        ):
+            res = method(f"{self.url(lead)}{entry.id}/", **kwargs)
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # A PATCH on the collection itself isn't a route either.
+        self.assertEqual(
+            self.client.patch(self.url(lead), {"comment": "x"}, format="json").status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        entry.refresh_from_db()
+        self.assertEqual(entry.comment, "First.")
+
+    def test_a_comment_stamps_the_project_id_and_notifies_the_lead_managers(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        # Split creator from owner so there are two distinct custodians to
+        # notify. Set directly: this test is about who hears about a comment, not
+        # about how a reassignment happens.
+        lead.assigned_to = self.other_manager
+        lead.save(update_fields=["assigned_to"])
+        Notification.objects.all().delete()
+
+        self.post(self.lead_manager, lead, "Handing over context.")
+        entry = LeadComment.objects.get(lead=lead)
+        self.assertEqual(entry.project_id, projects.row_project_id(lead))
+        # The new owner hears about it; the author (also the creator) does not.
+        recipients = set(
+            Notification.objects.filter(
+                type=Notification.Type.LEAD_COMMENT
+            ).values_list("user_id", flat=True)
+        )
+        self.assertIn(self.other_manager.id, recipients)
+        self.assertNotIn(self.lead_manager.id, recipients)
+
+
+class LeadSideAllocationDisplayTests(WorkflowTestBase):
+    """R23-2: the lead's task payload names the Execution Red for a lead-side
+    viewer even after the Resource Manager changes it — the "empty field" the
+    user reported was the *frontend* resolving the name through the people-picker
+    endpoint, which that viewer is not allowed to call.
+    """
+
+    def test_lead_task_payload_names_the_red_after_an_rm_reassignment(self):
+        lead = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2(manpower="Yes"))
+        alloc = self.task(lead, 3)
+        # The lead's Default BD Person staffs and submits it (their D12 right).
+        self.staff_and_submit(
+            self.lead_manager, alloc,
+            {"execution_red": self.red, "execution_brown": self.brown, "white": self.white},
+        )
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, Task.Status.CLOSED)
+
+        # The Resource Manager then swaps the Red (R12-5 keeps that open to them).
+        row = ResourceAllocation.objects.get(
+            task=alloc, slot=ResourceAllocation.Slot.EXECUTION_RED,
+            status=ResourceAllocation.Status.ALLOCATED,
+        )
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/reassign/",
+            {"allocation_id": row.id, "user_id": self.auditor1.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        # The lead page reads the lead's tasks. The new Red must be named there
+        # for both a custodian and a plain Lead Admin...
+        for viewer in (self.lead_manager, self.lead_admin):
+            self.client.force_authenticate(viewer)
+            res = self.client.get(f"/api/leads/{lead.id}/tasks/")
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+            row_data = next(r for r in res.data if r["id"] == alloc.id)
+            occupants = row_data["allocation"]["occupants"]["execution_red"]
+            self.assertEqual(len(occupants), 1)
+            self.assertEqual(occupants[0]["user"], self.auditor1.id)
+            self.assertEqual(occupants[0]["user_name"]["name"], self.auditor1.name)
+            # ...and the denormalized snapshot agrees, so a name is available
+            # even without the nested user label.
+            self.assertEqual(occupants[0]["names"], self.auditor1.name)
+
+        # The reason the old UI went blank: this viewer may not call the picker
+        # once the task has closed, so the name can never come from its options.
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.get(
+            f"/api/allocation-users/?task={alloc.id}&slot=execution_red"
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_allocation_payload_carries_the_required_headcount_for_indicators(self):
+        """R23-3: `required` (from the upstream manpower) plus the occupant count
+        is everything the over/under indicator needs — asserted here so the
+        frontend's arithmetic has a stable contract."""
+        lead = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2(manpower="Yes"))
+        alloc = self.task(lead, 3)
+        self.client.force_authenticate(self.resource_manager)
+
+        def payload():
+            res = self.client.get(f"/api/allocation-tasks/?lead={lead.id}")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            return next(r for r in res.data if r["id"] == alloc.id)["allocation"]
+
+        # f2(manpower="Yes") captures brown=1, white=2.
+        self.assertEqual(payload()["required"]["white"], 2)
+        self.assertEqual(payload()["required"]["execution_brown"], 1)
+
+        # Under-allocated: 1 White against 2 required.
+        self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/",
+            {"slot": "white", "user_id": self.white.id}, format="json",
+        )
+        self.assertEqual(len(payload()["occupants"]["white"]), 1)
+
+        # Over-allocated: a third White against 2 required. Nothing server-side
+        # blocks it — over-allocation is an indicator, not a rule (§4.7).
+        for user in (self.brown, self.auditor2):
+            res = self.client.post(
+                f"/api/allocation-tasks/{alloc.id}/allocate/",
+                {"slot": "white", "user_id": user.id}, format="json",
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        data = payload()
+        self.assertEqual(data["required"]["white"], 2)
+        self.assertEqual(len(data["occupants"]["white"]), 3)
+
+        # The R12 named extras stay at 0 required — they are optional by design,
+        # so the frontend must not read them as excess when filled.
+        for slot, required in data["required"].items():
+            if slot.startswith("project_member_") or slot in ("auditor_3", "auditor_4"):
+                self.assertEqual(required, 0, slot)

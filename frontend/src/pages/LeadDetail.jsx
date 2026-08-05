@@ -18,6 +18,7 @@ import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
 import { LeadTaskTab } from '@/components/leads/LeadTaskTab'
 import { LeadFollowUpsTab } from '@/components/leads/LeadFollowUpsTab'
 import { LeadResourcesTab } from '@/components/leads/LeadResourcesTab'
+import { LeadTrail } from '@/components/leads/LeadTrail'
 import { useLead, useDropLead, useAssignLeadOwner } from '@/hooks/useLeads'
 import { useHoldLead, useUnholdLead } from '@/hooks/useHolds'
 import { useActivitiesForLead } from '@/hooks/useActivities'
@@ -348,9 +349,11 @@ export default function LeadDetail() {
           <Card className="gap-3 py-4">
             <CardHeader><CardTitle className="text-base">Scope</CardTitle></CardHeader>
             <CardContent>
-              <p className="text-sm">{lead.scope || '—'}</p>
+              <p className="text-sm whitespace-pre-wrap">{lead.scope || '—'}</p>
             </CardContent>
           </Card>
+          {/* R23-1c — the Lead Trail sits directly below Scope, as asked. */}
+          <LeadTrail leadId={id} />
         </TabsContent>
 
         <TabsContent value="followup">
