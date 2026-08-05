@@ -970,6 +970,11 @@ def complete_task(task, user):
     # the successor's assignee resolution / trigger checks see the new state.
     _apply_on_close(task, tdef, user)
 
+    # R24-2: if this task *is* the manpower request for a later allocation step,
+    # correct the `man_power_required` snapshot on anybody already staffed there
+    # in advance — their rows were written when the answer was still unknown.
+    resources.sync_manpower_requirement(task.lead, task.task_no, defs)
+
     values = task.extra_fields or {}
 
     # Finance gate bounce (§5.10): a "No" answer closes the gate (done above,

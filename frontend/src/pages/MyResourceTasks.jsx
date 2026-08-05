@@ -16,7 +16,7 @@ import {
   useAllocationActions,
 } from '@/components/resources/AllocationCells'
 import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
-import { allocationHealth } from '@/lib/allocation'
+import { allocationHealth, isCoreAuditorSlot, isStepDue } from '@/lib/allocation'
 import { formatDate } from '@/lib/format'
 import { useAllocationTasks, useSubmitAllocationTask } from '@/hooks/useResources'
 
@@ -63,7 +63,17 @@ const FROZEN_STATUSES = ['skipped', 'dropped']
 // Auditors 1–2 are the mandatory pair and share one column (DD-R22-1); Auditors
 // 3–4 and the ten Project Members are optional extras, kept out of the main
 // columns and reachable from the row's "Team & extras" toggle.
-const CORE_AUDITOR_SLOTS = ['auditor_1', 'auditor_2']
+//
+// R24 (per the user, 2026-08-05: "audit will generally come at last not early so
+// add all the audit and project members under team and extra and when the actual
+// task where audit is required you can put it outside"): while the audit step is
+// still `pending` — which, for audit, is most of a project's life — Auditors 1–2
+// join those extras too. They stay fully staffable there (that is how auditors
+// get allocated in advance, R12-4); what they stop doing is occupying a main
+// column and reporting a shortage nobody can act on yet. Once the step opens,
+// `isStepDue` promotes them back into the Auditors column. Which slots those are
+// comes from `lib/allocation.js` (`isCoreAuditorSlot`), the same module that
+// decides when they count — the two must not drift.
 // Project ID | Stage | Step | Status | Red | Brown | White(s) | Auditors |
 // Manpower | Action — the Manpower column added in R23-3c.
 const COLUMN_COUNT = 10
@@ -71,6 +81,14 @@ const COLUMN_COUNT = 10
 function isExtraSlot(slot) {
   return slot.startsWith('project_member_') || slot === 'auditor_3' || slot === 'auditor_4'
 }
+
+// Wording for the Manpower tooltip's per-slot lines (R24-7).
+const WAITING_NOTE = {
+  manpower: 'not counted yet — the manpower request for this stage hasn’t been submitted',
+  not_due: 'not counted yet — this step isn’t due',
+  carry_over: 'carries over from the previous stage when this step opens',
+}
+const SLOT_VERDICT = { over: ' — over', under: ' — short', red: ' — mandatory' }
 
 // Group the flat task list by lead (= one project/engagement). Groups keep the
 // list's newest-first ordering (by highest task id) so a freshly opened
@@ -138,12 +156,21 @@ function ProjectHeaderRow({ group }) {
 }
 
 // Auditors 1–2 in one column. Only the auditor-allocation step (Task 18) staffs
-// them, so on every other row this cell is a dash and the labels never appear.
-function AuditorsCell({ task, actions, disabled }) {
+// them, so on every other row this cell is a dash and the labels never appear —
+// and on that step, only once it is due (R24); until then the cell points at the
+// extras row that holds the pickers.
+function AuditorsCell({ task, actions, disabled, slots }) {
   const alloc = task.allocation || {}
-  const slots = (alloc.slots || []).filter((s) => CORE_AUDITOR_SLOTS.includes(s))
   if (slots.length === 0) {
-    return (
+    const deferred = (alloc.slots || []).some(isCoreAuditorSlot)
+    return deferred ? (
+      <span
+        className="text-xs text-muted-foreground"
+        title="Audit comes at the end of the project. The auditor pickers are in this row’s “Team & extras” — assign them any time; they aren’t counted until this step is due."
+      >
+        Not due — in Team &amp; extras
+      </span>
+    ) : (
       <span className="text-muted-foreground" title="This step does not staff auditors">
         —
       </span>
@@ -201,7 +228,15 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
   const staffable = !!task.can_staff && !frozen
   const disabled = !staffable
   const inPlay = IN_PLAY_STATUSES.includes(task.status)
-  const extraSlots = (alloc.slots || []).filter(isExtraSlot)
+  // R24: the auditor pair is a main column only once the audit step is due;
+  // before that it belongs to the extras row, alongside Auditors 3–4 and the
+  // Project Members.
+  const stepDue = isStepDue(task)
+  const auditorSlots = stepDue ? (alloc.slots || []).filter(isCoreAuditorSlot) : []
+  const extraSlots = (alloc.slots || []).filter(
+    (s) => isExtraSlot(s) || (!stepDue && isCoreAuditorSlot(s)),
+  )
+  const deferredAuditors = extraSlots.some(isCoreAuditorSlot)
   const submittable = isSubmittable(task)
   const health = allocationHealth(task)
 
@@ -235,7 +270,7 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
           <WhiteCell task={task} actions={actions} disabled={disabled} />
         </TableCell>
         <TableCell className="align-top">
-          <AuditorsCell task={task} actions={actions} disabled={disabled} />
+          <AuditorsCell task={task} actions={actions} disabled={disabled} slots={auditorSlots} />
         </TableCell>
         {/* R23-3c — the over/under-allocation indicator Tech Req §4.7 has always
             specified and no screen ever showed. The badge is the verdict; the
@@ -253,10 +288,15 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
               ) : (
                 <span className="flex flex-col gap-0.5">
                   <span>Against the manpower approved upstream:</span>
+                  {/* R24-7: the unmeasured slots are listed too, each with its
+                      reason — the user asked to keep this breakdown, and "why
+                      isn't this counted?" has to be answerable in it. */}
                   {health.slots.map((s) => (
                     <span key={s.slot}>
-                      {s.label}: {s.allocated} of {s.required}
-                      {s.status === 'over' ? ' — over' : s.status === 'under' ? ' — short' : ''}
+                      {s.label}: {s.allocated}
+                      {s.status === 'waiting'
+                        ? `${s.required > 0 ? ` of ${s.required}` : ''} — ${WAITING_NOTE[s.waiting]}`
+                        : ` of ${s.required}${SLOT_VERDICT[s.status] || ''}`}
                     </span>
                   ))}
                 </span>
@@ -321,9 +361,23 @@ function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras
               className="sticky left-0 flex flex-col gap-2 p-3"
               style={panelWidth ? { width: `${panelWidth}px` } : undefined}
             >
+              {/* R24: with the auditor pair parked here the old blanket
+                  "optional · Resource Manager only" was wrong on both counts —
+                  Auditors 1–2 are mandatory to submit, and every viewer of this
+                  queue can see them. */}
               <p className="text-xs text-muted-foreground">
-                Optional named slots — Resource Manager only. The White pool above counts the
-                manpower; these name the individuals alongside it.
+                {deferredAuditors ? (
+                  <>
+                    <strong className="font-medium">Auditors 1–2</strong> are mandatory for this step
+                    but it isn’t due yet — assign them now if you like, nothing is counted as short
+                    until it opens. The rest are optional named slots, Resource Manager only.
+                  </>
+                ) : (
+                  <>
+                    Optional named slots — Resource Manager only. The White pool above counts the
+                    manpower; these name the individuals alongside it.
+                  </>
+                )}
               </p>
               <ExtraSlotsGrid
                 task={task}

@@ -4,7 +4,7 @@ import { CornerDownRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { isExtendedSlot } from '@/lib/allocation'
+import { slotMeasure } from '@/lib/allocation'
 import { cn } from '@/lib/utils'
 import {
   useAllocateSlot,
@@ -32,6 +32,29 @@ import {
 //    an allocation task can't be submitted without one.
 
 const NONE = '__none__'
+
+// The muted stand-in for a slot whose requirement isn't comparable yet (R24) —
+// the manpower request for the stage hasn't been submitted, or the step isn't due.
+// It replaces the amber "Not assigned", which claimed a shortage against a step
+// nobody can act on: staffing these in advance is expected, not early.
+//
+// `note(required)` keeps the figure on screen where there is one, so holding off
+// on the verdict never costs the Resource Manager the number they are staffing
+// towards.
+const WAITING_EMPTY = {
+  manpower: {
+    label: () => 'Awaiting request',
+    title: 'The manpower request for this stage hasn’t been submitted yet — assign someone now if you like, it counts as neither short nor excess.',
+  },
+  not_due: {
+    label: (required) => (required > 0 ? `Not due yet · needs ${required}` : 'Not due yet'),
+    title: 'This step isn’t due yet — assign people in advance if you like; nothing is counted until it opens.',
+  },
+  carry_over: {
+    label: () => 'Carries over',
+    title: 'The Execution Red from the previous stage will be assigned when this step opens — or press the suggestion below to do it now.',
+  },
+}
 
 // A slot this step doesn't staff. The two allocation task kinds are disjoint
 // (team = Red/Brown/White/+members, auditor = Auditors 1–4), so most rows have
@@ -148,24 +171,34 @@ export function SlotCell({ task, slot, actions, disabled, label: labelProp }) {
   if (!(alloc.slots || []).includes(slot)) return <NotStaffed label={label} />
 
   const occupant = (alloc.occupants?.[slot] || [])[0]
-  const required = alloc.required?.[slot] || 0
   const name = occupant?.user_name?.name
   // R22-5: the previous stage's holder for this slot, sent by the serializer all
   // along and never rendered. The Red usually carries the whole engagement, so
   // this is the single most repeated keystroke on the screen.
   const suggestion = occupant ? null : alloc.prefill?.[slot]
+  // R24: every judgement about this slot comes off one gate, so the four
+  // staffing surfaces can't disagree about when a figure counts.
+  const measure = slotMeasure(task, slot)
+  const waiting = measure.status === 'waiting' ? WAITING_EMPTY[measure.waiting] : null
   // DD-R22-5: an unfilled slot that is *required* is amber (design.md's
   // under-allocation colour) so scanning a column finds the gaps; an unfilled
-  // optional slot stays muted.
-  const empty = required > 0
-    ? <span className="text-amber-700 dark:text-amber-400">Not assigned</span>
-    : <span className="text-muted-foreground">Optional</span>
+  // optional slot stays muted. R24 adds the third case — required, but not
+  // against a figure that exists yet.
+  const empty = waiting
+    ? <span className="text-muted-foreground" title={waiting.title}>{waiting.label(measure.required)}</span>
+    : measure.required > 0
+      ? <span className="text-amber-700 dark:text-amber-400">
+          {slot === 'execution_red' ? 'Required' : 'Not assigned'}
+        </span>
+      : <span className="text-muted-foreground">Optional</span>
   // R23-3d: a single-occupancy slot can only ever be "over" by being filled at
   // all when the upstream manpower approved none of it — an Execution Brown
-  // staffed on a stage whose Task 2 answered "no manpower required". The R12
-  // named extras are exempt: they carry `required: 0` **by design** (PRD §5.7),
-  // so counting them would flag every optional name as an over-allocation.
-  const excess = !!occupant && required === 0 && !isExtendedSlot(slot)
+  // staffed on a stage whose Task 2 answered "no manpower required". R24: only
+  // when that "none" is a real answer. Before the request is submitted, and on
+  // the R12 named extras (`required: 0` **by design**, PRD §5.7), `measured` is
+  // false — otherwise every advance assignment and every optional name would
+  // read as an over-allocation.
+  const excess = !!occupant && measure.measured && measure.required === 0
 
   return (
     <div className="flex flex-col gap-1">
@@ -238,13 +271,18 @@ export function WhiteCell({ task, actions, disabled }) {
   if (!(alloc.slots || []).includes('white')) return <NotStaffed label="White" />
 
   const rows = (alloc.occupants?.white || []).filter((o) => !o.is_tbd)
-  const required = alloc.required?.white || 0
   const taken = new Set(rows.map((o) => o.user))
-  const short = required > 0 && rows.length < required
+  // R24: `measured` is false until the stage's manpower request has been
+  // submitted — Whites staffed in advance are neither short nor excess, because
+  // `required` reads 0 for "not asked yet" as well as for "none approved".
+  const measure = slotMeasure(task, 'white')
+  const required = measure.required
+  const waiting = measure.status === 'waiting' ? WAITING_EMPTY[measure.waiting] : null
+  const short = measure.measured && required > 0 && rows.length < required
   // R23-3d: the White pool is the only slot that can hold more people than the
   // manpower approved upstream, and going over it was invisible until now
   // (Tech Req §4.7 — over is red, under amber).
-  const over = rows.length > required
+  const over = measure.measured && rows.length > required
   const overBy = rows.length - required
 
   return (
@@ -296,8 +334,12 @@ export function WhiteCell({ task, actions, disabled }) {
                 'truncate',
                 short ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
               )}
+              title={waiting?.title}
             >
-              {short ? `Add White (${rows.length} of ${required})` : 'Add White'}
+              {short
+                ? `Add White (${rows.length} of ${required})`
+                : waiting ? `Add White (${waiting.label(required).toLowerCase()})`
+                  : 'Add White'}
             </span>
           }
         />

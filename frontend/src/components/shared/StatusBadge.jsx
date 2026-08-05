@@ -269,24 +269,56 @@ export function SlotBadge({ slot, label, released, title, className }) {
   )
 }
 
-// Over/under-allocation (R23-3) — Tech Req §4.7's indicator, in design.md §7's
-// colours: over the approved manpower is **red**, short of it **amber**, matched
-// is neutral. The arithmetic behind `health` is `lib/allocation.js`; this only
-// decides how it looks, since all status colour lives in this module.
+// Over/under-allocation (R23-3, R24) — Tech Req §4.7's indicator, in design.md
+// §7's colours: over the approved manpower is **red**, short of it **amber**,
+// matched is neutral. `red` (the mandatory Execution Red is empty) shares the
+// amber of under-allocation — it *is* one, named specifically because it is the
+// only gap that blocks Submit. `waiting` is muted: the slot's requirement isn't
+// knowable or due yet, so no verdict is being claimed (R24).
+//
+// The arithmetic behind `health` is `lib/allocation.js`; this only decides how it
+// looks, since all status colour lives in this module.
 const ALLOCATION_HEALTH_STYLES = {
   over: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+  red: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
   under: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
   ok: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  waiting: 'bg-muted text-muted-foreground',
+}
+
+// What a 'waiting' verdict is waiting for. Not the old bare `—`, which claimed
+// the step staffs nothing countable when in fact it does — just not yet.
+const WAITING_LABELS = {
+  manpower: 'Awaiting request',
+  not_due: 'Not due yet',
+  carry_over: 'Red carries over',
+}
+const WAITING_TITLES = {
+  manpower:
+    'The manpower request for this stage hasn’t been submitted yet, so there is nothing to compare against — you can still assign people now.',
+  not_due:
+    'This step isn’t due yet — assign people in advance if you like; nothing is counted as short or excess until it opens.',
+  carry_over:
+    'This step isn’t due yet, and the Execution Red from the previous stage will be assigned to it when it opens.',
 }
 
 export function AllocationHealthBadge({ health, title }) {
   if (!health || health.status === 'none') {
     return <span className="text-muted-foreground" title="This step staffs no manpower-counted slot">—</span>
   }
+  if (health.status === 'waiting') {
+    const reason = health.waitingReason || 'manpower'
+    return (
+      <Pill title={title || WAITING_TITLES[reason]} className={ALLOCATION_HEALTH_STYLES.waiting}>
+        {WAITING_LABELS[reason]}
+      </Pill>
+    )
+  }
   const label =
-    health.status === 'over' ? `${health.overBy} over`
-      : health.status === 'under' ? `${health.shortBy} short`
-        : 'Full'
+    health.status === 'red' ? 'Red required'
+      : health.status === 'over' ? `${health.overBy} over`
+        : health.status === 'under' ? `${health.shortBy} short`
+          : 'Full'
   return (
     <Pill title={title} className={ALLOCATION_HEALTH_STYLES[health.status]}>
       {label} · {health.totalAllocated}/{health.totalRequired}

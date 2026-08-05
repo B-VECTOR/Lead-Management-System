@@ -22,6 +22,12 @@ Encapsulates everything the workflow does with the append-only
 - **Submit** (§7.5): validate the task's mandatory slots are filled, then close
   the allocation task, which opens the next task assigned to that Execution Red.
   ``submit``.
+- **Manpower requirement (§4.7):** ``slot_requirements`` derives each slot's
+  approved headcount live from the upstream manpower task; ``manpower_requested``
+  says whether that request has actually been submitted yet, so the
+  over/under-allocation indicators don't fire on a slot staffed in advance
+  (R24). ``sync_manpower_requirement`` corrects the ``man_power_required``
+  snapshot on such rows once the request does land.
 - **Release lifecycle (D11):** 2HR/SnT slots release when their stage closes
   (``release_stage_allocations``, called from the engine's stage reconcile);
   Implementation/Extension slots release when Task 27 opens
@@ -144,6 +150,73 @@ def _manpower_split(lead, source):
     return brown, white
 
 
+def manpower_requested(lead, tdef):
+    """Has the upstream manpower request that sizes this step's Brown/White
+    actually been submitted yet? (R24-1.)
+
+    ``slot_requirements`` returns **0** for Brown/White both when the request
+    answered "no manpower support required" *and* when the request has not been
+    made at all — ``_manpower_split`` gives ``(0, 0)`` for a source task that is
+    missing or still open. Those two zeroes mean opposite things to the
+    over/under-allocation indicators: the first one makes staffing anybody an
+    excess, the second means there is nothing to compare against yet. Only the
+    server can tell them apart, so it says which it is (DD-R24-3).
+
+    Staffing *before* the request is deliberate and allowed (R12-4, and the user
+    2026-08-05: "resource can [be] assigned earlier … before the request is made
+    by the assigned person"), so this is not a validation — it only gates the
+    indicator.
+
+    ``True`` for a step with no ``manpower_source`` at all (the auditor steps),
+    whose slots are fixed at 1 and never sized by a request.
+    """
+    source = tdef.get("manpower_source") if tdef else None
+    if not source:
+        return True
+    return lead.tasks.filter(
+        task_no=source.get("task_no"), status=Task.Status.CLOSED
+    ).exists()
+
+
+def sync_manpower_requirement(lead, closed_task_no, task_defs):
+    """Backfill ``man_power_required`` on rows staffed before the request existed
+    (R24-2). Called from ``engine.complete_task`` when any task closes.
+
+    ``man_power_required`` is a snapshot taken from :func:`slot_requirements` at
+    the moment a row is created, and ``reassign`` copies it forward — so a White
+    allocated in advance snapshots **0** and keeps it for the life of the
+    engagement. The queue reads the requirement live off the workflow, but the
+    lead's Resources tab reads this column, so without this the two surfaces
+    disagree and the tab shows a permanent red "1 of 0" (DD-R24-5).
+
+    Bounded on purpose: only the allocation steps whose ``manpower_source`` is
+    the task that just closed, and only their currently-``allocated`` rows.
+    """
+    targets = [
+        (task_no, tdef)
+        for task_no, tdef in (task_defs or {}).items()
+        if tdef.get("is_allocation_task")
+        and (tdef.get("manpower_source") or {}).get("task_no") == closed_task_no
+    ]
+    if not targets:
+        return
+    for task_no, tdef in targets:
+        reqs = slot_requirements(lead, tdef)
+        alloc_task_ids = list(
+            lead.tasks.filter(task_no=task_no).values_list("id", flat=True)
+        )
+        if not alloc_task_ids:
+            continue
+        for slot, required in reqs.items():
+            ResourceAllocation.objects.filter(
+                task_id__in=alloc_task_ids,
+                slot=slot,
+                status=ResourceAllocation.Status.ALLOCATED,
+            ).exclude(man_power_required=required).update(
+                man_power_required=required
+            )
+
+
 def slot_requirements(lead, tdef):
     """``{slot: required_headcount}`` for every slot this allocation task manages.
 
@@ -257,6 +330,10 @@ def allocation_context(task, tdef, viewer=None):
         "required": {
             s: n for s, n in slot_requirements(task.lead, tdef).items() if s in allowed
         },
+        # R24-1: whether that `required` figure is a real answer yet — see
+        # :func:`manpower_requested`. The over/under-allocation indicators use it
+        # to hold off on Brown/White until the request has been submitted.
+        "manpower_requested": manpower_requested(task.lead, tdef),
         "occupants": {slot: list(occupants(task, slot)) for slot in slots},
         "prefill": {
             s: uid for s, uid in prefill_suggestions(task, tdef).items() if s in allowed

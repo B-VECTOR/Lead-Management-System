@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { AllocationHealthBadge } from '@/components/shared/StatusBadge'
-import { allocationHealth } from '@/lib/allocation'
+import { allocationHealth, slotMeasure } from '@/lib/allocation'
 import { cn } from '@/lib/utils'
 import {
   useAllocationUsers,
@@ -56,6 +56,29 @@ function filledCount(alloc, slots) {
   return slots.filter((s) => (alloc.occupants?.[s] || []).length > 0).length
 }
 
+// R24 — the wording for a slot whose requirement isn't comparable yet: the
+// stage's manpower request hasn't been submitted, or the step isn't due. Staffing
+// these in advance is expected, so an empty one is muted rather than amber and a
+// filled one raises no excess flag. The requirement figure stays on screen where
+// there is one — only the verdict is held back.
+const WAITING_COPY = {
+  manpower: {
+    note: () => 'not requested yet',
+    empty: 'Awaiting request',
+    title: 'The manpower request for this stage hasn’t been submitted yet — assign someone now if you like, it counts as neither short nor excess.',
+  },
+  not_due: {
+    note: (required) => (required > 0 ? `needs ${required} when due` : 'not due yet'),
+    empty: 'Not due yet',
+    title: 'This step isn’t due yet — assign people in advance if you like; nothing is counted until it opens.',
+  },
+  carry_over: {
+    note: () => 'carries over',
+    empty: 'Carries over',
+    title: 'The Execution Red from the previous stage will be assigned when this step opens.',
+  },
+}
+
 // True when the task still needs an Execution Red before it can be submitted —
 // the successor task is assigned to whoever fills it (§7.5). Exported so each
 // host can disable its own Submit button consistently.
@@ -81,14 +104,21 @@ export function isRedMissing(task) {
 // is what the user saw after a Resource Manager changed a Red. The belt filter
 // (`ALLOCATION_SLOT_BELTS`) is a second route to the same blank. Same rule as
 // `AllocationCells.jsx` (DD-R22-2) and design.md §5.
-function SingleSlotControl({ slot, label, required, occupant, users, usersLoading, disabled, onOpen, onAllocate, onReassign, onRelease }) {
+function SingleSlotControl({ slot, label, measure, occupant, users, usersLoading, disabled, onOpen, onAllocate, onReassign, onRelease }) {
   const name = occupant?.user_name?.name || occupant?.names
+  const required = measure.required
+  const waiting = measure.status === 'waiting' ? WAITING_COPY[measure.waiting] : null
   return (
     // `max-w-sm`: a name picker never needs to be wider than this, and the hosts
     // (an expanded table row, the lead's task stepper) are much wider than that.
     <div className="flex w-full max-w-sm flex-col gap-1.5">
       <Label className="text-xs">
-        {label} {required > 0 && <span className="text-muted-foreground">(need {required})</span>}
+        {label}{' '}
+        {waiting ? (
+          <span className="text-muted-foreground" title={waiting.title}>({waiting.note(required)})</span>
+        ) : (
+          required > 0 && <span className="text-muted-foreground">(need {required})</span>
+        )}
         {slot === 'execution_red' && <span className="text-red-500"> *</span>}
       </Label>
       <div className="flex items-center gap-1.5">
@@ -107,9 +137,11 @@ function SingleSlotControl({ slot, label, required, occupant, users, usersLoadin
             <span className="truncate" title={name || undefined}>
               {name
                 ? <span className="font-medium">{name}</span>
-                : <span className={required > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
-                    {required > 0 ? 'Not assigned' : 'Optional'}
-                  </span>}
+                : waiting
+                  ? <span className="text-muted-foreground">{waiting.empty}</span>
+                  : <span className={required > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
+                      {required > 0 ? 'Not assigned' : 'Optional'}
+                    </span>}
             </span>
           </SelectTrigger>
           <SelectContent position="popper">
@@ -151,14 +183,18 @@ function SingleSlotControl({ slot, label, required, occupant, users, usersLoadin
 // real person — R14-1 retired the old "TBD" (to-be-decided) fill, since TBD is
 // not a user and an undecided White is just one that hasn't been added yet.
 // Legacy `is_tbd` rows (pre-R14) are filtered out rather than shown as people.
-function WhiteSlotControl({ required, occupants, users, usersLoading, disabled, onOpen, onAllocate, onRelease }) {
+function WhiteSlotControl({ measure, occupants, users, usersLoading, disabled, onOpen, onAllocate, onRelease }) {
   const allocatedNames = occupants.filter((o) => !o.is_tbd)
   const allocatedIds = new Set(allocatedNames.map((o) => o.user))
+  const required = measure.required
+  // R24: nothing to compare against until the stage's manpower request has been
+  // submitted — Whites staffed in advance are neither short nor excess.
+  const waiting = measure.status === 'waiting' ? WAITING_COPY[measure.waiting] : null
   // R23-3e: the White pool is the one slot that can genuinely be over-allocated
   // — everything else holds at most one row. Tech Req §4.7: over the approved
   // manpower is red, under it amber.
-  const over = required > 0 && allocatedNames.length > required
-  const short = required > 0 && allocatedNames.length < required
+  const over = measure.measured && required > 0 && allocatedNames.length > required
+  const short = measure.measured && required > 0 && allocatedNames.length < required
 
   // R9-6: picking a White allocates it there and then. The old two-step
   // "select, then press Add" lost the selection whenever someone forgot the
@@ -171,13 +207,17 @@ function WhiteSlotControl({ required, occupants, users, usersLoading, disabled, 
     <div className="flex w-full max-w-sm flex-col gap-1.5">
       <Label className="text-xs">
         White{' '}
-        {required > 0 && (
-          <span className={cn(
-            over ? 'text-red-600' : short ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
-          )}>
-            ({allocatedNames.length} of {required}
-            {over ? ` — ${allocatedNames.length - required} over` : ''})
-          </span>
+        {waiting ? (
+          <span className="text-muted-foreground" title={waiting.title}>({waiting.note(required)})</span>
+        ) : (
+          required > 0 && (
+            <span className={cn(
+              over ? 'text-red-600' : short ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
+            )}>
+              ({allocatedNames.length} of {required}
+              {over ? ` — ${allocatedNames.length - required} over` : ''})
+            </span>
+          )
         )}
       </Label>
       <div className="flex flex-wrap gap-1.5">
@@ -278,7 +318,7 @@ export function AllocationSlots({ task, disabled }) {
       key={slot}
       slot={slot}
       label={alloc.slot_labels?.[slot] || slot}
-      required={alloc.required?.[slot] || 0}
+      measure={slotMeasure(task, slot)}
       occupant={(alloc.occupants?.[slot] || [])[0]}
       users={usersFor(slot)}
       usersLoading={usersLoadingFor(slot)}
@@ -303,7 +343,11 @@ export function AllocationSlots({ task, disabled }) {
           <AllocationHealthBadge health={health} />
           <span className="text-xs text-muted-foreground">
             {health.slots
-              .map((s) => `${s.label} ${s.allocated}/${s.required}`)
+              .map((s) => (
+                s.status === 'waiting'
+                  ? `${s.label} ${s.allocated} (${WAITING_COPY[s.waiting].note(s.required)})`
+                  : `${s.label} ${s.allocated}/${s.required}`
+              ))
               .join(' · ')}
             {' — against the manpower approved upstream.'}
           </span>
@@ -314,7 +358,7 @@ export function AllocationSlots({ task, disabled }) {
         {coreSlots.filter((s) => isPool(s)).map((slot) => (
           <WhiteSlotControl
             key={slot}
-            required={alloc.required?.[slot] || 0}
+            measure={slotMeasure(task, slot)}
             occupants={alloc.occupants?.[slot] || []}
             users={usersFor(slot)}
             usersLoading={usersLoadingFor(slot)}

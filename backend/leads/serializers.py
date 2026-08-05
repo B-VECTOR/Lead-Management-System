@@ -569,6 +569,10 @@ class TaskSerializer(serializers.ModelSerializer):
                 s for s in ctx["slots"] if s in ResourceAllocation.SINGLE_OCCUPANCY_SLOTS
             ],
             "required": ctx["required"],
+            # R24-1: `required` reads 0 both for "the request approved none" and
+            # for "the request hasn't been made yet" — this says which, so the
+            # indicators can hold off on the second.
+            "manpower_requested": ctx["manpower_requested"],
             "occupants": {
                 slot: ResourceAllocationSerializer(rows, many=True, context=self.context).data
                 for slot, rows in ctx["occupants"].items()

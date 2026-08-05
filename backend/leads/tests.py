@@ -2856,3 +2856,117 @@ class LeadSideAllocationDisplayTests(WorkflowTestBase):
         for slot, required in data["required"].items():
             if slot.startswith("project_member_") or slot in ("auditor_3", "auditor_4"):
                 self.assertEqual(required, 0, slot)
+
+    def test_manpower_requested_distinguishes_zero_approved_from_never_asked(self):
+        """R24-1: `required: 0` means two opposite things, and only the server can
+        tell them apart — "the request approved nobody" (staffing anyone is an
+        excess) versus "nobody has been asked yet" (staffing early is expected and
+        is neither short nor excess)."""
+        lead = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        # Task 2 answers "no manpower support required" — a real answer of zero.
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2(manpower="No"))
+        alloc = self.task(lead, 3)
+        self.client.force_authenticate(self.resource_manager)
+
+        def payload():
+            res = self.client.get(f"/api/allocation-tasks/?lead={lead.id}")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            return next(r for r in res.data if r["id"] == alloc.id)["allocation"]
+
+        data = payload()
+        self.assertEqual(data["required"]["execution_brown"], 0)
+        self.assertEqual(data["required"]["white"], 0)
+        self.assertTrue(data["manpower_requested"])
+
+        # Now the same zero with the request *not* submitted. Reached in the wild
+        # by a re-opened source task (the finance gates already re-open closed
+        # tasks, §5.10) or by a workflow edit that opens an allocation step in
+        # parallel with its manpower task — Task 16 already opens 17 and 18 in
+        # parallel, so the shape is not hypothetical.
+        source = self.task(lead, 2, expect_status=Task.Status.CLOSED)
+        source.status = Task.Status.OPEN
+        source.save(update_fields=["status"])
+        data = payload()
+        self.assertEqual(data["required"]["execution_brown"], 0)
+        self.assertFalse(data["manpower_requested"])
+        # The fixed named slots are unaffected — they are not sized by a request.
+        self.assertEqual(data["required"]["execution_red"], 1)
+
+    def test_a_not_yet_due_step_is_pending_with_its_requirement_already_known(self):
+        """R24, DD-R24-1: holding the comparison back until a step is due is a
+        *frontend* rule keyed on the task status, so pin the two facts it reads.
+
+        Every team-allocation step is trigger-gated to its stage's start date, so
+        on a project that has only just reached a stage its allocation steps are
+        `pending` — which is what made R23-3 report a fresh project several people
+        short with nothing to do about it. The auditor step (18) has no
+        `manpower_source` at all, so its slots are fixed at 1 and it must never
+        read as "awaiting the request": what defers audit is the status, not the
+        flag.
+        """
+        lead = self.create_lead(owner=self.lead_manager)
+        future = (date.today() + timedelta(days=45)).isoformat()
+        self.walk_to_task16(lead, self.lead_manager, planned_start=future)
+
+        team = self.task(lead, 17, expect_status=Task.Status.PENDING)
+        auditors = self.task(lead, 18, expect_status=Task.Status.PENDING)
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.get(f"/api/allocation-tasks/?lead={lead.id}")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        rows = {r["id"]: r for r in res.data}
+
+        # The team step: pending, yet its requirement is fully known — so the
+        # frontend must defer on "not due", never on "no figure".
+        team_row = rows[team.id]
+        self.assertEqual(team_row["status"], Task.Status.PENDING)
+        self.assertTrue(team_row["allocation"]["manpower_requested"])
+        self.assertGreater(team_row["allocation"]["required"]["white"], 0)
+
+        # The auditor step: same pending status, no manpower source, fixed slots.
+        audit_row = rows[auditors.id]
+        self.assertEqual(audit_row["status"], Task.Status.PENDING)
+        self.assertTrue(audit_row["allocation"]["manpower_requested"])
+        self.assertEqual(audit_row["allocation"]["required"]["auditor_1"], 1)
+        self.assertEqual(audit_row["allocation"]["required"]["auditor_2"], 1)
+
+    def test_the_manpower_snapshot_is_corrected_when_the_request_lands(self):
+        """R24-2: `man_power_required` is snapshotted when a row is created and
+        copied forward by `reassign`, so anybody staffed *before* the request was
+        submitted keeps a stale 0 — and the lead's Resources tab, which reads that
+        column rather than the live workflow figure, would show a permanent red
+        "1 of 0". Closing the request backfills them."""
+        lead = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(lead, 1), self.f1())
+        self.complete(self.lead_manager, self.task(lead, 2), self.f2(manpower="Yes"))
+        alloc = self.task(lead, 3)
+        self.client.force_authenticate(self.resource_manager)
+        res = self.client.post(
+            f"/api/allocation-tasks/{alloc.id}/allocate/",
+            {"slot": "white", "user_id": self.white.id}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        row = ResourceAllocation.objects.get(task=alloc, slot=ResourceAllocation.Slot.WHITE)
+        # f2(manpower="Yes") captures white=2, and Task 2 was already closed here,
+        # so the snapshot is right from the start.
+        self.assertEqual(row.man_power_required, 2)
+
+        # Rewind it to what an advance allocation would have written, then let the
+        # request land. `sync_manpower_requirement` is what `complete_task` calls.
+        ResourceAllocation.objects.filter(pk=row.pk).update(man_power_required=0)
+        resources.sync_manpower_requirement(
+            lead, 2, engine.task_defs_for(lead.lead_type),
+        )
+        row.refresh_from_db()
+        self.assertEqual(row.man_power_required, 2)
+
+        # A released row is left alone — it is history, and D11 releases whole
+        # stages, so rewriting their requirement would rewrite the audit trail.
+        ResourceAllocation.objects.filter(pk=row.pk).update(
+            man_power_required=0, status=ResourceAllocation.Status.RELEASED,
+        )
+        resources.sync_manpower_requirement(
+            lead, 2, engine.task_defs_for(lead.lead_type),
+        )
+        row.refresh_from_db()
+        self.assertEqual(row.man_power_required, 0)
