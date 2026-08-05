@@ -1,6 +1,6 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from .models import ResourceAllocation, Task
+from .models import Lead, ResourceAllocation, Task
 
 # Role group names (seeded by authentication.seed_lookups). Kept here as the
 # lead domain's view of the roles it cares about, rather than importing the
@@ -40,15 +40,21 @@ def user_role_names(user):
 class CanAssignOwnerPermission(BasePermission):
     """Read access to the assignable-owners list.
 
-    Only Lead Managers and Lead Admins ever set a lead's owner (Marketing's
-    owner field is hidden), so only they need this lookup.
+    Only Lead Managers and Lead Admins ever set a lead's *owner* (Marketing's
+    owner field is hidden) — but the same list is the task-reassignment people-
+    picker, and since R21 reassignment belongs to the lead's custodians, one of
+    whom is its owner *whatever their role* (a Default BD Person may be a plain
+    Employee). So a user who currently owns a lead may read it too; without that
+    they would get a Reassign control with an empty dropdown.
     """
 
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        return bool(user_role_names(user) & {LEAD_MANAGER, LEAD_ADMIN})
+        if user_role_names(user) & {LEAD_MANAGER, LEAD_ADMIN}:
+            return True
+        return Lead.objects.filter(assigned_to=user).exists()
 
 
 def is_execution_red(user, lead):
@@ -125,11 +131,52 @@ def can_edit_task(user, task):
     return LEAD_ADMIN in roles
 
 
-def can_reassign_task(user, task):
-    """Who may reassign a task: the current assignee (handing it off) or a Lead
-    Admin — the same actor set as :func:`can_edit_task`, and only while open.
+def is_lead_custodian(user, lead):
+    """Who stands behind a lead for its whole life (R21).
+
+    The **Lead Manager who created it**, its **current owner** (``assigned_to``
+    — any role, since the Default BD Person may be a plain Employee), or a Lead
+    Admin. Custodianship does not depend on who a given task is assigned to, so
+    delegating work never gives it away.
+
+    A **Marketing** creator is deliberately excluded (DD-R21-2): Marketing only
+    sources leads — a Marketing-sourced lead has no tasks until a Lead Admin
+    assigns an owner — and :func:`can_hold_lead` already keeps them out of the
+    lead's workflow controls for the same reason.
     """
-    return can_edit_task(user, task)
+    if not user or not user.is_authenticated:
+        return False
+    roles = user_role_names(user)
+    if LEAD_ADMIN in roles:
+        return True
+    if lead.assigned_to_id == user.id:
+        return True
+    return LEAD_MANAGER in roles and lead.created_by_id == user.id
+
+
+def can_reassign_task(user, task):
+    """Who may hand a task to somebody else: the lead's custodians only
+    (:func:`is_lead_custodian`), while the task is open.
+
+    **R21 (per the user):** this used to alias :func:`can_edit_task`, which made
+    reassignment a *transferable* right — whoever a task was handed to could hand
+    it on again, while the lead's creator/owner lost the lever entirely. Being
+    given a task is now no longer grounds for giving it away: the Execution Red
+    (and any other assignee) works and holds their task, and the person who
+    created or owns the lead decides where it goes. An assignee who is also a
+    custodian — the usual case, since tasks open on the lead's owner — still
+    reassigns, as themselves rather than as the assignee.
+
+    Finance's incidental rights over the payment gates 7/15/28 are dropped here
+    (DD-R21-3): a gate opens unassigned and is worked from the Accounts queue by
+    role, so it is nobody's to reassign. Working it (:func:`can_edit_task`) is
+    unaffected.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if task.status != Task.Status.OPEN:
+        return False
+    return is_lead_custodian(user, task.lead)
 
 
 def can_hold_lead(user, lead):
@@ -161,18 +208,21 @@ def can_drop_lead(user, lead):
 
 
 def can_hold_task(user, task):
-    """Who may hold/unhold a single task: its assignee only (+ Lead Admin as an
-    administrative override).
+    """Who may hold/unhold a single task: its assignee, or one of the lead's
+    custodians (:func:`is_lead_custodian`, which covers Lead Admin).
 
-    Phase 11 (per the user): the person actively working a task holds/resumes
-    it. A self-assigned Lead Manager gets this because they are the assignee; a
-    non-assignee Lead Manager does not.
+    Phase 11 (per the user): the person actively working a task holds/resumes it
+    — the one who knows it is blocked. **R21** adds the lead's custodians, so the
+    creator/owner can still pause work they delegated: unlike reassignment, hold
+    is a right the assignee *shares* rather than takes over. The Execution Red
+    keeps it on their own tasks as an assignee (explicitly asked for), while
+    :func:`can_reassign_task` denies them the hand-on.
     """
     if not user or not user.is_authenticated:
         return False
     if task.assigned_to_id == user.id:
         return True
-    return LEAD_ADMIN in user_role_names(user)
+    return is_lead_custodian(user, task.lead)
 
 
 class TaskPermission(BasePermission):

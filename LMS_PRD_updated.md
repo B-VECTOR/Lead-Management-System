@@ -19,6 +19,8 @@ A companion engineering document, `LMS_Technical_Requirements_updated.md`, provi
 - **Project ID** is auto-generated at lead creation with the **current stage shown as a suffix** (e.g. `IN-PHNPDCFF26001-2HR`, `…-IM`, `…-E1`, `…-M`). ~~Now `Area + YY + Sequence`; Country and Industry codes are no longer part of the ID.~~ **Composition finalized by the user 2026-07-28:** Country Code + Industry + Area + Type of Project + Year + auto-generated number + stage of intervention — see §5.15.
 - Lead **Status** is simplified to **In Progress / Hold / Dropped / Completed**. "Hybernation" and "Short Closed" statuses are removed; short-close remains as an **action** that routes to closure.
 - ~~**Country** is dropped from the lead.~~ **Superseded 2026-07-28:** Country is captured on the lead again and leads the Project ID (§5.15). **Domain** is now **multi-select** *(built single-select per decision D2)*.
+- *(Changed 2026-08-05:* **the Resources screen is now a single table the Resource Manager works in place** — one row per allocation step, a column per role, the names visible and changeable in the row itself. Asked for by the user because the people who use it daily are 40+/50+ and want to read a table and act on it, not open a panel per row. Nothing about *who may do what* changed — §5.7.*)*
+- *(Changed 2026-08-05:* **reassigning a task is the lead custodian's right, not the current assignee's** — the creator/owner of the lead keeps it for the lead's whole life, and being handed a task no longer lets you hand it on. Holding a task stays with whoever is working it, the Execution Red included, and now extends to those custodians too — §5.8, §6.*)*
 
 # 2. Goals
 
@@ -217,6 +219,8 @@ Resource allocation is performed through the workflow allocation tasks (3, 10, 1
 
 **Manpower context & indicators.** When allocating, the Resource Manager sees the manpower figure captured upstream (Task 2 for 2HR, Task 9 for SnT, Task 16 for the project). If more resources are allocated than the approved manpower, a **red over-allocation** indicator appears; if fewer, an **amber under-allocation** indicator appears.
 
+**How the screen works** *(revised 2026-08-05, per the user — the people working this screen daily are 40+/50+ and asked for the same table shape as Project Closure: "see the table, get the information quick and take action there itself")*. The Resources screen is **one table, worked in place**: a row per allocation step, grouped under its project, with a column for each role — Execution Red, Execution Brown, White(s), Auditors. Each of those cells shows the person's name and **is** the picker that changes it, so nothing has to be opened to see who is on a step or to put someone else there. Every change saves immediately and is confirmed on screen. A required slot nobody is in reads as "Not assigned" in amber, so gaps are visible down a column; a slot that step doesn't staff shows a dash. Where the previous stage had someone in a slot, the empty cell offers that name for one-press carry-over — the common case of an Execution Red continuing through the engagement. **Submit** sits in the row and stays blocked until an Execution Red is named. The optional named extras (Project Member 1–10, Auditor 3–4) open under the row rather than adding columns. The Default BD Person, staffing the same task from the lead's own task stepper, still sees the step as a form there — the rules are identical either way.
+
 **Release of resources.** A stage's resources are released when that stage's work ends. In particular, the Implementation/Extension resources default to showing as occupied on the project **until Task 27 (Project Closure) opens**, at which point the currently allocated resources are released.
 
 **Screen access.** The Resource module is the Resource Manager's home. Their Resources screen lists every allocation task waiting on them (including ones **not yet due**, so a team or the auditors can be staffed ahead of time) and each row opens in place to the slots and the submit action. Alongside it they have **Resource History** (days worked per resource, per slot and stage, with reassignment chains) and **Project Closure**. The lead's Default BD Person staffs their own lead's allocation from the lead's task list, as before.
@@ -230,6 +234,13 @@ Lead-level hold puts all currently open tasks on hold; unholding restores them. 
 Hold, Unhold, and Drop are each confirmed through a popup asking for a remark — the remark is **optional**; the action proceeds with or without one. Remarks are stored against the hold/unhold cycle (and on the lead for drops), appended to the activity log, and shown as a banner on the Lead/Task detail pages. A lead-level hold/unhold copies its remark onto the task holds it creates or releases.
 
 A **Hold Items** menu is required, with a Hold Leads view and a Hold Tasks view.
+
+**Who may hold a task, and who may reassign it** *(change 2026-08-05, from the user: "the one who created has the power all the time, whether to hold or reassign … in case of Execution Red is assigned, he should also have the power to hold the task if assigned to him, but not reassign")*. The two actions are deliberately not the same right:
+
+- **Hold / unhold a task** — the person **doing the work** (the current assignee, the Execution Red included) *and* the lead's **custodians**: the Lead Manager who created the lead, its current owner, or a Lead Admin. The one who is blocked can pause it; the one who owns the lead can pause work they delegated.
+- **Reassign a task** — the lead's **custodians only**, for as long as the lead exists. Handing somebody a task does **not** hand them the power to hand it on: previously each new assignee inherited the same reassignment right and could pass the task along again, while the creator/owner lost the ability to pull it back. An assignee who *is* a custodian (the normal case — tasks open on the lead's owner) still reassigns, as the lead's custodian rather than as the assignee.
+
+A **Marketing** sourcer is not a custodian — they never own the workflow, and a lead they sourced has no tasks at all until a Lead Admin assigns an owner. Lead-level hold/drop is unchanged (§5.2.3): still the managing Lead Manager or Lead Admin.
 
 ## 5.9 Visibility Model
 
@@ -365,6 +376,9 @@ Every column is filterable from a filter row under the headers: free-text search
 | View own tasks | Yes | Yes | No | No | No | No | No |
 | View all tasks | No | Yes | No | No | No | No | No |
 | Edit own open tasks | Yes | Yes | No | No | No | No | No |
+| Hold / unhold a task assigned to me | Yes | Yes | No | Yes | Yes | No | No |
+| Reassign a task on a lead I created or own (§5.8) | Yes | Yes | No | Yes (as the lead's owner) | No | No | No |
+| Reassign a task merely assigned to me | No | Yes (admin override) | No | No | No | No | No |
 | Work resource-allocation tasks | No | No | No | No | Yes (+ BD owner co-assignee) | No | No |
 | Work Finance approval gates (7,15,28) | No | No | No | No | No | No | Yes |
 | Short-close a live engagement (§5.12) | No | No | No | No | Yes | No | No |

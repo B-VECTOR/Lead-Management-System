@@ -1,17 +1,23 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ChevronRight } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { SlotBadge, StageBadge, TaskStateBadge, slotOrder } from '@/components/shared/StatusBadge'
+import { StageBadge, TaskStateBadge } from '@/components/shared/StatusBadge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { slotSummary } from '@/components/resources/AllocationSlots'
-import { AllocationPanel } from '@/components/resources/AllocationPanel'
+import {
+  ExtraSlotsGrid,
+  SlotCell,
+  WhiteCell,
+  filledSlotCount,
+  isSubmittable,
+  useAllocationActions,
+} from '@/components/resources/AllocationCells'
 import { ShortCloseButton } from '@/components/leads/ShortCloseButton'
 import { formatDate } from '@/lib/format'
-import { cn } from '@/lib/utils'
-import { useAllocationTasks } from '@/hooks/useResources'
+import { useAllocationTasks, useSubmitAllocationTask } from '@/hooks/useResources'
 
 // "My Tasks (Resource)" (R9, D-R9-3) — the Resource Manager's allocation queue.
 // The backend list is already role-scoped: a Resource Manager sees every
@@ -19,24 +25,26 @@ import { useAllocationTasks } from '@/hooks/useResources'
 // own leads'. This is a resource-module-only list — not a general per-user "My
 // Tasks", which the app deliberately does not have (Tech Req §6).
 //
-// R12-1: a row **expands in place** into the shared `AllocationPanel`, so the
-// whole job can be done here. R13-1 puts the Leads tab back for the role as a
-// *second* way in (per the user: assign resources "from lead too and from
-// resource tab too") — the row's project name links to the lead, whose task
-// stepper renders the same panel. Neither surface is the canonical one.
+// R22 (2026-08-05, per the user — the people working this screen are 40+/50+ and
+// want "table like structure like project closure … see the table, get the
+// information quick and take action there itself"): the screen is now a **flat
+// table with a column per role**, the same shape as `pages/ProjectClosure.jsx`
+// (Exec Red / Exec Brown / White(s)) — except each of those cells is *editable
+// in place*. The name is the cell, and the cell is the people-picker.
 //
-// R13-2 (usability): the row itself toggles, with a leading chevron, because the
-// right-hand Staff button sat off-screen whenever the table scrolled sideways.
-// The expanded panel is pinned to the left of the scroll viewport and sized to
-// it (`panelWidth`), so its fields never inherit the table's full scroll width.
+// What that replaced: a "Slots (allocated/required)" column showing counts
+// (`Exec Red 1/1 · Exec Brown 0/1`), so "who is the Brown here?" cost a click to
+// expand the row into `AllocationPanel`'s vertical card of labelled selects, one
+// row at a time. The controls themselves live in `AllocationCells.jsx`; the old
+// form layout stays in `AllocationSlots.jsx`, which the lead's task stepper
+// (`LeadTaskTab.AllocationStep`) still uses — R13-1's second way in, for a lead's
+// Default BD Person. Neither surface is the canonical one.
 //
-// 2026-07-29 (per the user): rows are **grouped by project**. One project has an
-// allocation task per stage, so a flat list repeated the same Project ID and
-// name 4–6 times and scattered one engagement's stages among everyone else's.
-// The project is now stated once, in a header row that also names who currently
-// holds which slot across the whole engagement — that's where the "Red stays,
-// Brown/White change per stage" picture reads at a glance — and its stage rows
-// sit underneath in workflow order.
+// Rows are grouped by project: one project has an allocation task per stage, so
+// a flat list would repeat the same Project ID and name 4–6 times and scatter one
+// engagement's stages among everyone else's. The project is stated once, in a
+// plain header row (Project Closure's `bg-muted/40` style) whose contents stay
+// `sticky left-0` so it survives the sideways scroll a 9-column table needs.
 
 const STATUS_FILTERS = [
   // "To do" spans pending as well as open: a trigger-gated allocation task is
@@ -48,27 +56,17 @@ const STATUS_FILTERS = [
 ]
 
 const TODO_STATUSES = ['open', 'pending', 'hold']
+const IN_PLAY_STATUSES = ['open', 'pending', 'hold']
+const FROZEN_STATUSES = ['skipped', 'dropped']
 
-// The people currently holding a slot anywhere in this project, one chip per
-// person+slot no matter how many of its stages they span — read off the tasks'
-// own `allocation.occupants`, so it needs no extra fetch.
-function currentTeam(tasks) {
-  const members = new Map()
-  for (const task of tasks) {
-    const occupants = task.allocation?.occupants || {}
-    for (const [slot, rows] of Object.entries(occupants)) {
-      for (const row of rows) {
-        if (row.status !== 'allocated' || !row.user || row.is_tbd) continue
-        const key = `${slot}|${row.user}`
-        const member = members.get(key)
-        if (member) member.stages += 1
-        else members.set(key, { key, slot, name: row.user_name?.name || '—', stages: 1 })
-      }
-    }
-  }
-  return [...members.values()].sort(
-    (a, b) => slotOrder(a.slot) - slotOrder(b.slot) || a.name.localeCompare(b.name),
-  )
+// Auditors 1–2 are the mandatory pair and share one column (DD-R22-1); Auditors
+// 3–4 and the ten Project Members are optional extras, kept out of the main
+// columns and reachable from the row's "Team & extras" toggle.
+const CORE_AUDITOR_SLOTS = ['auditor_1', 'auditor_2']
+const COLUMN_COUNT = 9
+
+function isExtraSlot(slot) {
+  return slot.startsWith('project_member_') || slot === 'auditor_3' || slot === 'auditor_4'
 }
 
 // Group the flat task list by lead (= one project/engagement). Groups keep the
@@ -82,14 +80,12 @@ function groupByProject(tasks) {
     if (!group) {
       group = {
         lead: task.lead,
-        projectId: task.project_id,
         projectName: task.lead_project_name,
         companyName: task.lead_company_name,
         tasks: [],
       }
       groups.set(task.lead, group)
     }
-    if (!group.projectId && task.project_id) group.projectId = task.project_id
     group.tasks.push(task)
   }
 
@@ -98,7 +94,6 @@ function groupByProject(tasks) {
     group.tasks.sort((a, b) => (a.task_no ?? 0) - (b.task_no ?? 0) || a.id - b.id)
     group.latestId = Math.max(...group.tasks.map((t) => t.id))
     group.todoCount = group.tasks.filter((t) => TODO_STATUSES.includes(t.status)).length
-    group.team = currentTeam(group.tasks)
     // Lead-level, so every task in the group carries the same value — any one
     // of them answers it (`some` rather than `[0]` only to tolerate an older
     // cached payload that predates the field).
@@ -107,119 +102,204 @@ function groupByProject(tasks) {
   return list.sort((a, b) => b.latestId - a.latestId)
 }
 
-// A project header: the engagement stated once, plus its live slot holders.
+// A project header: the engagement stated once. It no longer repeats the team as
+// chips — the names are in the row cells below it now, which is the whole point
+// of R22.
 function ProjectHeaderRow({ group }) {
   return (
-    <TableRow className="bg-muted/60 hover:bg-muted/60">
-      <TableCell colSpan={6} className="py-2.5 whitespace-normal">
-        <div className="sticky left-0 flex flex-col gap-1.5">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="font-medium tabular-nums">
-              {group.projectId || <span className="font-normal text-muted-foreground">Project ID pending</span>}
-            </span>
-            {/* R13-1: the other way into the same allocation — the lead's task
-                stepper. Read-only for the role apart from its allocation steps. */}
-            <Link to={`/leads/${group.lead}`} className="text-sm font-medium hover:underline">
-              {group.projectName}
-            </Link>
-            <span className="text-xs text-muted-foreground">{group.companyName}</span>
-            <span className="text-xs text-muted-foreground">
-              {group.tasks.length} allocation {group.tasks.length === 1 ? 'step' : 'steps'}
-              {group.todoCount > 0 && ` · ${group.todoCount} to do`}
-            </span>
-            {/* Short-close (user, 2026-07-30): the same control as Lead Detail's
-                header, offered here so the role never has to leave its module.
-                Renders nothing unless the action is currently available on this
-                lead — `lead_can_short_close`, read off the group's tasks. */}
-            <ShortCloseButton
-              leadId={group.lead}
-              canShortClose={group.canShortClose}
-              size="sm"
-              className="ml-auto text-blue-600 hover:text-blue-700"
-            />
-          </div>
-          {group.team.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {group.team.map((member) => (
-                <span
-                  key={member.key}
-                  className="inline-flex items-center gap-1.5 rounded-full border bg-background py-0.5 pr-2.5 pl-0.5"
-                  title={member.stages > 1 ? `Holds this slot in ${member.stages} stages` : undefined}
-                >
-                  <SlotBadge slot={member.slot} />
-                  <span className="text-xs font-medium">{member.name}</span>
-                </span>
-              ))}
-            </div>
-          )}
+    <TableRow className="bg-muted/40 hover:bg-muted/40">
+      <TableCell colSpan={COLUMN_COUNT} className="py-2 whitespace-normal">
+        <div className="sticky left-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <Link to={`/leads/${group.lead}`} className="font-medium hover:underline">
+            {group.projectName}
+          </Link>
+          <span className="text-sm text-muted-foreground">{group.companyName}</span>
+          <span className="text-xs text-muted-foreground">
+            {group.tasks.length} allocation {group.tasks.length === 1 ? 'step' : 'steps'}
+            {group.todoCount > 0 && ` · ${group.todoCount} to do`}
+          </span>
+          {/* Short-close (user, 2026-07-30): the same control as Lead Detail's
+              header, offered here so the role never has to leave its module.
+              Renders nothing unless the action is currently available on this
+              lead — `lead_can_short_close`, read off the group's tasks. */}
+          <ShortCloseButton
+            leadId={group.lead}
+            canShortClose={group.canShortClose}
+            size="sm"
+            className="ml-auto text-blue-600 hover:text-blue-700"
+          />
         </div>
       </TableCell>
     </TableRow>
   )
 }
 
-function TaskRow({ task, expanded, onToggle, panelWidth }) {
-  const summary = slotSummary(task)
+// Auditors 1–2 in one column. Only the auditor-allocation step (Task 18) staffs
+// them, so on every other row this cell is a dash and the labels never appear.
+function AuditorsCell({ task, actions, disabled }) {
+  const alloc = task.allocation || {}
+  const slots = (alloc.slots || []).filter((s) => CORE_AUDITOR_SLOTS.includes(s))
+  if (slots.length === 0) {
+    return (
+      <span className="text-muted-foreground" title="This step does not staff auditors">
+        —
+      </span>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      {slots.map((slot) => (
+        <div key={slot} className="flex flex-col gap-0.5">
+          <span className="text-xs text-muted-foreground">{alloc.slot_labels?.[slot] || slot}</span>
+          <SlotCell task={task} slot={slot} actions={actions} disabled={disabled} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// The Status cell. `AllocationPanel`'s three explanatory paragraphs have no room
+// in a table row, so what each state means is a tooltip on the badge instead
+// (R22-6): staffable-in-advance for `pending`, still-changeable for `closed`.
+function StatusCell({ task, staffable }) {
   const opensOn = task.scheduled_open?.open_date
+  const hint = task.status === 'pending' && staffable
+    ? task.auto_closes_when_staffed
+      ? 'Not due yet — you can assign it now, and with the required slots filled it completes itself when it opens.'
+      : 'Not due yet — you can assign it now, and the step opens already assigned.'
+    : task.status === 'closed' && staffable
+      ? 'Already submitted — the allocation stays live until these resources are released, so you can still change who holds a slot. Open tasks driven by an Execution Red move with it.'
+      : null
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {hint ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="w-fit cursor-help border-b border-dotted border-muted-foreground/50">
+              <TaskStateBadge status={task.status} />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">{hint}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <TaskStateBadge status={task.status} />
+      )}
+      {task.status === 'pending' && opensOn && (
+        <span className="text-xs text-muted-foreground">Opens {formatDate(opensOn)}</span>
+      )}
+    </div>
+  )
+}
+
+function TaskRow({ task, actions, onSubmit, submitting, expanded, onToggleExtras, panelWidth }) {
+  const alloc = task.allocation || {}
+  const frozen = FROZEN_STATUSES.includes(task.status)
+  const staffable = !!task.can_staff && !frozen
+  const disabled = !staffable
+  const inPlay = IN_PLAY_STATUSES.includes(task.status)
+  const extraSlots = (alloc.slots || []).filter(isExtraSlot)
+  const submittable = isSubmittable(task)
 
   return (
     <>
-      <TableRow
-        className={cn('cursor-pointer', expanded && 'border-b-0 bg-muted/40')}
-        aria-expanded={expanded}
-        onClick={onToggle}
-      >
-        <TableCell className="w-8 pr-0">
-          <ChevronRight className={cn('size-4 text-muted-foreground transition-transform', expanded && 'rotate-90')} />
+      <TableRow>
+        {/* `tabular-nums` at body size rather than Project Closure's `font-mono
+            text-xs`: same alignment, legible for this screen's users. */}
+        <TableCell className="align-top font-medium tabular-nums">
+          {task.project_id || <span className="font-normal text-muted-foreground">Pending</span>}
         </TableCell>
-        <TableCell className="whitespace-nowrap"><StageBadge stage={task.stage_code} /></TableCell>
-        <TableCell className="max-w-[240px] whitespace-normal">
+        <TableCell className="align-top">
+          <StageBadge stage={task.stage_code} />
+        </TableCell>
+        <TableCell className="max-w-[170px] align-top whitespace-normal">
           {task.task_name}
-          {task.is_hanging_task && <span className="ml-1.5 text-xs text-muted-foreground">(non-blocking)</span>}
-          {task.status === 'pending' && opensOn && (
-            <div className="text-xs text-muted-foreground">Opens {formatDate(opensOn)}</div>
+          {task.is_hanging_task && (
+            <span className="ml-1.5 text-xs text-muted-foreground">(non-blocking)</span>
           )}
         </TableCell>
-        <TableCell><TaskStateBadge status={task.status} /></TableCell>
-        <TableCell className="max-w-[260px] whitespace-normal">
-          <div className="flex items-start gap-1.5">
-            {summary?.over && (
+        <TableCell className="align-top">
+          <StatusCell task={task} staffable={staffable} />
+        </TableCell>
+        <TableCell className="align-top">
+          <SlotCell task={task} slot="execution_red" actions={actions} disabled={disabled} />
+        </TableCell>
+        <TableCell className="align-top">
+          <SlotCell task={task} slot="execution_brown" actions={actions} disabled={disabled} />
+        </TableCell>
+        <TableCell className="align-top">
+          <WhiteCell task={task} actions={actions} disabled={disabled} />
+        </TableCell>
+        <TableCell className="align-top">
+          <AuditorsCell task={task} actions={actions} disabled={disabled} />
+        </TableCell>
+        <TableCell className="align-top text-right">
+          <div className="flex flex-col items-end gap-1">
+            {staffable && inPlay && (
               <Tooltip>
-                <TooltipTrigger asChild><AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-600" /></TooltipTrigger>
-                <TooltipContent>Over-allocated: more resources than required</TooltipContent>
+                {/* The trigger is the wrapping span, not the button: a disabled
+                    button fires no pointer events, and "why can't I submit?" is
+                    exactly the case this tooltip has to answer. */}
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <Button
+                      size="sm"
+                      onClick={() => onSubmit(task.id)}
+                      disabled={submitting || !submittable}
+                    >
+                      <CheckCircle2 className="size-4" />
+                      {submitting ? 'Submitting…' : 'Submit'}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {submittable
+                    ? 'Confirm this allocation — it opens the next task in the lead’s flow.'
+                    : 'Assign an Execution Red first — the next task is assigned to them.'}
+                </TooltipContent>
               </Tooltip>
             )}
-            {!summary?.over && summary?.under && (
-              <Tooltip>
-                <TooltipTrigger asChild><AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" /></TooltipTrigger>
-                <TooltipContent>Under-allocated: fewer resources than required</TooltipContent>
-              </Tooltip>
+            {!staffable && (
+              <span className="text-xs text-muted-foreground">
+                {frozen ? 'Closed to changes' : 'View only'}
+              </span>
             )}
-            <span>{summary?.text || <span className="text-muted-foreground">Not assigned yet</span>}</span>
+            {extraSlots.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                aria-expanded={expanded}
+                onClick={onToggleExtras}
+              >
+                {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                Team &amp; extras ({filledSlotCount(task, extraSlots)} of {extraSlots.length})
+              </Button>
+            )}
           </div>
         </TableCell>
-        <TableCell className="text-right">
-          {/* The row is the primary affordance now; this stays as the label for
-              what opening does (assign vs. read-only view). "Assign" rather than
-              the internal "Staff" wording, per the user. */}
-          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onToggle() }}>
-            {expanded ? 'Close' : task.can_staff ? 'Assign' : 'View'}
-          </Button>
-        </TableCell>
       </TableRow>
-      {expanded && (
-        <TableRow className="bg-muted/40 hover:bg-muted/40">
-          {/* `whitespace-normal` undoes the table default — the panel's help text
-              must wrap, or it alone forces the table wider than the screen. */}
-          <TableCell colSpan={6} className="p-0 whitespace-normal">
-            {/* Pinned to the viewport's left edge and sized to it, so the panel's
-                selects stay a readable length instead of stretching to the
+
+      {expanded && extraSlots.length > 0 && (
+        <TableRow className="bg-muted/30 hover:bg-muted/30">
+          <TableCell colSpan={COLUMN_COUNT} className="p-0 whitespace-normal">
+            {/* Pinned to the viewport's left edge and sized to it, so the grid's
+                pickers stay a readable length instead of stretching to the
                 table's scroll width — and stay put if the table is scrolled. */}
             <div
-              className="sticky left-0 p-3 sm:p-4"
+              className="sticky left-0 flex flex-col gap-2 p-3"
               style={panelWidth ? { width: `${panelWidth}px` } : undefined}
             >
-              <AllocationPanel task={task} />
+              <p className="text-xs text-muted-foreground">
+                Optional named slots — Resource Manager only. The White pool above counts the
+                manpower; these name the individuals alongside it.
+              </p>
+              <ExtraSlotsGrid
+                task={task}
+                slots={extraSlots}
+                actions={actions}
+                disabled={disabled}
+              />
             </div>
           </TableCell>
         </TableRow>
@@ -235,9 +315,24 @@ export default function MyResourceTasks() {
     statusFilter === 'all' ? {} : { status: statusFilter },
   )
   const groups = useMemo(() => groupByProject(tasks), [tasks])
+  const actions = useAllocationActions()
 
-  // Width of the table's visible area — the expanded panel is sized to this so
-  // it never inherits the (wider) scrollable table width.
+  const submit = useSubmitAllocationTask()
+  const [submittingId, setSubmittingId] = useState(null)
+  async function handleSubmit(taskId) {
+    setSubmittingId(taskId)
+    try {
+      await submit.mutateAsync({ taskId })
+      toast.success('Resources allocated — next task opened')
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setSubmittingId(null)
+    }
+  }
+
+  // Width of the table's visible area — the extras row is sized to this so it
+  // never inherits the (wider) scrollable table width.
   const viewportRef = useRef(null)
   const [panelWidth, setPanelWidth] = useState(null)
   useEffect(() => {
@@ -255,11 +350,10 @@ export default function MyResourceTasks() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">My Tasks — Resource</h1>
-          <p className="text-sm text-muted-foreground">
-            Your resource-allocation tasks, grouped by project — one project has a step per stage,
-            and each header shows who currently holds which slot across the engagement. Open a step
-            to assign its slots right here; submitting it opens the next task in that lead’s flow. A
-            step that isn’t due yet can be assigned in advance.
+          <p className="max-w-3xl text-sm text-muted-foreground">
+            One row per allocation step, grouped by project. Pick a name in any column to assign it —
+            each change saves straight away. Then press <strong>Submit</strong> to confirm the step
+            and open the next task. A step that isn’t due yet can be assigned in advance.
           </p>
         </div>
         <div className="flex gap-1.5">
@@ -281,20 +375,31 @@ export default function MyResourceTasks() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-8" />
+                <TableHead>Project ID</TableHead>
                 <TableHead>Stage</TableHead>
-                <TableHead>Allocation task</TableHead>
+                <TableHead>Allocation step</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Slots (allocated/required)</TableHead>
+                <TableHead>Execution Red</TableHead>
+                <TableHead>Execution Brown</TableHead>
+                <TableHead>White(s)</TableHead>
+                <TableHead>Auditors</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading && (
-                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow>
+                  <TableCell colSpan={COLUMN_COUNT} className="py-8 text-center text-muted-foreground">
+                    Loading…
+                  </TableCell>
+                </TableRow>
               )}
               {!isLoading && groups.length === 0 && (
-                <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Nothing here right now.</TableCell></TableRow>
+                <TableRow>
+                  <TableCell colSpan={COLUMN_COUNT} className="py-8 text-center text-muted-foreground">
+                    Nothing here right now.
+                  </TableCell>
+                </TableRow>
               )}
               {groups.map((group) => (
                 <Fragment key={group.lead}>
@@ -303,9 +408,14 @@ export default function MyResourceTasks() {
                     <TaskRow
                       key={task.id}
                       task={task}
+                      actions={actions}
+                      onSubmit={handleSubmit}
+                      submitting={submittingId === task.id}
                       expanded={expandedId === task.id}
+                      onToggleExtras={() =>
+                        setExpandedId((id) => (id === task.id ? null : task.id))
+                      }
                       panelWidth={panelWidth}
-                      onToggle={() => setExpandedId((id) => (id === task.id ? null : task.id))}
                     />
                   ))}
                 </Fragment>

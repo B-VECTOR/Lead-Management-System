@@ -77,10 +77,12 @@ function notifyMiningSpawned(lead, navigate) {
 // The lead's BD workflow track (Phase 4) — the 17-task sequence instantiated
 // by the backend engine. Tasks are listed in the order they opened (loops and
 // extension cycles append later instances). Only the active task's checklist +
-// fields render at a time. Editing/reassign are gated by the backend's
-// per-task `can_edit`/`can_reassign` (Phase 11: the task's assignee only, or
-// Lead Admin, while open — Tech Req §6). A task closes via Save & Complete,
-// which opens the next task(s) per the workflow routing.
+// fields render at a time. Editing/reassign are gated by the backend's per-task
+// `can_edit`/`can_reassign` — editing is the assignee's (Phase 11), while
+// reassignment is the *lead custodian's* only (R21: the LM who created the lead,
+// its current owner, or Lead Admin, while open — Tech Req §6), so a delegated
+// assignee sees no Reassign control. A task closes via Save & Complete, which
+// opens the next task(s) per the workflow routing.
 function ReassignDialog({ task, leadId, owners }) {
   const { user } = useAuth()
   const [open, setOpen] = useState(false)
@@ -141,8 +143,10 @@ function ReassignDialog({ task, leadId, owners }) {
 }
 
 // Task-level hold/unhold (Phase 5). A held task is non-editable until resumed;
-// `can_hold` from the backend gates who may act (Phase 11: the task assignee, or
-// Lead Admin). The optional remark is recorded on the activity log (#1).
+// `can_hold` from the backend gates who may act (Phase 11: the task assignee —
+// the Execution Red included — plus, since R21, the lead's custodians, so the
+// creator/owner can pause work they delegated). The optional remark is recorded
+// on the activity log (#1).
 function TaskHoldButton({ task, leadId }) {
   const hold = useHoldTask()
   const unhold = useUnholdTask()

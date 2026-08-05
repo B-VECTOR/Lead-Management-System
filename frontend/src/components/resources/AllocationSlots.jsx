@@ -21,6 +21,12 @@ import {
 // It was extracted from the old cross-lead `pages/Resources.jsx` popup, which
 // R9-3 retired in favour of staffing in place — `/resources` is now the Resource
 // Manager's queue (`pages/MyResourceTasks.jsx`), which links into the stepper.
+//
+// R22: this is the **form** layout — labelled selects in a grid, for the stepper,
+// where an allocation step reads like every other task's form. The Resources
+// queue no longer renders it; that screen is a table whose cells are the pickers
+// (`AllocationCells.jsx`). Behaviour is identical either way, so the two can
+// still not drift on the rules; only the shape differs.
 
 const NONE = '__none__'
 
@@ -47,31 +53,6 @@ function isExtendedSlot(slot) {
 
 function filledCount(alloc, slots) {
   return slots.filter((s) => (alloc.occupants?.[s] || []).length > 0).length
-}
-
-// A compact "slot allocated/required" summary line for a task, with over/under
-// flags — shared by the Resources grid and the My-Tasks (Resource) list.
-// Empty optional slots are skipped, and the ten Project Member slots collapse
-// into one figure so a fully-staffed team doesn't produce an unreadable line.
-export function slotSummary(task) {
-  const alloc = task.allocation
-  if (!alloc) return null
-  const parts = []
-  const projectMembers = (alloc.slots || []).filter(isProjectMember)
-  let over = false
-  let under = false
-  for (const slot of alloc.slots || []) {
-    if (isProjectMember(slot)) continue
-    const required = alloc.required?.[slot] || 0
-    const count = (alloc.occupants?.[slot] || []).length
-    if (required === 0 && count === 0) continue
-    if (required > 0 && count > required) over = true
-    if (required > 0 && count < required) under = true
-    parts.push(`${alloc.slot_labels?.[slot] || slot} ${count}/${required || count}`)
-  }
-  const pmFilled = filledCount(alloc, projectMembers)
-  if (pmFilled > 0) parts.push(`Project Members ${pmFilled}/${projectMembers.length}`)
-  return { text: parts.join(' · '), over, under }
 }
 
 // True when the task still needs an Execution Red before it can be submitted —

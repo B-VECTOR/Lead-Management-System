@@ -35,6 +35,7 @@ from .models import (
     Task,
     Workflow,
 )
+from .permissions import is_lead_custodian
 from .workflow_data import BD_WORKFLOW
 
 User = get_user_model()
@@ -427,6 +428,20 @@ class AssignableUsersTests(LeadApiTestBase):
         self.client.force_authenticate(self.lead_admin)
         res = self.client.get(self.URL)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_employee_allowed_only_once_they_own_a_lead(self):
+        """R21: the list doubles as the task-reassignment picker, and a lead's
+        owner — a custodian — may be a plain Employee."""
+        self.client.force_authenticate(self.employee)
+        self.assertEqual(self.client.get(self.URL).status_code, status.HTTP_403_FORBIDDEN)
+        Lead.objects.create(
+            company_name="Owned Co", project_name="P", country=self.country,
+            industry=self.industry, domain=self.area,
+            lead_type=Lead.LeadType.BD, flow_of_tasks=Lead.FlowOfTasks.DEFAULT,
+            type_of_project=Lead.TypeOfProject.AMC,
+            created_by=self.lead_manager, assigned_to=self.employee,
+        )
+        self.assertEqual(self.client.get(self.URL).status_code, status.HTTP_200_OK)
 
 
 # --- The 28-task workflow engine (R8) ---------------------------------------
@@ -1820,6 +1835,150 @@ class LeadReassignmentCascadeTests(WorkflowTestBase):
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
         task5.refresh_from_db()
         self.assertEqual(task5.assigned_to_id, self.red.id, "Task 5 is the Red's, as Red")
+
+
+class TaskReassignAuthorityTests(WorkflowTestBase):
+    """R21: reassignment belongs to the lead's custodians, hold to the worker.
+
+    Handing somebody a task must not hand them the power to hand it on, and the
+    lead's creator/owner must keep both levers after delegating.
+    """
+
+    def reassign(self, actor, task_obj, target, expect=status.HTTP_200_OK):
+        self.client.force_authenticate(actor)
+        res = self.client.post(
+            f"/api/tasks/{task_obj.id}/reassign/",
+            {"assigned_to": target.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, expect, res.data)
+        task_obj.refresh_from_db()
+        return res
+
+    def flags(self, actor, task_obj):
+        self.client.force_authenticate(actor)
+        res = self.client.get(f"/api/tasks/{task_obj.id}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        return res.data["can_reassign"], res.data["can_hold"]
+
+    def test_a_delegated_assignee_cannot_hand_the_task_on(self):
+        """The reported bug: reassignment used to travel with the task."""
+        lead = self.create_lead()
+        task1 = self.task(lead, 1)
+        self.reassign(self.lead_manager, task1, self.employee)
+        self.assertEqual(task1.assigned_to_id, self.employee.id)
+
+        self.reassign(self.employee, task1, self.brown, expect=status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            task1.assigned_to_id, self.employee.id, "the refused hand-on changed nothing"
+        )
+        # …but the work itself is theirs: they can pause it, and the button state
+        # the frontend renders agrees with the endpoint.
+        self.assertEqual(self.flags(self.employee, task1), (False, True))
+        res = self.client.post(f"/api/tasks/{task1.id}/hold/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_the_creator_keeps_both_levers_after_delegating(self):
+        lead = self.create_lead()
+        task1 = self.task(lead, 1)
+        self.reassign(self.lead_manager, task1, self.employee)
+
+        self.assertEqual(self.flags(self.lead_manager, task1), (True, True))
+        # Pull it back to somebody else…
+        self.reassign(self.lead_manager, task1, self.white)
+        self.assertEqual(task1.assigned_to_id, self.white.id)
+        # …and pause a task that is now nobody else's but still their lead's.
+        self.client.force_authenticate(self.lead_manager)
+        res = self.client.post(f"/api/tasks/{task1.id}/hold/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task1.refresh_from_db()
+        self.assertEqual(task1.status, Task.Status.HOLD)
+
+    def test_the_creator_keeps_reassign_on_a_lead_owned_by_somebody_else(self):
+        """The creator branch has to be reachable through the task scope too —
+        `TaskScopeMixin` admits a Lead Manager's `lead__created_by` tasks."""
+        lead = self.create_lead(owner=self.employee)
+        task1 = self.task(lead, 1)
+        self.assertEqual(task1.assigned_to_id, self.employee.id)
+        self.assertEqual(self.flags(self.lead_manager, task1), (True, True))
+        self.reassign(self.lead_manager, task1, self.brown)
+        self.assertEqual(task1.assigned_to_id, self.brown.id)
+        # A Lead Manager with no stake in this lead gets nothing.
+        self.reassign(
+            self.other_manager, task1, self.white, expect=status.HTTP_404_NOT_FOUND
+        )
+
+    def test_execution_red_holds_its_own_task_but_cannot_reassign_it(self):
+        lead = self.create_lead()
+        owner = self.lead_manager
+        self.complete(owner, self.task(lead, 1), self.f1())
+        self.complete(owner, self.task(lead, 2), self.f2())
+        self.staff_and_submit(
+            self.resource_manager, self.task(lead, 3), {"execution_red": self.red}
+        )
+        self.complete(owner, self.task(lead, 4))
+        task5 = self.task(lead, 5)
+        self.assertEqual(task5.assigned_to_id, self.red.id)
+
+        self.assertEqual(self.flags(self.red, task5), (False, True))
+        self.reassign(self.red, task5, self.brown, expect=status.HTTP_403_FORBIDDEN)
+        self.assertEqual(task5.assigned_to_id, self.red.id)
+
+        self.client.force_authenticate(self.red)
+        res = self.client.post(f"/api/tasks/{task5.id}/hold/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        res = self.client.post(f"/api/tasks/{task5.id}/unhold/", format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        # DD-R21-5: the lead's custodian may still move the Red's task deliberately.
+        self.reassign(owner, task5, self.brown)
+        self.assertEqual(task5.assigned_to_id, self.brown.id)
+
+    def test_the_owner_is_a_custodian_even_when_someone_else_created_the_lead(self):
+        """The Default BD Person may be a plain Employee (DD-R21-1)."""
+        lead = self.create_lead(owner=self.employee)
+        self.assertEqual(lead.created_by_id, self.lead_manager.id)
+        task1 = self.task(lead, 1)
+        self.assertEqual(task1.assigned_to_id, self.employee.id)
+
+        # Delegates as owner, then reassigns again — the right stayed with them
+        # rather than moving to the person they delegated to.
+        self.reassign(self.employee, task1, self.brown)
+        self.reassign(self.brown, task1, self.white, expect=status.HTTP_403_FORBIDDEN)
+        self.reassign(self.employee, task1, self.white)
+        self.assertEqual(task1.assigned_to_id, self.white.id)
+
+    def test_a_marketing_creator_is_not_a_custodian(self):
+        """DD-R21-2: Marketing sources leads; it does not own the workflow."""
+        self.client.force_authenticate(self.marketing)
+        res = self.client.post(LIST_URL, self.base_payload(), format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        lead = Lead.objects.get(pk=res.data["id"])
+        self.client.force_authenticate(self.lead_admin)
+        res = self.client.patch(
+            detail_url(lead.id), {"assigned_to": self.lead_manager.id}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        task1 = self.task(lead, 1)
+        self.assertEqual(task1.assigned_to_id, self.lead_manager.id)
+        # 404 rather than 403: the task-scope queryset never shows a Marketing
+        # sourcer the tasks under a lead they no longer work, so the custodian
+        # check isn't even reached — the exclusion holds at both layers.
+        self.reassign(
+            self.marketing, task1, self.employee, expect=status.HTTP_404_NOT_FOUND
+        )
+        self.assertFalse(is_lead_custodian(self.marketing, lead))
+        self.reassign(self.lead_manager, task1, self.employee)
+
+    def test_a_closed_task_is_reassignable_by_nobody(self):
+        """DD-R21-4: custodianship is not a licence to move finished work."""
+        lead = self.create_lead()
+        task1 = self.task(lead, 1)
+        self.complete(self.lead_manager, task1, self.f1())
+        task1.refresh_from_db()
+        self.assertEqual(task1.status, Task.Status.CLOSED)
+        for actor in (self.lead_manager, self.lead_admin):
+            self.reassign(actor, task1, self.employee, expect=status.HTTP_403_FORBIDDEN)
 
 
 class TriggerSchedulerTests(WorkflowTestBase):

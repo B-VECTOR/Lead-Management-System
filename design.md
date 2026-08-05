@@ -200,6 +200,19 @@ Reach for this whenever an action outgrows a single page — `ShortCloseButton` 
 
 Wrap in a `Card className="py-0"` with `CardContent className="overflow-x-auto p-0"` so wide tables scroll horizontally on mobile without breaking the page, and the card border hugs the table with no extra top/bottom padding. Header cells: `<TableHead>`; use a second header `<TableRow>` for per-column filter inputs (`h-8 text-xs`). Empty/loading state: a single full-`colSpan` `<TableCell className="py-8 text-center text-muted-foreground">`. Clickable rows: `className="cursor-pointer"` + `onClick`; stop propagation on inner links.
 
+**Grouped tables** (several rows belong to one parent — a project's stages, a lead's cycles): state the parent once in a full-`colSpan` header row, `className="bg-muted/40"`, and wrap its contents in a `sticky left-0` div so the parent stays legible while a wide table is scrolled sideways. See `ProjectClosure.jsx` and `MyResourceTasks.jsx`.
+
+#### Editable table cells
+
+This app's back-office users work in tables, not forms — a screen whose job is "read the row, change one value, act" should put the control **in the cell** rather than behind an expand/modal step. The pattern (`components/resources/AllocationCells.jsx`, R22):
+
+- **The cell is the control.** A `<Select>` with `SelectTrigger className="w-full"`; give the trigger **your own children** instead of `<SelectValue>` so the displayed text comes from the row's own data, not from a matched `<SelectItem>`.
+- **Never fetch an option list on render.** Load it on first open (`onOpenChange` → a flag → the query's `enabled`); a 20-row table with four picker columns would otherwise fire 80 lookups for lists nobody opened. This is why the displayed text must come from the row.
+- **Every change is a save, so every change gets a `toast`.** No per-cell Save button, and no confirm dialog for a reversible, logged change — a confirm restores the click the pattern removes.
+- **A missing *required* value is amber** (`text-amber-700 dark:text-amber-400`, §7's under-allocation colour), an optional one stays muted — so scanning a column finds the gaps.
+- Cells with stacked content get `align-top`; keep explanatory prose out of rows and put it on a tooltip attached to the value it explains.
+- Columns are per **role/meaning**, not one per backend key — collapse a rarely-used family into one column, and keep optional extras behind a per-row toggle rather than adding columns nobody reads.
+
 ---
 
 ## 6. Forms
