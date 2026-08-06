@@ -258,6 +258,11 @@ class Lead(models.Model):
         ordering = ["-created_at"]
         verbose_name = _("lead")
         verbose_name_plural = _("leads")
+        indexes = [
+            # The leads list's page order (R25 pins the `-id` tie-break so paging
+            # is stable); every page after the first is an OFFSET into this.
+            models.Index(fields=["-created_at", "-id"], name="lead_list_order_idx"),
+        ]
 
     def __str__(self):
         return f"{self.company_name} — {self.project_name}"
@@ -350,6 +355,15 @@ class LeadStage(models.Model):
         ordering = ["lead", "stage_start_dt", "id"]
         verbose_name = _("lead stage")
         verbose_name_plural = _("lead stages")
+        indexes = [
+            # Serves `filters.CURRENT_STAGE_CODE` — "this lead's newest open
+            # stage" (and its any-status fallback), a correlated subquery run per
+            # row of every leads page.
+            models.Index(
+                fields=["lead", "status", "-stage_start_dt"],
+                name="lead_stage_current_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"[{self.lead_id}] {self.stage} ({self.status})"
@@ -498,6 +512,14 @@ class Task(models.Model):
         ordering = ["id"]
         verbose_name = _("task")
         verbose_name_plural = _("tasks")
+        indexes = [
+            # Serves `filters.CURRENT_TASK_NO` (this lead's lowest open/held
+            # task) and the prefetch behind the tracker column — both keyed on
+            # the lead, then status, then task_no.
+            models.Index(
+                fields=["lead", "status", "task_no"], name="task_lead_status_no_idx"
+            ),
+        ]
 
     def __str__(self):
         return f"[{self.lead_id}] Task {self.task_no} — {self.task_name}"

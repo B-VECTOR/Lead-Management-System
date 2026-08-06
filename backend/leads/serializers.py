@@ -232,8 +232,22 @@ class LeadSerializer(serializers.ModelSerializer):
             "remark": obj.short_close_remark,
         }
 
+    def _task_defs(self, lead_type):
+        """The workflow's task map for ``lead_type``, resolved once per request.
+
+        ``engine.task_defs_for`` queries for the active workflow, and this
+        serializer runs per row — on a 50-row page of the leads list that was 50
+        identical lookups (R25-5). The cache lives on the serializer instance,
+        which is per-request, so a workflow edited in the admin is picked up by
+        the next request rather than being pinned process-wide.
+        """
+        cache = self.__dict__.setdefault("_task_defs_by_type", {})
+        if lead_type not in cache:
+            cache[lead_type] = engine.task_defs_for(lead_type)
+        return cache[lead_type]
+
     def get_can_short_close(self, obj):
-        return engine.can_short_close(obj)
+        return engine.can_short_close(obj, defs=self._task_defs(obj.lead_type))
 
     def get_project_id_display(self, obj):
         return projects.derived_project_id(obj)

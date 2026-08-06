@@ -1090,7 +1090,7 @@ def _closure_task_def(defs):
     return None
 
 
-def can_short_close(lead):
+def can_short_close(lead, *, defs=None):
     """Whether short-close (§9.2/§5.12) is currently available for ``lead``.
 
     Data-driven — no task numbers hardcoded. The workflow JSON marks its
@@ -1108,16 +1108,35 @@ def can_short_close(lead):
 
     A ``pending`` grant task doesn't count: it is a seeded row waiting on its
     date trigger, and the docs grant access "on open".
+
+    **Reads the prefetched tasks when they are already loaded** (R25-5): the
+    leads serializer calls this on every row, and two ``.filter().exists()``
+    queries per lead put 100 queries behind a 50-row page of the leads list.
+    Both questions are answerable from ``lead.tasks.all()``, which the list
+    queryset prefetches for the tracker column anyway. ``defs`` lets a caller
+    that is looping over leads hand in an already-resolved
+    :func:`task_defs_for` map, so the workflow lookup is not repeated per row
+    either.
     """
     if lead.status != Lead.Status.IN_PROGRESS:
         return False
-    defs = task_defs_for(lead.lead_type)
+    if defs is None:
+        defs = task_defs_for(lead.lead_type)
     closure = _closure_task_def(defs)
     if closure is None:
         return False
+    grant_nos = {no for no, tdef in defs.items() if tdef.get("grants_short_close")}
+    tasks = _loaded_tasks(lead)
+    if tasks is not None:
+        if any(t.task_no == closure["task_no"] for t in tasks):
+            return False
+        if not grant_nos:
+            return False
+        return any(
+            t.task_no in grant_nos and t.status != Task.Status.PENDING for t in tasks
+        )
     if lead.tasks.filter(task_no=closure["task_no"]).exists():
         return False
-    grant_nos = [no for no, tdef in defs.items() if tdef.get("grants_short_close")]
     if not grant_nos:
         return False
     return (
@@ -1125,6 +1144,20 @@ def can_short_close(lead):
         .exclude(status=Task.Status.PENDING)
         .exists()
     )
+
+
+def _loaded_tasks(lead):
+    """``lead``'s tasks if they are already in memory, else ``None``.
+
+    Only the prefetch cache counts — touching ``lead.tasks.all()`` on an
+    un-prefetched lead would *fetch* every task row, trading two cheap
+    ``EXISTS`` queries for a full load. ``None`` means "ask the database".
+    """
+    cache = getattr(lead, "_prefetched_objects_cache", None)
+    if not cache:
+        return None
+    cached = cache.get("tasks")
+    return None if cached is None else list(cached)
 
 
 @transaction.atomic

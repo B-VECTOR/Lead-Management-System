@@ -24,6 +24,7 @@ from .views import (
     LeadCommentListCreateView,
     LeadDetailView,
     LeadDropView,
+    LeadFilterOptionsView,
     LeadHoldView,
     LeadListCreateView,
     LeadResourceAllocationListView,
@@ -46,6 +47,13 @@ app_name = "leads"
 
 urlpatterns = [
     path("api/leads/", LeadListCreateView.as_view(), name="api-lead-list"),
+    # Values for the list's per-column filter dropdowns, over the caller's whole
+    # scoped set (R25) — must stay above the `<int:pk>` detail route.
+    path(
+        "api/leads/filter-options/",
+        LeadFilterOptionsView.as_view(),
+        name="api-lead-filter-options",
+    ),
     path("api/leads/<int:pk>/", LeadDetailView.as_view(), name="api-lead-detail"),
     path(
         "api/assignable-users/",

@@ -15,7 +15,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -2970,3 +2972,286 @@ class LeadSideAllocationDisplayTests(WorkflowTestBase):
         )
         row.refresh_from_db()
         self.assertEqual(row.man_power_required, 0)
+
+
+# --- R25: server-side filtering + pagination of the leads list ---------------
+
+FILTER_OPTIONS_URL = "/api/leads/filter-options/"
+
+
+class LeadListFilterPaginationTests(LeadApiTestBase):
+    """R25: a page of the leads list is a page **of the filtered set**.
+
+    The failure these guard against is the one the user named: filters that only
+    reach the rows currently visible. Every assertion here is written against a
+    dataset deliberately larger than the page size, so a filter that only saw one
+    page would fail rather than merely look slower.
+    """
+
+    def make_leads(self, n, **overrides):
+        """Create ``n`` leads directly (no API round trip per row).
+
+        ``initialize_new_lead`` is still called so each lead gets its base_code
+        and its initial stage — the Project-ID search and the current-stage
+        filter both read those.
+        """
+        out = []
+        for i in range(n):
+            fields = {
+                "company_name": f"Company {i:03d}",
+                "project_name": f"Project {i:03d}",
+                "country": self.country,
+                "industry": self.industry,
+                "domain": self.area,
+                "lead_type": Lead.LeadType.BD,
+                "flow_of_tasks": Lead.FlowOfTasks.DEFAULT,
+                "type_of_project": Lead.TypeOfProject.CONSULTING_FULL,
+                "created_by": self.lead_manager,
+                "assigned_to": self.lead_manager,
+            }
+            fields.update(overrides)
+            lead = Lead.objects.create(**fields)
+            projects.initialize_new_lead(lead)
+            out.append(lead)
+        return out
+
+    def get_list(self, actor=None, **params):
+        self.client.force_authenticate(actor or self.lead_admin)
+        res = self.client.get(LIST_URL, params)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        return res.data
+
+    def test_list_is_paginated_and_pages_do_not_overlap(self):
+        self.make_leads(30)
+        first = self.get_list(page_size=10)
+        self.assertEqual(first["count"], 30)
+        self.assertEqual(len(first["results"]), 10)
+
+        seen = []
+        for page in (1, 2, 3):
+            data = self.get_list(page=page, page_size=10)
+            seen.extend(r["id"] for r in data["results"])
+        # Every lead exactly once: `Lead.Meta.ordering` is `-created_at` alone,
+        # which is not a total order — these rows share a created_at to the
+        # second, so without the `-id` tie-break rows repeat/vanish here.
+        self.assertEqual(len(seen), 30)
+        self.assertEqual(len(set(seen)), 30)
+
+    def test_text_filter_searches_every_page_not_the_visible_one(self):
+        self.make_leads(40)
+        # One needle, created first, so unfiltered it sits on the *last* page.
+        needle = self.make_leads(1, company_name="Zenith Pharmaceuticals")[0]
+        Lead.objects.filter(pk=needle.pk).update(
+            created_at=timezone.now() - timedelta(days=365)
+        )
+
+        unfiltered = self.get_list(page_size=10)
+        self.assertEqual(unfiltered["count"], 41)
+        self.assertNotIn(needle.id, [r["id"] for r in unfiltered["results"]])
+
+        data = self.get_list(page_size=10, q="zenith")
+        self.assertEqual(data["count"], 1)
+        self.assertEqual([r["id"] for r in data["results"]], [needle.id])
+
+    def test_filters_combine_with_and(self):
+        other_industry = Industry.objects.create(name="Auto", code="AU")
+        self.make_leads(12)
+        target = self.make_leads(
+            1, company_name="Match Co", industry=other_industry
+        )[0]
+        self.make_leads(1, company_name="Match Co")  # right name, wrong industry
+        self.make_leads(1, industry=other_industry)  # right industry, wrong name
+
+        data = self.get_list(q="match", industry=other_industry.id)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["id"], target.id)
+
+    def test_owner_filter_including_unassigned(self):
+        mine = self.make_leads(3, assigned_to=self.other_manager)
+        orphans = self.make_leads(2, assigned_to=None)
+        self.make_leads(4)
+
+        data = self.get_list(page_size=2, owner=self.other_manager.id)
+        self.assertEqual(data["count"], 3)
+        self.assertTrue(set(r["id"] for r in data["results"]) <= {l.id for l in mine})
+
+        data = self.get_list(owner="unassigned")
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(
+            sorted(r["id"] for r in data["results"]), sorted(l.id for l in orphans)
+        )
+
+    def test_status_filter_and_bad_values_are_ignored(self):
+        leads = self.make_leads(6)
+        Lead.objects.filter(pk__in=[l.pk for l in leads[:2]]).update(
+            status=Lead.Status.DROPPED
+        )
+        self.assertEqual(self.get_list(status=Lead.Status.DROPPED)["count"], 2)
+        # A filter row is not a form: junk is ignored rather than 400-ing and
+        # stranding the screen.
+        self.assertEqual(self.get_list(status="Nonsense")["count"], 6)
+        self.assertEqual(self.get_list(industry="abc")["count"], 6)
+        self.assertEqual(self.get_list(task_no="")["count"], 6)
+
+    def test_current_stage_filter_matches_the_rendered_column(self):
+        leads = self.make_leads(4)
+        # Move one lead on to Implementation the way the engine does; the derived
+        # column and the filter must agree about which stage is "current".
+        projects.ensure_stage(leads[0], LeadStage.IM)
+        projects.close_stage(leads[0].stages.get(stage=LeadStage.BD))
+
+        data = self.get_list(stage=LeadStage.IM)
+        self.assertEqual(data["count"], 1)
+        row = data["results"][0]
+        self.assertEqual(row["id"], leads[0].id)
+        self.assertEqual(row["current_stage"]["stage"], LeadStage.IM)
+
+        data = self.get_list(stage=LeadStage.BD)
+        self.assertEqual(data["count"], 3)
+
+    def test_project_id_filter_matches_base_and_stage_suffix(self):
+        leads = self.make_leads(3)
+        target = leads[0]
+        target.refresh_from_db()
+
+        data = self.get_list(project_id=target.base_code)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["id"], target.id)
+
+        # The displayed ID carries the stage suffix, which lives on the stage row
+        # (the display ID is derived, never stored on the lead) — searching what
+        # the column shows has to work.
+        displayed = data["results"][0]["project_id_display"]
+        self.assertTrue(displayed.endswith(f"-{LeadStage.BD}"), displayed)
+        data = self.get_list(project_id=displayed)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["id"], target.id)
+
+    def test_role_scope_still_bounds_a_filtered_search(self):
+        mine = self.make_leads(2, company_name="Shared Name")
+        theirs = self.make_leads(
+            3,
+            company_name="Shared Name",
+            created_by=self.other_manager,
+            assigned_to=self.other_manager,
+        )
+        # Lead Admin sees all five; the owning manager sees only their own — a
+        # filter widens nothing.
+        self.assertEqual(self.get_list(q="shared")["count"], 5)
+        data = self.get_list(actor=self.lead_manager, q="shared")
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(
+            sorted(r["id"] for r in data["results"]), sorted(l.id for l in mine)
+        )
+        self.assertTrue({l.id for l in theirs}.isdisjoint(
+            {r["id"] for r in data["results"]}
+        ))
+
+    def test_page_size_is_capped(self):
+        self.make_leads(3)
+        data = self.get_list(page_size=99999)
+        self.assertEqual(len(data["results"]), 3)  # cap applied, no 400
+
+    # -- the option lists ----------------------------------------------------
+
+    def get_options(self, actor=None):
+        self.client.force_authenticate(actor or self.lead_admin)
+        res = self.client.get(FILTER_OPTIONS_URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        return res.data
+
+    def test_filter_options_cover_the_whole_dataset_not_a_page(self):
+        rare_industry = Industry.objects.create(name="Shipping", code="SH")
+        self.make_leads(30)
+        # One lead with a value nothing else has, pushed to the oldest position
+        # so it cannot be on the first page of any page size used here.
+        odd = self.make_leads(1, industry=rare_industry, assigned_to=None)[0]
+        Lead.objects.filter(pk=odd.pk).update(
+            created_at=timezone.now() - timedelta(days=365)
+        )
+        page = self.get_list(page_size=5)
+        self.assertNotIn(odd.id, [r["id"] for r in page["results"]])
+
+        options = self.get_options()
+        self.assertIn(
+            rare_industry.id, [o["value"] for o in options["industries"]]
+        )
+        self.assertTrue(options["has_unassigned"])
+        self.assertEqual([o["value"] for o in options["owners"]], [self.lead_manager.id])
+        self.assertEqual(options["stages"], [LeadStage.BD])
+        self.assertEqual(options["statuses"], [Lead.Status.IN_PROGRESS])
+        self.assertEqual(options["lead_types"], [Lead.LeadType.BD])
+
+    def test_filter_options_are_role_scoped(self):
+        self.make_leads(2, created_by=self.other_manager, assigned_to=self.other_manager)
+        self.make_leads(1)
+        options = self.get_options(actor=self.lead_manager)
+        self.assertEqual([o["value"] for o in options["owners"]], [self.lead_manager.id])
+
+    def test_filter_options_are_not_narrowed_by_active_filters(self):
+        """The dropdowns stay complete while a filter is on — options that vanish
+        as you filter make a second filter unusable."""
+        self.make_leads(2)
+        self.make_leads(1, assigned_to=self.other_manager)
+        self.client.force_authenticate(self.lead_admin)
+        res = self.client.get(FILTER_OPTIONS_URL, {"owner": self.lead_manager.id})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data["owners"]), 2)
+
+
+class LeadListCurrentTaskFilterTests(WorkflowTestBase):
+    """The Current-Task filter, which needs real tasks (hence the workflow seed).
+
+    ``filters.CURRENT_TASK_NO`` is the ORM twin of
+    ``LeadSerializer.get_current_task``; if the two ever disagree the dropdown
+    offers values the column contradicts, so they are asserted together.
+    """
+
+    def test_current_task_filter_matches_the_rendered_column(self):
+        early = self.create_lead(owner=self.lead_manager)
+        advanced = self.create_lead(owner=self.lead_manager)
+        self.complete(self.lead_manager, self.task(advanced, 1), self.f1())
+
+        self.client.force_authenticate(self.lead_admin)
+        res = self.client.get(LIST_URL, {"task_no": 2})
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data["count"], 1)
+        row = res.data["results"][0]
+        self.assertEqual(row["id"], advanced.id)
+        self.assertEqual(row["current_task"]["task_no"], 2)
+
+        res = self.client.get(LIST_URL, {"task_no": 1})
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(res.data["results"][0]["id"], early.id)
+
+        res = self.client.get(FILTER_OPTIONS_URL)
+        self.assertEqual(
+            sorted(o["value"] for o in res.data["current_tasks"]), [1, 2]
+        )
+        # The label is the task's real name, so the dropdown reads like the column.
+        by_no = {o["value"]: o["label"] for o in res.data["current_tasks"]}
+        self.assertEqual(by_no[2], self.task(advanced, 2).task_name)
+
+    def test_a_page_of_leads_does_not_scale_its_query_count_with_page_size(self):
+        """R25-5: `can_short_close` used to run two queries per row.
+
+        The guard is that the query count for a page does not grow with the
+        number of rows on it — the check that actually breaks if a per-row
+        `.filter().exists()` creeps back into the serializer.
+        """
+        for _ in range(4):
+            self.create_lead(owner=self.lead_manager)
+        self.client.force_authenticate(self.lead_admin)
+        with CaptureQueriesContext(connection) as ctx:
+            res = self.client.get(LIST_URL, {"page_size": 1})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        one_row = len(ctx.captured_queries)
+        with CaptureQueriesContext(connection) as ctx:
+            res = self.client.get(LIST_URL, {"page_size": 4})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        four_rows = len(ctx.captured_queries)
+        self.assertEqual(
+            one_row, four_rows,
+            f"query count grew with page size ({one_row} → {four_rows}) — "
+            "something in the serializer is querying per row",
+        )

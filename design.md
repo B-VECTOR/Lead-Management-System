@@ -203,6 +203,18 @@ Wrap in a `Card className="py-0"` with `CardContent className="overflow-x-auto p
 
 **Grouped tables** (several rows belong to one parent — a project's stages, a lead's cycles): state the parent once in a full-`colSpan` header row, `className="bg-muted/40"`, and wrap its contents in a `sticky left-0` div so the parent stays legible while a wide table is scrolled sideways. See `ProjectClosure.jsx` and `MyResourceTasks.jsx`.
 
+#### Paginated tables — filter the dataset, not the page
+
+Any table that can grow without bound gets **server-side** pagination, and its filters must be server-side too (`LeadsList.jsx` + `leads/filters.py`, R25). The rule, because getting it wrong is invisible until the data grows:
+
+- **A page is a page of the *filtered* set.** Filtering happens in the query, before the slice. Filtering rows the client already holds silently hides every match that fell outside the current page — the same screen looks fine on 30 records and lies on 3,000.
+- **Filter dropdown options come from the whole dataset, via their own endpoint** (`/api/leads/filter-options/`), never from the loaded rows, and are **not** narrowed by the other active filters. An option that disappears as you filter makes a second filter unusable.
+- **Order by a total order.** `-created_at` alone is not one; add the `-id` tie-break or rows repeat and vanish across page boundaries.
+- Text filters are **debounced** (300 ms); any filter change **resets to page 1**; a page past the end snaps back to the last real page.
+- **Filters + page live in the URL** (`useSearchParams`, `replace: true`). These tables are launch pads for a detail screen, and a filter that dies on every Back trip stops being used.
+- Footer: `components/shared/Pagination.jsx` — range ("1–50 of 1,284"), **numbered page buttons**, first/prev/next/last, rows-per-page. Numbered pages because this app's users click a page, not a chevron. Default 50 rows: a dense table should hand over a screenful, not a dozen rows and a click.
+- Use `keepPreviousData` so the table holds the old page while the next loads instead of blanking, and dim the body (`opacity-60`) while fetching.
+
 #### Editable table cells
 
 This app's back-office users work in tables, not forms — a screen whose job is "read the row, change one value, act" should put the control **in the cell** rather than behind an expand/modal step. The pattern (`components/resources/AllocationCells.jsx`, R22):

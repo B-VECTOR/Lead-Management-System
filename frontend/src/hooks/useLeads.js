@@ -1,13 +1,41 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as leadsApi from '@/api/leads'
 import { useAuth } from '@/context/AuthContext'
 
+// Loads **every** lead the user may see (walking the paginated endpoint). For a
+// list screen use `useLeadsPage`; this is for the callers that need the whole set
+// in memory at once, such as a lead picker.
 export function useLeads(filters = {}) {
   const { user } = useAuth()
   return useQuery({
     queryKey: ['leads', user?.id, filters],
     queryFn: () => leadsApi.listLeads(user, filters),
     enabled: !!user,
+  })
+}
+
+// One server-filtered, server-paginated page of leads (R25). `keepPreviousData`
+// holds the previous page on screen while the next one loads, so paging doesn't
+// blank the table and bounce the scroll position.
+export function useLeadsPage({ page = 1, pageSize = 50, filters = {} } = {}) {
+  const { user } = useAuth()
+  return useQuery({
+    queryKey: ['leads', 'page', user?.id, page, pageSize, filters],
+    queryFn: () => leadsApi.listLeadsPage({ page, pageSize, filters }),
+    enabled: !!user,
+    placeholderData: keepPreviousData,
+  })
+}
+
+// Filter-dropdown values over the whole scoped dataset — one request per screen,
+// independent of which page is on show.
+export function useLeadFilterOptions() {
+  const { user } = useAuth()
+  return useQuery({
+    queryKey: ['leads', 'filter-options', user?.id],
+    queryFn: leadsApi.getLeadFilterOptions,
+    enabled: !!user,
+    staleTime: 5 * 60 * 1000,
   })
 }
 

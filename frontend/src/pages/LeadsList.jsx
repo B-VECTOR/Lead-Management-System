@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, PauseCircle, Info, FilterX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +7,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { LeadStatusBadge, LeadTypeBadge, StageBadge, stageLabel } from '@/components/shared/StatusBadge'
-import { useLeads } from '@/hooks/useLeads'
+import Pagination from '@/components/shared/Pagination'
+import { useLeadFilterOptions, useLeadsPage } from '@/hooks/useLeads'
 import { useAuth } from '@/context/AuthContext'
 import { PERMISSIONS, hasRole } from '@/api/scope'
 import { personName } from '@/lib/format'
@@ -32,6 +33,11 @@ const EMPTY_FILTERS = {
   currentTask: 'all',
   status: 'all',
 }
+
+const DEFAULT_PAGE_SIZE = 50
+// Long enough that a fast typist doesn't fire a request per keystroke, short
+// enough that the table still feels like it is reacting to the search box.
+const TEXT_DEBOUNCE_MS = 300
 
 // Workflow progress driven by task closure: closed/total real instances + %
 // (skipped steps excluded server-side; repeat cycles add instances).
@@ -65,7 +71,9 @@ function leadsSubtitle(user) {
   return 'Leads you are working on.'
 }
 
-// A dropdown filter cell whose options come from the data on screen (§5.18).
+// A dropdown filter cell. Options come from `/api/leads/filter-options/` — the
+// whole scoped dataset, **not** the rows on this page (R25): building them from
+// the visible rows is what makes a filter useless the moment the data pages.
 function FilterSelect({ value, onChange, options, placeholder }) {
   return (
     <Select value={value} onValueChange={onChange}>
@@ -82,66 +90,111 @@ function FilterSelect({ value, onChange, options, placeholder }) {
   )
 }
 
+// --- URL <-> state -----------------------------------------------------------
+// Filters, page and page size live in the query string so the filtered page
+// survives a refresh and, more importantly, comes back when the user opens a
+// lead and presses Back — this table is a launch pad for the detail screen, and
+// losing a search on every return trip is the main reason people stop filtering.
+function readFilters(params) {
+  const out = { ...EMPTY_FILTERS }
+  for (const key of Object.keys(EMPTY_FILTERS)) {
+    const raw = params.get(key)
+    if (raw !== null && raw !== '') out[key] = raw
+  }
+  return out
+}
+
+function writeParams({ filters, page, pageSize }) {
+  const params = {}
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== EMPTY_FILTERS[key]) params[key] = value
+  }
+  if (page > 1) params.page = String(page)
+  if (pageSize !== DEFAULT_PAGE_SIZE) params.pageSize = String(pageSize)
+  return params
+}
+
 export default function LeadsList() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const { data: leads = [], isLoading } = useLeads()
+  const filters = useMemo(() => readFilters(searchParams), [searchParams])
+  const page = Math.max(1, Number(searchParams.get('page')) || 1)
+  const pageSize = Number(searchParams.get('pageSize')) || DEFAULT_PAGE_SIZE
 
-  const setFilter = (key) => (value) => setFilters((f) => ({ ...f, [key]: value }))
-  const filtersActive = JSON.stringify(filters) !== JSON.stringify(EMPTY_FILTERS)
+  const update = useCallback(
+    (next) => {
+      setSearchParams(
+        writeParams({ filters, page, pageSize, ...next }),
+        { replace: true },
+      )
+    },
+    [filters, page, pageSize, setSearchParams],
+  )
 
-  // Dropdown options are built from the loaded rows (§5.18) — Owner includes
-  // "Not Assigned"; Current Task is sorted numerically by task number.
+  // Any filter change goes back to page 1: staying on page 7 of a set that just
+  // shrank to two pages shows an empty table over a full result set.
+  const setFilter = (key) => (value) =>
+    update({ filters: { ...filters, [key]: value }, page: 1 })
+
+  // The two text boxes are typed into, so they keep their own immediate state
+  // and only push into the URL (and the request) after a pause.
+  const [textDraft, setTextDraft] = useState(filters.text)
+  const [projectIdDraft, setProjectIdDraft] = useState(filters.projectId)
+  useEffect(() => setTextDraft(filters.text), [filters.text])
+  useEffect(() => setProjectIdDraft(filters.projectId), [filters.projectId])
+  useEffect(() => {
+    if (textDraft === filters.text && projectIdDraft === filters.projectId) return
+    const t = setTimeout(
+      () => update({ filters: { ...filters, text: textDraft, projectId: projectIdDraft }, page: 1 }),
+      TEXT_DEBOUNCE_MS,
+    )
+    return () => clearTimeout(t)
+  }, [textDraft, projectIdDraft, filters, update])
+
+  const { data, isLoading, isFetching, isPlaceholderData } = useLeadsPage({ page, pageSize, filters })
+  const { data: rawOptions } = useLeadFilterOptions()
+
+  const rows = data?.rows ?? []
+  const count = data?.count ?? 0
+  const pageCount = data?.pageCount ?? 1
+
+  // A page beyond the end (a bookmarked page 9 of a set that has shrunk, or a
+  // filter that narrowed while a later page was open) snaps back to the last one
+  // that exists rather than showing an empty table.
+  useEffect(() => {
+    if (!data || isPlaceholderData) return
+    if (page > pageCount) update({ page: pageCount })
+  }, [data, isPlaceholderData, page, pageCount, update])
+
   const options = useMemo(() => {
-    const uniq = (vals) => [...new Set(vals.filter(Boolean))].sort()
-    const owners = uniq(leads.map((l) => l.assigned_to_name))
-    if (leads.some((l) => !l.assigned_to)) owners.unshift('Not Assigned')
-    const taskMap = new Map()
-    for (const l of leads) {
-      if (l.current_task) taskMap.set(l.current_task.task_no, l.current_task.task_name)
-    }
-    const currentTasks = [...taskMap.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([no, name]) => ({ value: String(no), label: `Task ${no}. ${name}` }))
-    const asOpts = (vals) => vals.map((v) => ({ value: v, label: v }))
-    // Current-Stage options (§4.3.3): the derived stage code on each lead
-    // (R2's `current_stage`), labelled the same way the StageBadge/stepper do.
-    const stages = uniq(leads.map((l) => l.current_stage?.stage))
-    return {
-      industries: asOpts(uniq(leads.map((l) => l.industry_name))),
-      domains: asOpts(uniq(leads.map((l) => l.domain_name))),
+    const o = rawOptions || {}
+    const asOpts = (vals) => (vals || []).map((v) => ({ value: v, label: v }))
+    const owners = (o.owners || []).map((r) => ({
       // The signed-in user reads as "Me" here too, matching the Owner column;
-      // the option's *value* stays the real name, which is what rows filter on.
-      owners: owners.map((v) => ({ value: v, label: personName(v, user, { capitalize: true }) })),
-      stages: stages.map((code) => ({ value: code, label: stageLabel(code) })),
-      currentTasks,
-      statuses: asOpts(uniq(leads.map((l) => l.status))),
+      // the option's *value* stays the id, which is what the server filters on.
+      value: String(r.value),
+      label: personName(r.label, user, { id: r.value, capitalize: true }),
+    }))
+    if (o.has_unassigned) owners.unshift({ value: 'unassigned', label: 'Not Assigned' })
+    return {
+      industries: (o.industries || []).map((r) => ({ value: String(r.value), label: r.label })),
+      domains: (o.domains || []).map((r) => ({ value: String(r.value), label: r.label })),
+      owners,
+      // Current-Stage options (§4.3.3): the derived stage code on each lead
+      // (R2's `current_stage`), labelled the same way the StageBadge/stepper do.
+      stages: (o.stages || []).map((code) => ({ value: code, label: stageLabel(code) })),
+      currentTasks: (o.current_tasks || []).map((r) => ({
+        value: String(r.value),
+        label: `Task ${r.value}. ${r.label}`,
+      })),
+      statuses: asOpts(o.statuses),
     }
-  }, [leads, user])
+  }, [rawOptions, user])
 
-  // All filters combine with AND semantics (§5.18).
-  const rows = useMemo(() => {
-    const text = filters.text.trim().toLowerCase()
-    const pid = filters.projectId.trim().toLowerCase()
-    return leads
-      .filter((l) => {
-        if (text && !`${l.company_name} ${l.project_name}`.toLowerCase().includes(text)) return false
-        if (pid && !(l.project_id_display || '').toLowerCase().includes(pid)) return false
-        if (filters.industry !== 'all' && l.industry_name !== filters.industry) return false
-        if (filters.domain !== 'all' && l.domain_name !== filters.domain) return false
-        if (filters.owner !== 'all') {
-          const owner = l.assigned_to_name || 'Not Assigned'
-          if (owner !== filters.owner) return false
-        }
-        if (filters.currentStage !== 'all' && l.current_stage?.stage !== filters.currentStage) return false
-        if (filters.currentTask !== 'all' && String(l.current_task?.task_no ?? '') !== filters.currentTask) return false
-        if (filters.status !== 'all' && l.status !== filters.status) return false
-        return true
-      })
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-  }, [leads, filters])
+  const filtersActive = Object.keys(EMPTY_FILTERS).some((k) => filters[k] !== EMPTY_FILTERS[k])
+  const clearFilters = () => update({ filters: EMPTY_FILTERS, page: 1 })
 
   const columnCount = 10
 
@@ -154,7 +207,7 @@ export default function LeadsList() {
         </div>
         <div className="flex items-center gap-2">
           {filtersActive && (
-            <Button variant="outline" onClick={() => setFilters(EMPTY_FILTERS)}>
+            <Button variant="outline" onClick={clearFilters}>
               <FilterX className="size-4" /> Clear filters
             </Button>
           )}
@@ -167,7 +220,14 @@ export default function LeadsList() {
       </div>
 
       <Card className="py-0">
-        <CardContent className="overflow-x-auto p-0">
+        {/* The filter row states what it searches, because with pagination the
+            distinction matters: it is the whole dataset, not this page. */}
+        {filtersActive && (
+          <div className="border-b px-3 py-2 text-xs text-muted-foreground">
+            Filtering all {count === 1 ? '1 lead' : `${count.toLocaleString()} leads`} matched across every page.
+          </div>
+        )}
+        <CardContent className={cn('overflow-x-auto p-0', isFetching && 'opacity-60 transition-opacity')}>
           <Table>
             <TableHeader>
               <TableRow>
@@ -186,15 +246,15 @@ export default function LeadsList() {
                 <TableHead>Tracker</TableHead>
               </TableRow>
               {/* Per-column filter row (§5.18): free text for Company/Project +
-                  Project ID, dropdowns (built from the loaded data) for the
-                  rest. All filters combine with AND. */}
+                  Project ID, dropdowns for the rest. All filters combine with
+                  AND and are applied **server-side, across every page** (R25). */}
               <TableRow className="hover:bg-transparent">
                 <TableHead />
                 <TableHead className="py-1.5">
-                  <Input value={filters.projectId} onChange={(e) => setFilter('projectId')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
+                  <Input value={projectIdDraft} onChange={(e) => setProjectIdDraft(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
                 </TableHead>
                 <TableHead className="py-1.5">
-                  <Input value={filters.text} onChange={(e) => setFilter('text')(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
+                  <Input value={textDraft} onChange={(e) => setTextDraft(e.target.value)} placeholder="Search…" className="h-8 text-xs" />
                 </TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.industry} onChange={setFilter('industry')} options={options.industries} placeholder="All" /></TableHead>
                 <TableHead className="py-1.5"><FilterSelect value={filters.domain} onChange={setFilter('domain')} options={options.domains} placeholder="All" /></TableHead>
@@ -208,7 +268,9 @@ export default function LeadsList() {
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">Loading…</TableCell></TableRow>}
               {!isLoading && rows.length === 0 && (
-                <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">No leads match the filters.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={columnCount} className="py-8 text-center text-muted-foreground">
+                  {filtersActive ? 'No leads match the filters.' : 'No leads yet.'}
+                </TableCell></TableRow>
               )}
               {rows.map((lead) => (
                 <TableRow key={lead.id} className="cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
@@ -266,6 +328,19 @@ export default function LeadsList() {
             </TableBody>
           </Table>
         </CardContent>
+        {!isLoading && count > 0 && (
+          <Pagination
+            page={Math.min(page, pageCount)}
+            pageCount={pageCount}
+            pageSize={pageSize}
+            count={count}
+            label="leads"
+            onPageChange={(n) => update({ page: n })}
+            // Changing the page size changes what "page 3" means, so it restarts
+            // at page 1 instead of landing somewhere unrelated.
+            onPageSizeChange={(n) => update({ pageSize: n, page: 1 })}
+          />
+        )}
       </Card>
     </div>
   )

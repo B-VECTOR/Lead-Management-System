@@ -114,6 +114,10 @@ async function fetchAllLeads() {
 
 // filters: { status, lead_type, q }. Visibility is enforced by the backend;
 // these are client-side conveniences over the already-scoped result set.
+//
+// **Loads every lead.** Kept for the screens that genuinely need the whole set
+// in memory (a lead picker), and it is exactly what the leads *table* must not
+// do — see `listLeadsPage` below.
 export async function listLeads(_currentUser, filters = {}) {
   let rows = (await fetchAllLeads()).map(fromApiLead)
   if (filters.status) rows = rows.filter((l) => l.status === filters.status)
@@ -128,6 +132,63 @@ export async function listLeads(_currentUser, filters = {}) {
     )
   }
   return rows
+}
+
+// The leads-list filter names, mapped to the query params `leads/filters.py`
+// reads. Blank / "all" values are omitted so the URL and the request stay clean.
+const LEAD_FILTER_PARAMS = {
+  text: 'q',
+  projectId: 'project_id',
+  industry: 'industry',
+  domain: 'domain',
+  owner: 'owner',
+  currentStage: 'stage',
+  currentTask: 'task_no',
+  status: 'status',
+  leadType: 'lead_type',
+}
+
+export function leadFilterParams(filters = {}) {
+  const params = {}
+  for (const [key, param] of Object.entries(LEAD_FILTER_PARAMS)) {
+    const value = filters[key]
+    if (value === undefined || value === null) continue
+    const str = String(value).trim()
+    if (str === '' || str === 'all') continue
+    params[param] = str
+  }
+  return params
+}
+
+// One page of the leads list (R25). Filtering, ordering and the page slice all
+// happen **server-side**, so the page is a page of the filtered set — a filter
+// applied here searches every lead the user may see, not the rows on screen.
+export async function listLeadsPage({ page = 1, pageSize = 50, filters = {} } = {}) {
+  const { data } = await client.get('/api/leads/', {
+    params: { page, page_size: pageSize, ...leadFilterParams(filters) },
+  })
+  // An unpaginated array would mean someone dropped the pagination class; treat
+  // it as a single page rather than rendering an empty table.
+  if (Array.isArray(data)) {
+    const rows = data.map(fromApiLead)
+    return { rows, count: rows.length, page: 1, pageSize, pageCount: 1 }
+  }
+  const count = data.count ?? 0
+  return {
+    rows: (data.results || []).map(fromApiLead),
+    count,
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(count / pageSize)),
+  }
+}
+
+// Every value the list's filter dropdowns can offer, computed over the caller's
+// whole scoped set of leads — never over the current page, which is what keeps a
+// filter usable once the data spans many pages.
+export async function getLeadFilterOptions() {
+  const { data } = await client.get('/api/leads/filter-options/')
+  return data
 }
 
 export async function getLead(id) {

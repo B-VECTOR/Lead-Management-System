@@ -13,7 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import analytics, engine, events, holds, projects, resources
+from . import analytics, engine, events, filters, holds, projects, resources
 from .models import (
     ActivityLog,
     Attachment,
@@ -196,9 +196,32 @@ def _notify_lead_managers(lead, actor, type, message):
     events.notify_lead_managers(lead, type, message, actor=actor)
 
 
+class LeadListPagination(PageNumberPagination):
+    """Pages the leads list (R25).
+
+    50 a page: the screen is a dense back-office table people scan, so a page
+    should be a screenful of scrolling rather than a dozen rows and a click.
+    ``?page_size=`` (up to 200) backs the rows-per-page control.
+    """
+
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
 class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
     serializer_class = LeadSerializer
     permission_classes = [LeadPermission]
+    pagination_class = LeadListPagination
+
+    def get_queryset(self):
+        # R25: the column filters are applied here, to the whole role-scoped set,
+        # so a page is a page *of the filtered set*. `Lead.Meta.ordering` is
+        # `-created_at` alone, which is not a total order — two leads created in
+        # the same second could repeat or be skipped across a page boundary — so
+        # the list pins an explicit tie-break.
+        qs = filters.filter_leads(super().get_queryset(), self.request.query_params)
+        return qs.order_by("-created_at", "-id")
 
     def perform_create(self, serializer):
         # created_by records whether the lead originated from Marketing or a
@@ -211,6 +234,23 @@ class LeadListCreateView(LeadQuerysetMixin, generics.ListCreateAPIView):
         events.log_activity(lead, self.request.user, "lead", "Lead created")
         # A Lead-Manager-created lead already has an owner (workflow started).
         _notify_owner_assigned(lead, self.request.user)
+
+
+class LeadFilterOptionsView(LeadQuerysetMixin, generics.GenericAPIView):
+    """Every value the leads-list filters can be set to, over the caller's whole
+    scoped set of leads (R25-4).
+
+    This is what makes "the filter searches all the projects" true from the
+    user's side: the dropdowns are built from the entire dataset, so the value
+    they need is offered even when no row on the current page carries it. The
+    lists are **not** narrowed by the other active filters — options that
+    disappear as you filter make a multi-filter search unusable.
+    """
+
+    permission_classes = [LeadPermission]
+
+    def get(self, request, *args, **kwargs):
+        return Response(filters.filter_options(self.get_queryset()))
 
 
 class AssignableUserListView(generics.ListAPIView):
