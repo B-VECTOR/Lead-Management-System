@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.test import TestCase, override_settings
@@ -344,6 +347,46 @@ class AuthTokenTests(APITestCase):
             "/api/auth/logout/", {"refresh": current_refresh}, format="json"
         )
         self.assertEqual(logout.status_code, status.HTTP_205_RESET_CONTENT)
+
+    def test_logout_kills_the_refresh_token(self):
+        """R26: the property the idle timeout depends on.
+
+        A stateless JWT can't observe idleness, so the frontend's idle clock
+        ends the session by POSTing to /api/auth/logout/. That is only a real
+        sign-out if the blacklisted refresh token can no longer mint access
+        tokens — otherwise the timeout would be pure decoration, undone by a
+        replayed refresh. Asserted for both the token that was blacklisted and
+        the pre-rotation one.
+        """
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "ada", "password": "OldPass123!"},
+            format="json",
+        )
+        original_refresh = login.data["refresh"]
+        rotated = self.client.post(
+            "/api/auth/refresh/", {"refresh": original_refresh}, format="json"
+        )
+        current_refresh = rotated.data["refresh"]
+
+        self.client.force_authenticate(self.user)
+        self.client.post(
+            "/api/auth/logout/", {"refresh": current_refresh}, format="json"
+        )
+        self.client.force_authenticate(user=None)
+
+        for token in (current_refresh, original_refresh):
+            replayed = self.client.post(
+                "/api/auth/refresh/", {"refresh": token}, format="json"
+            )
+            self.assertEqual(replayed.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_access_token_lifetime_is_short(self):
+        """The revocation window: a blacklisted session's already-issued access
+        token keeps working until this expires, so it must stay short (R26)."""
+        self.assertLessEqual(
+            settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"], timedelta(minutes=15)
+        )
 
 
 class ChangeOwnPasswordApiTests(APITestCase):

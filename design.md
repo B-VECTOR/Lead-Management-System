@@ -251,6 +251,7 @@ Always format through these for consistency: `formatCurrency`, `formatCompactCur
 - **Focus:** rely on the built-in `focus-visible:ring-[3px] ring-ring/50` — don't remove focus rings.
 - **Transitions:** subtle only (`transition-colors`, `transition-[width] duration-200`). No large motion.
 - **Tooltips** for icon-only controls (e.g. collapsed sidebar).
+- **Session timeout warns before it acts** (`components/layout/SessionTimeoutDialog.jsx`, R26). The idle logout is announced by a modal with a live `m:ss` countdown ("Still there?"), never a silent redirect — these screens hold half-filled task fields and allocation forms, so the user gets the chance to keep them. Two buttons only: **Stay signed in** (primary) and **Sign out now** (outline). The one place the app *does* land you somewhere without warning is a session that expired while the tab was closed; there the Login card carries an amber notice saying why (§4 banner recipe), because a bare login form looks like a bug.
 
 ---
 

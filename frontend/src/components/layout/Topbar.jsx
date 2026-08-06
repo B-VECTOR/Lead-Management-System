@@ -55,7 +55,7 @@ export function Topbar() {
             <UserCircle className="size-4" /> Account settings
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={logout}>
+          <DropdownMenuItem onClick={() => logout('manual')}>
             <LogOut className="size-4" /> Log out
           </DropdownMenuItem>
         </DropdownMenuContent>

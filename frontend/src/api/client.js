@@ -7,6 +7,7 @@
 // transparently refreshes the token once (SimpleJWT rotates refresh tokens, so
 // the new refresh is stored too) before giving up and bouncing to /login.
 import axios from 'axios'
+import { clearActivity, setLogoutReason } from '@/lib/session'
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -26,6 +27,7 @@ export function clearSession() {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(USER_STORAGE_KEY)
+  clearActivity()
 }
 
 const client = axios.create({
@@ -45,6 +47,9 @@ let refreshPromise = null
 
 function forceLogout() {
   clearSession()
+  // Reached when the refresh token is dead — expired, or blacklisted by a
+  // logout elsewhere. The Login screen says so instead of showing a bare form.
+  setLogoutReason('expired')
   if (window.location.pathname !== '/login') window.location.assign('/login')
 }
 

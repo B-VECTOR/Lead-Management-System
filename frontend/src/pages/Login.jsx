@@ -5,6 +5,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/context/AuthContext'
+import { takeLogoutReason } from '@/lib/session'
+
+const LOGOUT_NOTICES = {
+  idle: 'You were signed out because you were inactive. Sign in to continue.',
+  expired: 'Your session expired. Sign in to continue.',
+}
 
 export default function Login() {
   const { login } = useAuth()
@@ -13,6 +19,9 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Read once on mount and cleared in the same breath, so the notice explains
+  // *this* redirect and doesn't survive a manual visit to /login later.
+  const [notice] = useState(() => LOGOUT_NOTICES[takeLogoutReason()] || '')
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -38,6 +47,11 @@ export default function Login() {
           <CardTitle className="text-xl">LeadFlow</CardTitle>
         </CardHeader>
         <CardContent>
+          {notice && (
+            <p className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+              {notice}
+            </p>
+          )}
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="username">Username</Label>

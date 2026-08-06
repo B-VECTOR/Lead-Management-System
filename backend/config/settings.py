@@ -168,9 +168,22 @@ REST_FRAMEWORK = {
 # Simple JWT
 # https://django-rest-framework-simplejwt.readthedocs.io/en/latest/settings.html
 
+# Session lifetimes (R26). Three separate limits, deliberately:
+#   * ACCESS_TOKEN_LIFETIME — how long an already-issued access token keeps
+#     working. Short, because it is a bearer token that cannot be revoked: it
+#     is the window in which a token that leaked (or one held by a tab whose
+#     session was ended elsewhere) still opens the API. The frontend refreshes
+#     transparently, so shortening it costs the user nothing.
+#   * REFRESH_TOKEN_LIFETIME — the absolute cap on a session; rotation means
+#     it slides forward on each refresh, and the old refresh is blacklisted.
+#   * The *idle* timeout is enforced by the frontend clock
+#     (VITE_IDLE_TIMEOUT_MINUTES) — a stateless JWT cannot see idleness. What
+#     makes that logout real rather than cosmetic is that it POSTs to
+#     /api/auth/logout/, which blacklists the refresh token, after which
+#     ACCESS_TOKEN_LIFETIME bounds the remaining access.
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("ACCESS_TOKEN_LIFETIME_MINUTES", default=15)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("REFRESH_TOKEN_LIFETIME_DAYS", default=1)),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
