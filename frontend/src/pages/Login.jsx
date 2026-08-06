@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { LogoWordmark } from '@/components/layout/Logo'
 import { useAuth } from '@/context/AuthContext'
 import { takeLogoutReason } from '@/lib/session'
 
@@ -19,9 +21,17 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
   // Read once on mount and cleared in the same breath, so the notice explains
-  // *this* redirect and doesn't survive a manual visit to /login later.
-  const [notice] = useState(() => LOGOUT_NOTICES[takeLogoutReason()] || '')
+  // *this* redirect and doesn't survive a manual visit to /login later. Shown
+  // as a toast rather than inside the card so the sign-in form never shifts
+  // down — and so the same message reads the same way here as everywhere else.
+  useEffect(() => {
+    const notice = LOGOUT_NOTICES[takeLogoutReason()]
+    // A fixed id collapses the duplicate that StrictMode's double-mount would
+    // otherwise produce in dev.
+    if (notice) toast.warning(notice, { id: 'session-ended', duration: 8000 })
+  }, [])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -43,15 +53,11 @@ export default function Login() {
   return (
     <div className="flex min-h-svh items-center justify-center bg-muted/40 p-4">
       <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-xl">LeadFlow</CardTitle>
+        <CardHeader className="justify-items-center gap-2 text-center">
+          <LogoWordmark className="h-auto w-32 max-w-full" />
+          <CardTitle className="text-lg">Lead Management System</CardTitle>
         </CardHeader>
         <CardContent>
-          {notice && (
-            <p className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-              {notice}
-            </p>
-          )}
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="username">Username</Label>

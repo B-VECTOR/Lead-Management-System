@@ -29,6 +29,16 @@ function LogoMark({ className }) {
   )
 }
 
+// The wordmark on its own, for surfaces outside the app shell (e.g. the login
+// card) where there's no sidebar padding to inherit.
+export function LogoWordmark({ className }) {
+  return (
+    <span role="img" aria-label="Vector Consulting Group" className="contents">
+      <FullLogo className={cn('text-foreground', className)} />
+    </span>
+  )
+}
+
 export function Logo({ collapsed }) {
   return (
     <div className={cn('flex items-center overflow-hidden px-2 py-3', collapsed && 'justify-center px-0')}>
